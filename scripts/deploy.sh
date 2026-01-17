@@ -127,11 +127,12 @@ restart_services() {
 }
 
 health_check() {
-    log_info "Waiting for health check at ${HEALTH_URL}..."
+    log_info "Waiting for API container to become healthy..."
 
     local attempt=1
     while [[ ${attempt} -le ${MAX_RETRIES} ]]; do
-        if curl -sf "${HEALTH_URL}" > /dev/null 2>&1; then
+        # Use docker exec with python since curl isn't installed in the container
+        if docker exec fishfeed-api-1 python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)" > /dev/null 2>&1; then
             log_info "Health check passed on attempt ${attempt}/${MAX_RETRIES}"
             return 0
         fi
