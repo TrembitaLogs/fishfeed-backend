@@ -8,7 +8,6 @@ import pytest
 from fastapi import FastAPI, Request
 from httpx import ASGITransport, AsyncClient
 from redis.asyncio import Redis
-from starlette.responses import JSONResponse
 
 from app.middleware.rate_limit import (
     RateLimiter,
@@ -16,7 +15,6 @@ from app.middleware.rate_limit import (
     RateLimitMiddleware,
     RequestSizeLimitMiddleware,
     RequestTimeoutMiddleware,
-    _get_client_ip,
     _hash_ip,
 )
 from app.utils.jwt import create_access_token
@@ -36,9 +34,6 @@ async def cleanup_rate_limit_keys(redis: Redis) -> None:
 @pytest.fixture
 def test_app_with_middleware(redis_client: Redis) -> FastAPI:
     """Create a test FastAPI app with rate limiting middleware."""
-    from app.redis import _redis_client, get_redis_client
-
-    # Store original client
     import app.redis as redis_module
 
     original_client = redis_module._redis_client

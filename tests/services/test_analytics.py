@@ -19,7 +19,6 @@ from app.models.user import User
 from app.schemas.analytics import EventRequest
 from app.services.analytics import (
     BatchSizeExceededError,
-    GDPRError,
     UserNotFoundError,
     delete_user_data,
     export_user_data,
