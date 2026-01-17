@@ -15,11 +15,20 @@ set -euo pipefail
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="${SCRIPT_DIR}/.."
+# On server, script is in project root; locally it's in scripts/
+if [[ -f "${SCRIPT_DIR}/docker-compose.yml" ]]; then
+    PROJECT_DIR="${SCRIPT_DIR}"
+else
+    PROJECT_DIR="${SCRIPT_DIR}/.."
+fi
 LOG_FILE="${PROJECT_DIR}/logs/deploy-$(date +%Y%m%d-%H%M%S).log"
 
-# Configuration
-COMPOSE_FILE="${PROJECT_DIR}/docker-compose.prod.yml"
+# Configuration - on server we use docker-compose.yml, locally docker-compose.prod.yml
+if [[ -f "${PROJECT_DIR}/docker-compose.yml" ]]; then
+    COMPOSE_FILE="${PROJECT_DIR}/docker-compose.yml"
+else
+    COMPOSE_FILE="${PROJECT_DIR}/docker-compose.prod.yml"
+fi
 HEALTH_URL="${HEALTH_URL:-http://localhost:8000/health}"
 MAX_RETRIES="${MAX_RETRIES:-30}"
 RETRY_INTERVAL="${RETRY_INTERVAL:-2}"

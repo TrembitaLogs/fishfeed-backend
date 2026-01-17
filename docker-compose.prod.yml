@@ -111,7 +111,7 @@ services:
       - fishfeed-internal
 
   postgres:
-    image: postgres:17-alpine
+    image: postgres:18-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
@@ -129,7 +129,7 @@ services:
       - fishfeed-internal
 
   redis:
-    image: redis:7.4-alpine
+    image: redis:8.4-alpine
     restart: unless-stopped
     command: redis-server --appendonly yes
     volumes:

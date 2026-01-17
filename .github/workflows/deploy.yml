@@ -73,5 +73,5 @@ jobs:
           username: ${{ secrets.HETZNER_USER }}
           key: ${{ secrets.HETZNER_SSH_KEY }}
           script: |
-            cd /opt/fishfeed
+            cd /home/balaganov/docker/fishfeed
             ./deploy.sh
