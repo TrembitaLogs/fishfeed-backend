@@ -1,0 +1,153 @@
+services:
+  api:
+    image: ghcr.io/${GITHUB_REPOSITORY:-owner/fishfeed}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres:5432/fishfeed
+      - REDIS_URL=redis://redis:6379/0
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - DEBUG=false
+      - ENVIRONMENT=production
+      # Sentry
+      - SENTRY_DSN=${SENTRY_DSN:-}
+      - SENTRY_TRACES_SAMPLE_RATE=${SENTRY_TRACES_SAMPLE_RATE:-0.1}
+      # OAuth
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - APPLE_CLIENT_ID=${APPLE_CLIENT_ID:-}
+      # AI Provider
+      - AI_PROVIDER=${AI_PROVIDER:-google_vision}
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-}
+      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS:-}
+      - REPLICATE_API_TOKEN=${REPLICATE_API_TOKEN:-}
+      # S3 Storage
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL}
+      - S3_ACCESS_KEY=${S3_ACCESS_KEY}
+      - S3_SECRET_KEY=${S3_SECRET_KEY}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME:-fishfeed-scans}
+      - S3_REGION=${S3_REGION:-eu-central}
+      # FCM (Android Push)
+      - FCM_PROJECT_ID=${FCM_PROJECT_ID:-}
+      - FCM_CREDENTIALS_PATH=/app/secrets/firebase-credentials.json
+      - FCM_DRY_RUN=false
+      # APNs (iOS Push)
+      - APNS_KEY_ID=${APNS_KEY_ID:-}
+      - APNS_TEAM_ID=${APNS_TEAM_ID:-}
+      - APNS_BUNDLE_ID=${APNS_BUNDLE_ID:-}
+      - APNS_KEY_PATH=/app/secrets/AuthKey.p8
+      - APNS_USE_SANDBOX=false
+      # RevenueCat
+      - REVENUECAT_API_KEY=${REVENUECAT_API_KEY:-}
+      - REVENUECAT_WEBHOOK_SECRET=${REVENUECAT_WEBHOOK_SECRET:-}
+    volumes:
+      - ./secrets:/app/secrets:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - traefik_proxy
+      - fishfeed-internal
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.fishfeed-api.rule=Host(`${API_DOMAIN}`)"
+      - "traefik.http.routers.fishfeed-api.entrypoints=websecure"
+      - "traefik.http.routers.fishfeed-api.tls=true"
+      - "traefik.http.routers.fishfeed-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.fishfeed-api.loadbalancer.server.port=8000"
+      # HTTP to HTTPS redirect
+      - "traefik.http.routers.fishfeed-api-http.rule=Host(`${API_DOMAIN}`)"
+      - "traefik.http.routers.fishfeed-api-http.entrypoints=web"
+      - "traefik.http.routers.fishfeed-api-http.middlewares=https-redirect"
+      - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"
+
+  worker:
+    image: ghcr.io/${GITHUB_REPOSITORY:-owner/fishfeed}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    command: ["uv", "run", "python", "-m", "app.workers.feeding_worker"]
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres:5432/fishfeed
+      - REDIS_URL=redis://redis:6379/0
+      - WORKER_ENABLED=true
+      - ENVIRONMENT=production
+      # Sentry
+      - SENTRY_DSN=${SENTRY_DSN:-}
+      - SENTRY_TRACES_SAMPLE_RATE=${SENTRY_TRACES_SAMPLE_RATE:-0.1}
+      # FCM (Android Push)
+      - FCM_PROJECT_ID=${FCM_PROJECT_ID:-}
+      - FCM_CREDENTIALS_PATH=/app/secrets/firebase-credentials.json
+      - FCM_DRY_RUN=false
+      # APNs (iOS Push)
+      - APNS_KEY_ID=${APNS_KEY_ID:-}
+      - APNS_TEAM_ID=${APNS_TEAM_ID:-}
+      - APNS_BUNDLE_ID=${APNS_BUNDLE_ID:-}
+      - APNS_KEY_PATH=/app/secrets/AuthKey.p8
+      - APNS_USE_SANDBOX=false
+    volumes:
+      - ./secrets:/app/secrets:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - fishfeed-internal
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: fishfeed
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - fishfeed-internal
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - fishfeed-internal
+
+networks:
+  traefik_proxy:
+    external: true
+  fishfeed-internal:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:

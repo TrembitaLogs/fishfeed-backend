@@ -1,0 +1,117 @@
+{
+	"meta": {
+		"generatedAt": "2026-01-10T10:01:18.302Z",
+		"tasksAnalyzed": 13,
+		"totalTasks": 13,
+		"analysisCount": 13,
+		"thresholdScore": 5,
+		"projectName": "Taskmaster",
+		"usedResearch": true
+	},
+	"complexityAnalysis": [
+		{
+			"taskId": 1,
+			"taskTitle": "Ініціалізація проекту та Docker-інфраструктура",
+			"complexityScore": 5,
+			"recommendedSubtasks": 5,
+			"expansionPrompt": "Розбий завдання ініціалізації проекту на підзадачі: 1) Ініціалізація uv проекту з усіма залежностями в pyproject.toml, 2) Створення структури каталогів app/ з базовими __init__.py файлами, 3) Створення Dockerfile та docker-compose.yml з сервісами api, postgres, redis, 4) Реалізація app/main.py з FastAPI app, health endpoint та app/config.py з pydantic-settings, 5) Створення Makefile та .env.example, ініціалізація Alembic",
+			"reasoning": "Це greenfield проект — немає існуючого коду для модифікації. Завдання чітко визначене в PRD з конкретними версіями залежностей, структурою каталогів та конфігурацією Docker. Складність середня через велику кількість файлів для створення (Dockerfile, docker-compose.yml, Makefile, config.py, main.py, структура каталогів), але всі вони є стандартними шаблонами без складної бізнес-логіки. PRD містить готові приклади конфігурацій."
+		},
+		{
+			"taskId": 2,
+			"taskTitle": "Моделі бази даних та міграції",
+			"complexityScore": 7,
+			"recommendedSubtasks": 6,
+			"expansionPrompt": "Розбий завдання створення моделей БД на підзадачі: 1) Налаштування app/database.py з async engine, AsyncSession та get_db dependency, 2) Створення app/models/base.py з Base, TimestampMixin та SoftDeleteMixin, 3) Створення моделей user.py (User, RefreshToken) та aquarium.py (Aquarium, AquariumMember, FamilyInvite), 4) Створення моделей species.py, fish.py та feeding.py (FeedingSchedule, FeedingEvent), 5) Створення моделей gamification.py (Streak, Achievement), ai.py (AIScan), notification.py (PushToken, NotificationPreference), 6) Налаштування alembic/env.py для async міграцій та генерація початкової міграції з GIN індексом для species",
+			"reasoning": "Висока складність через велику кількість моделей (~15 таблиць) з різними типами зв'язків (1:N, N:M), JSONB полями, складними індексами (GIN для full-text search) та міксінами. PRD містить повну SQL схему, що спрощує реалізацію, але потрібна уважна трансляція в SQLAlchemy ORM з async підтримкою. Залежить від Task 1."
+		},
+		{
+			"taskId": 3,
+			"taskTitle": "Система автентифікації з JWT",
+			"complexityScore": 8,
+			"recommendedSubtasks": 7,
+			"expansionPrompt": "Розбий завдання автентифікації на підзадачі: 1) Створення app/utils/password.py з hash_password та verify_password (argon2), 2) Створення app/utils/jwt.py з create_access_token, create_refresh_token, decode_token, 3) Створення app/schemas/auth.py з усіма Pydantic схемами (RegisterRequest, LoginRequest, TokenResponse, etc.), 4) Створення app/services/auth.py з register_user, login_user та refresh_tokens з Redis TTL, 5) Створення app/api/auth.py з endpoint-ами register, login, refresh, logout, 6) Створення app/dependencies.py з get_current_user та get_current_active_user, 7) OAuth інтеграція з Google та Apple (google-auth, apple-signin валідація токенів)",
+			"reasoning": "Висока складність — це критична частина системи безпеки. Включає: JWT генерацію/валідацію, password hashing з argon2, refresh token rotation в Redis, OAuth інтеграцію з двома провайдерами (Google, Apple), password reset flow, soft delete. OAuth особливо складний через різні API (Google ID token vs Apple Sign-In). Потрібна ретельна обробка помилок та security best practices."
+		},
+		{
+			"taskId": 4,
+			"taskTitle": "База видів риб (Species Database)",
+			"complexityScore": 5,
+			"recommendedSubtasks": 5,
+			"expansionPrompt": "Розбий завдання Species Database на підзадачі: 1) Створення app/schemas/species.py з SpeciesBase, SpeciesResponse, SpeciesListResponse, SpeciesSearchQuery, 2) Створення app/services/species.py з list_species (pagination), get_species, search_species (full-text search), get_popular_species, 3) Створення app/api/species.py з GET endpoints (/species, /species/{id}, /species/search, /species/popular), 4) Реалізація Redis кешування з TTL та cache key versioning, 5) Створення scripts/seed_species.py з JSON даними ~200 видів риб та admin endpoints для CRUD",
+			"reasoning": "Середня складність. Стандартний CRUD з пагінацією та пошуком. Full-text search вже налаштований через GIN індекс в Task 2. Redis кешування стандартне. Основна робота — збір та структурування seed даних для 200 видів риб (food_types, feeding_frequency, portion_hint). Admin endpoints прості з перевіркою прав доступу."
+		},
+		{
+			"taskId": 5,
+			"taskTitle": "Акваріуми та Риби (Core Data Models)",
+			"complexityScore": 7,
+			"recommendedSubtasks": 6,
+			"expansionPrompt": "Розбий завдання Core Data Models на підзадачі: 1) Створення app/schemas/ для aquarium.py, fish.py та feeding.py з усіма Pydantic схемами, 2) Створення app/services/aquarium.py з CRUD операціями та перевіркою доступу, 3) Створення app/services/fish.py з add_fish, update_fish, remove_fish (soft delete), 4) Створення app/services/feeding.py з generate_schedule (аналіз видів риб, вибір max frequency, генерація scheduled_times), 5) Створення app/api/ endpoints для aquariums, fish та feeding з mark_as_fed/missed, 6) Реалізація background worker для створення feeding_events на наступний день",
+			"reasoning": "Складна бізнес-логіка, особливо в generate_schedule — потрібен аналіз усіх видів риб в акваріумі для вибору оптимального розкладу. Mark as fed/missed впливає на gamification (streaks). Background worker вимагає налаштування APScheduler або Celery. Багато endpoints з різними рівнями авторизації. Залежить від Tasks 3 та 4."
+		},
+		{
+			"taskId": 6,
+			"taskTitle": "Механізм синхронізації даних",
+			"complexityScore": 8,
+			"recommendedSubtasks": 6,
+			"expansionPrompt": "Розбий завдання Sync Engine на підзадачі: 1) Створення app/schemas/sync.py з SyncRequest, ChangeItem, SyncResponse, ConflictItem, 2) Створення app/services/sync.py з process_sync — основна логіка обробки змін, 3) Реалізація apply_changes з last-write-wins конфлікт-резолюцією на основі client_updated_at, 4) Реалізація get_server_state з delta sync (тільки зміни після last_sync_at), 5) Спеціальна обробка conflict detection для feeding_events (два користувачі годували), 6) Оптимізації: batch processing, pagination для великого server_state, ETag, logging для debugging",
+			"reasoning": "Висока складність — sync engine є критичною частиною offline-first архітектури. Потрібна обережна обробка конфліктів, особливо для feeding events де два члени сім'ї можуть годувати одночасно. Delta sync вимагає tracking всіх змін. Потенційні race conditions при concurrent sync. Потрібне extensive logging для debugging sync issues."
+		},
+		{
+			"taskId": 7,
+			"taskTitle": "Family Mode (Спільний доступ)",
+			"complexityScore": 6,
+			"recommendedSubtasks": 5,
+			"expansionPrompt": "Розбий завдання Family Mode на підзадачі: 1) Створення app/schemas/family.py з FamilyMemberResponse, InviteResponse, AcceptInviteRequest, 2) Створення app/services/family.py з get_family_members та create_invite (унікальний код 8 символів, TTL 7 днів), 3) Реалізація accept_invite з валідацією коду, перевіркою терміну, додаванням до members, нотифікацією owner, 4) Реалізація remove_member з перевіркою що тільки owner може видаляти, 5) Перевірка Premium limits (Free: 2, Premium: 5) при invite та accept, інтеграція з subscription status",
+			"reasoning": "Середня-висока складність. Invite система з унікальними кодами та TTL. Permissions model (owner vs member) потребує уважної реалізації. Premium limits потребують інтеграції з subscription status. Real-time sync між members вже покритий в Task 6. Залежить від Tasks 5 та 6."
+		},
+		{
+			"taskId": 8,
+			"taskTitle": "AI розпізнавання риб",
+			"complexityScore": 7,
+			"recommendedSubtasks": 6,
+			"expansionPrompt": "Розбий завдання AI Fish Recognition на підзадачі: 1) Створення app/schemas/ai.py з ScanRequest, ScanResponse, AlternativeSpecies, 2) Реалізація image preprocessing: resize до 512x512, normalize, підтримка base64 та multipart upload, 3) Інтеграція з cloud AI service (Google Cloud Vision або Replicate), обробка responses, 4) Створення app/services/ai.py з scan_image, перевірка scans_remaining, зменшення free_ai_scans_remaining, 5) Реалізація rate limiting в Redis (Free: 5 scans, Premium: unlimited), 6) Image storage в S3-compatible (Hetzner Object Storage) з hash deduplication, 30 days retention, logging в ai_scans table",
+			"reasoning": "Складна інтеграція з зовнішніми сервісами. Image preprocessing вимагає бібліотеки для обробки зображень (Pillow). Cloud AI інтеграція залежить від вибраного провайдера. Rate limiting per user з Redis. S3 upload з deduplication. Logging для model improvement. Fallback на manual selection при низькому confidence."
+		},
+		{
+			"taskId": 9,
+			"taskTitle": "Push-нотифікації (Server-side)",
+			"complexityScore": 7,
+			"recommendedSubtasks": 6,
+			"expansionPrompt": "Розбий завдання Push Notifications на підзадачі: 1) Створення app/schemas/notification.py та endpoints для token registration/unregistration, 2) FCM Integration (Android): HTTP v1 API з service account auth через firebase-admin SDK, 3) APNs Integration (iOS): python-apns2 з token-based authentication (.p8 key), 4) Створення app/services/notification.py з send_push, send_push_batch, preferences check, 5) Background Jobs (APScheduler/Celery Beat): weekly summary, re-engagement при неактивності 3 дні, family notification trigger, 6) Throttling: max 10 notifications/user/day, quiet hours (22:00-08:00), opt-out management",
+			"reasoning": "Складна інтеграція з двома різними push системами (FCM та APNs), кожна з своїм форматом auth та payload. Background jobs для scheduled notifications вимагають надійного scheduler (APScheduler або Celery Beat). Throttling та quiet hours логіка. Preferences management. Залежить від Tasks 5 та 7."
+		},
+		{
+			"taskId": 10,
+			"taskTitle": "Gamification Backend (Streaks, Achievements)",
+			"complexityScore": 5,
+			"recommendedSubtasks": 4,
+			"expansionPrompt": "Розбий завдання Gamification на підзадачі: 1) Створення app/schemas/gamification.py з StreakResponse, AchievementResponse, UserStatsResponse, 2) Створення app/services/gamification.py з update_streak — increment при послідовних днях, reset при пропуску без freeze, 3) Реалізація achievement unlock triggers: first_feed, streak_7, streak_30, fish_collector_10, family_first (~20 achievements), 4) Створення app/api/gamification.py з GET /stats, /achievements, POST /streak/freeze, /achievements/{id}/share",
+			"reasoning": "Середня складність. Логіка streaks чітко визначена. Achievement triggers straightforward — перевірка умов при відповідних діях. Freeze day логіка проста. Основна складність — інтеграція update_streak з mark_as_fed (Task 5) та перевірка всіх trigger conditions. Stats aggregation через SQL queries."
+		},
+		{
+			"taskId": 11,
+			"taskTitle": "RevenueCat Webhook та Purchase Verification",
+			"complexityScore": 6,
+			"recommendedSubtasks": 5,
+			"expansionPrompt": "Розбий завдання Purchase Verification на підзадачі: 1) Створення app/schemas/purchase.py з WebhookEvent (RevenueCat format), RestorePurchaseRequest, SubscriptionStatus, 2) Створення app/services/purchase.py з process_webhook — обробка INITIAL_PURCHASE, RENEWAL, CANCELLATION, EXPIRATION, 3) Реалізація webhook security: RevenueCat signature validation, idempotency для duplicate events, transaction logging, 4) Premium Feature Gates: is_premium helper, middleware/decorator для premium-only endpoints, 5) Background job для перевірки expired subscriptions, graceful revert features (AI scans, family limits)",
+			"reasoning": "Середня-висока складність. RevenueCat webhook інтеграція з signature validation є критичною для fraud protection. Idempotency важлива для надійності. Subscription state machine (free → premium → expired). Feature gates потрібні в багатьох місцях системи. Graceful expiry з background job. Залежить від Tasks 3, 7, 8."
+		},
+		{
+			"taskId": 12,
+			"taskTitle": "CI/CD Pipeline та Production Deployment",
+			"complexityScore": 6,
+			"recommendedSubtasks": 5,
+			"expansionPrompt": "Розбий завдання CI/CD на підзадачі: 1) Створення .github/workflows/ci.yml з lint (ruff), type check (mypy), pytest з coverage, 2) Створення .github/workflows/deploy.yml з build Docker image, push to ghcr.io, 3) Створення docker-compose.prod.yml з nginx (Let's Encrypt), api, postgres, redis, worker containers, 4) Створення scripts/deploy.sh для Hetzner: pull images, run migrations, restart services, health check, 5) Monitoring setup: Sentry integration, health endpoint monitoring, Docker logs configuration",
+			"reasoning": "Середня складність. GitHub Actions стандартні, але потрібна інтеграція з uv замість pip. Production Docker Compose з nginx та SSL вимагає certbot налаштування. SSH deploy на Hetzner потрібує secrets management. Sentry інтеграція проста. Залежить тільки від Task 1."
+		},
+		{
+			"taskId": 13,
+			"taskTitle": "Analytics Backend та GDPR Compliance",
+			"complexityScore": 5,
+			"recommendedSubtasks": 5,
+			"expansionPrompt": "Розбий завдання Analytics та GDPR на підзадачі: 1) Створення app/schemas/analytics.py з EventRequest, EventBatchRequest, DataExportResponse, 2) Створення app/services/analytics.py з track_event, track_events_batch (до 100 events), 3) GDPR endpoints: export_user_data (JSON з усіма даними), delete_user_data (hard delete), 4) Rate Limiting middleware: Redis-based, per-user (100 req/min), per-IP (1000 req/min), 429 з Retry-After header, 5) Event retention: 90 днів, anonymization після 30 днів, optional PostHog/Amplitude forward",
+			"reasoning": "Середня складність. Event tracking стандартний. GDPR compliance вимагає повного збору та видалення всіх user data з усіх таблиць (orphan data check). Rate limiting через Redis стандартний патерн. Anonymization job для старих events. Optional external analytics integration. Залежить від Tasks 3 та 5."
+		}
+	]
+}

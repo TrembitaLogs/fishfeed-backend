@@ -1,0 +1,3827 @@
+[
+  {
+    "id": "betta-splendens",
+    "common_name": "Betta",
+    "scientific_name": "Betta splendens",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "2-3 pellets per feeding",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": true
+    },
+    "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/95/Betta_splendens_male.jpg/320px-Betta_splendens_male.jpg"
+  },
+  {
+    "id": "guppy",
+    "common_name": "Guppy",
+    "scientific_name": "Poecilia reticulata",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small pinch of flakes",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 6.8,
+      "ph_max": 7.8,
+      "is_popular": true
+    },
+    "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/22/Guppy_copance_17.jpg/320px-Guppy_copance_17.jpg"
+  },
+  {
+    "id": "neon-tetra",
+    "common_name": "Neon Tetra",
+    "scientific_name": "Paracheirodon innesi",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Tiny pinch for school of 6",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 20,
+      "temperature_max": 26,
+      "ph_min": 6.0,
+      "ph_max": 7.0,
+      "is_popular": true
+    },
+    "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f2/Neonsalmler_Paracheirodon_innesi.jpg/320px-Neonsalmler_Paracheirodon_innesi.jpg"
+  },
+  {
+    "id": "goldfish-common",
+    "common_name": "Common Goldfish",
+    "scientific_name": "Carassius auratus",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Amount eaten in 2 minutes",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 10,
+      "temperature_max": 24,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": true
+    },
+    "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e9/Goldfish3.jpg/320px-Goldfish3.jpg"
+  },
+  {
+    "id": "angelfish",
+    "common_name": "Angelfish",
+    "scientific_name": "Pterophyllum scalare",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "2-3 pellets per fish",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 30,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": true
+    },
+    "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/2e/Pterophyllum_scalare_-_Freshwater_angelfish.jpg/320px-Pterophyllum_scalare_-_Freshwater_angelfish.jpg"
+  },
+  {
+    "id": "discus",
+    "common_name": "Discus",
+    "scientific_name": "Symphysodon discus",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 3,
+    "portion_hint": "Small portions multiple times",
+    "care_level": "advanced",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 28,
+      "temperature_max": 32,
+      "ph_min": 5.5,
+      "ph_max": 6.8,
+      "is_popular": true
+    },
+    "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/Discus_fish.jpg/320px-Discus_fish.jpg"
+  },
+  {
+    "id": "corydoras-panda",
+    "common_name": "Panda Corydoras",
+    "scientific_name": "Corydoras panda",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Sinking pellets for bottom feeding",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 20,
+      "temperature_max": 25,
+      "ph_min": 6.0,
+      "ph_max": 7.4,
+      "is_popular": true
+    }
+  },
+  {
+    "id": "pleco-common",
+    "common_name": "Common Pleco",
+    "scientific_name": "Hypostomus plecostomus",
+    "food_types": [
+      "algae",
+      "vegetables",
+      "pellets"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Algae wafer at night",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": true
+    }
+  },
+  {
+    "id": "molly-black",
+    "common_name": "Black Molly",
+    "scientific_name": "Poecilia sphenops",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "vegetables",
+      "algae"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small pinch twice daily",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 7.0,
+      "ph_max": 8.5,
+      "is_popular": true
+    }
+  },
+  {
+    "id": "platy",
+    "common_name": "Platy",
+    "scientific_name": "Xiphophorus maculatus",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small pinch for group",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 20,
+      "temperature_max": 26,
+      "ph_min": 7.0,
+      "ph_max": 8.2,
+      "is_popular": true
+    },
+    "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/60/Xiphophorus_maculatus_-_Platy.jpg/320px-Xiphophorus_maculatus_-_Platy.jpg"
+  },
+  {
+    "id": "swordtail",
+    "common_name": "Swordtail",
+    "scientific_name": "Xiphophorus hellerii",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "vegetables",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "What they eat in 2 minutes",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 7.0,
+      "ph_max": 8.4,
+      "is_popular": true
+    },
+    "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a3/Xiphophorus_helleri_01.jpg/320px-Xiphophorus_helleri_01.jpg"
+  },
+  {
+    "id": "cardinal-tetra",
+    "common_name": "Cardinal Tetra",
+    "scientific_name": "Paracheirodon axelrodi",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Tiny amounts for school",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 23,
+      "temperature_max": 27,
+      "ph_min": 4.5,
+      "ph_max": 6.5,
+      "is_popular": true
+    },
+    "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c9/Paracheirodon_axelrodi.jpg/320px-Paracheirodon_axelrodi.jpg"
+  },
+  {
+    "id": "zebra-danio",
+    "common_name": "Zebra Danio",
+    "scientific_name": "Danio rerio",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small pinch for active swimmers",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 18,
+      "temperature_max": 25,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": true
+    },
+    "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f0/Zebrafisch.jpg/320px-Zebrafisch.jpg"
+  },
+  {
+    "id": "cherry-barb",
+    "common_name": "Cherry Barb",
+    "scientific_name": "Puntius titteya",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small portions twice daily",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 23,
+      "temperature_max": 27,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": true
+    },
+    "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/b1/Puntius_titteya.jpg/320px-Puntius_titteya.jpg"
+  },
+  {
+    "id": "dwarf-gourami",
+    "common_name": "Dwarf Gourami",
+    "scientific_name": "Trichogaster lalius",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "2-3 pellets per fish",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": true
+    },
+    "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0d/Colisa_lalia.jpg/320px-Colisa_lalia.jpg"
+  },
+  {
+    "id": "oscar",
+    "common_name": "Oscar",
+    "scientific_name": "Astronotus ocellatus",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Large pellets, skip 1 day per week",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 23,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 8.0,
+      "is_popular": true
+    },
+    "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/b2/Astronotus_ocellatus.jpg/320px-Astronotus_ocellatus.jpg"
+  },
+  {
+    "id": "clown-loach",
+    "common_name": "Clown Loach",
+    "scientific_name": "Chromobotia macracanthus",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Sinking pellets in evening",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 25,
+      "temperature_max": 30,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": true
+    },
+    "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/30/Chromobotia_macracanthus.jpg/320px-Chromobotia_macracanthus.jpg"
+  },
+  {
+    "id": "harlequin-rasbora",
+    "common_name": "Harlequin Rasbora",
+    "scientific_name": "Trigonostigma heteromorpha",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small pinch for school",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 27,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": true
+    }
+  },
+  {
+    "id": "endler-livebearer",
+    "common_name": "Endler's Livebearer",
+    "scientific_name": "Poecilia wingei",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Tiny pinch for nano fish",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "tiger-barb",
+    "common_name": "Tiger Barb",
+    "scientific_name": "Puntigrus tetrazona",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small portions for active fish",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "rummy-nose-tetra",
+    "common_name": "Rummy Nose Tetra",
+    "scientific_name": "Hemigrammus rhodostomus",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small amounts for school",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 5.5,
+      "ph_max": 7.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "black-skirt-tetra",
+    "common_name": "Black Skirt Tetra",
+    "scientific_name": "Gymnocorymbus ternetzi",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Standard tetra portions",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 20,
+      "temperature_max": 26,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "rosy-barb",
+    "common_name": "Rosy Barb",
+    "scientific_name": "Pethia conchonius",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Moderate portions for active fish",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 18,
+      "temperature_max": 25,
+      "ph_min": 6.0,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "denison-barb",
+    "common_name": "Denison Barb",
+    "scientific_name": "Sahyadria denisonii",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Varied diet for schooling fish",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 15,
+      "temperature_max": 25,
+      "ph_min": 6.5,
+      "ph_max": 7.8,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "german-blue-ram",
+    "common_name": "German Blue Ram",
+    "scientific_name": "Mikrogeophagus ramirezi",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small high-quality portions",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 26,
+      "temperature_max": 30,
+      "ph_min": 5.5,
+      "ph_max": 7.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "apistogramma-cacatuoides",
+    "common_name": "Cockatoo Dwarf Cichlid",
+    "scientific_name": "Apistogramma cacatuoides",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small cichlid pellets",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "corydoras-sterbai",
+    "common_name": "Sterbai Corydoras",
+    "scientific_name": "Corydoras sterbai",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Sinking wafers for bottom",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.6,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "corydoras-aeneus",
+    "common_name": "Bronze Corydoras",
+    "scientific_name": "Corydoras aeneus",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Sinking pellets at feeding time",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 26,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "corydoras-paleatus",
+    "common_name": "Peppered Corydoras",
+    "scientific_name": "Corydoras paleatus",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Bottom feeder tablets",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 18,
+      "temperature_max": 25,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "corydoras-julii",
+    "common_name": "Julii Corydoras",
+    "scientific_name": "Corydoras julii",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Sinking foods for groups",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 26,
+      "ph_min": 6.0,
+      "ph_max": 7.2,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "otocinclus",
+    "common_name": "Otocinclus",
+    "scientific_name": "Otocinclus vittatus",
+    "food_types": [
+      "algae",
+      "vegetables"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Algae wafer supplement",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 26,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "synodontis-petricola",
+    "common_name": "Pygmy Synodontis",
+    "scientific_name": "Synodontis petricola",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Night feeding preferred",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 7.5,
+      "ph_max": 8.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "bristlenose-pleco",
+    "common_name": "Bristlenose Pleco",
+    "scientific_name": "Ancistrus cirrhosus",
+    "food_types": [
+      "algae",
+      "vegetables",
+      "pellets"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Algae wafer at night",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    },
+    "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4a/Ancistrus_sp.jpg/320px-Ancistrus_sp.jpg"
+  },
+  {
+    "id": "pearl-gourami",
+    "common_name": "Pearl Gourami",
+    "scientific_name": "Trichopodus leerii",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Varied diet twice daily",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    },
+    "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/b8/Trichogaster_leeri.jpg/320px-Trichogaster_leeri.jpg"
+  },
+  {
+    "id": "honey-gourami",
+    "common_name": "Honey Gourami",
+    "scientific_name": "Trichogaster chuna",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small portions for shy fish",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "three-spot-gourami",
+    "common_name": "Three Spot Gourami",
+    "scientific_name": "Trichopodus trichopterus",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Moderate portions",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "paradise-fish",
+    "common_name": "Paradise Fish",
+    "scientific_name": "Macropodus opercularis",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Varied protein-rich diet",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 16,
+      "temperature_max": 26,
+      "ph_min": 6.0,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "goldfish-fantail",
+    "common_name": "Fantail Goldfish",
+    "scientific_name": "Carassius auratus",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Sinking pellets preferred",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 10,
+      "temperature_max": 24,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "goldfish-oranda",
+    "common_name": "Oranda Goldfish",
+    "scientific_name": "Carassius auratus",
+    "food_types": [
+      "pellets",
+      "vegetables",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "High-quality pellets",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 18,
+      "temperature_max": 24,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "goldfish-ranchu",
+    "common_name": "Ranchu Goldfish",
+    "scientific_name": "Carassius auratus",
+    "food_types": [
+      "pellets",
+      "vegetables",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Sinking pellets for fancy variety",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 18,
+      "temperature_max": 24,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "goldfish-ryukin",
+    "common_name": "Ryukin Goldfish",
+    "scientific_name": "Carassius auratus",
+    "food_types": [
+      "pellets",
+      "vegetables",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Sinking pellets",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 18,
+      "temperature_max": 24,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "goldfish-black-moor",
+    "common_name": "Black Moor Goldfish",
+    "scientific_name": "Carassius auratus",
+    "food_types": [
+      "pellets",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Sinking pellets for poor eyesight",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 18,
+      "temperature_max": 24,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "goldfish-shubunkin",
+    "common_name": "Shubunkin Goldfish",
+    "scientific_name": "Carassius auratus",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Standard goldfish portions",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 10,
+      "temperature_max": 24,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "goldfish-comet",
+    "common_name": "Comet Goldfish",
+    "scientific_name": "Carassius auratus",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Active swimmer needs more food",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 10,
+      "temperature_max": 24,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "galaxy-rasbora",
+    "common_name": "Celestial Pearl Danio",
+    "scientific_name": "Danio margaritatus",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Tiny portions for nano fish",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 20,
+      "temperature_max": 25,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "chili-rasbora",
+    "common_name": "Chili Rasbora",
+    "scientific_name": "Boraras brigittae",
+    "food_types": [
+      "flakes",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Crushed flakes for tiny fish",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 4.0,
+      "ph_max": 7.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "pearl-danio",
+    "common_name": "Pearl Danio",
+    "scientific_name": "Danio albolineatus",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Active fish need regular feeding",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 18,
+      "temperature_max": 25,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "giant-danio",
+    "common_name": "Giant Danio",
+    "scientific_name": "Devario aequipinnatus",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Larger portions for active fish",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 26,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "kuhli-loach",
+    "common_name": "Kuhli Loach",
+    "scientific_name": "Pangio kuhlii",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Sinking foods at night",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 30,
+      "ph_min": 5.5,
+      "ph_max": 7.0,
+      "is_popular": false
+    },
+    "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a4/Pangio_kuhlii.jpg/320px-Pangio_kuhlii.jpg"
+  },
+  {
+    "id": "yoyo-loach",
+    "common_name": "Yoyo Loach",
+    "scientific_name": "Botia almorhae",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Varied sinking foods",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "hillstream-loach",
+    "common_name": "Hillstream Loach",
+    "scientific_name": "Sewellia lineolata",
+    "food_types": [
+      "algae",
+      "vegetables",
+      "pellets"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Algae-based foods",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 18,
+      "temperature_max": 24,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "ember-tetra",
+    "common_name": "Ember Tetra",
+    "scientific_name": "Hyphessobrycon amandae",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Tiny portions for nano fish",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 23,
+      "temperature_max": 29,
+      "ph_min": 5.5,
+      "ph_max": 7.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "glowlight-tetra",
+    "common_name": "Glowlight Tetra",
+    "scientific_name": "Hemigrammus erythrozonus",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small school portions",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 5.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "lemon-tetra",
+    "common_name": "Lemon Tetra",
+    "scientific_name": "Hyphessobrycon pulchripinnis",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Standard tetra diet",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 23,
+      "temperature_max": 28,
+      "ph_min": 5.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "serpae-tetra",
+    "common_name": "Serpae Tetra",
+    "scientific_name": "Hyphessobrycon eques",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Varied diet for active fish",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 26,
+      "ph_min": 5.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "diamond-tetra",
+    "common_name": "Diamond Tetra",
+    "scientific_name": "Moenkhausia pittieri",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Regular tetra portions",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 5.5,
+      "ph_max": 7.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "bleeding-heart-tetra",
+    "common_name": "Bleeding Heart Tetra",
+    "scientific_name": "Hyphessobrycon erythrostigma",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Moderate school portions",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 23,
+      "temperature_max": 28,
+      "ph_min": 5.5,
+      "ph_max": 7.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "congo-tetra",
+    "common_name": "Congo Tetra",
+    "scientific_name": "Phenacogrammus interruptus",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Larger tetra needs more food",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 23,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "buenos-aires-tetra",
+    "common_name": "Buenos Aires Tetra",
+    "scientific_name": "Hyphessobrycon anisitsi",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Include plant matter",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 18,
+      "temperature_max": 28,
+      "ph_min": 5.8,
+      "ph_max": 8.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "penguin-tetra",
+    "common_name": "Penguin Tetra",
+    "scientific_name": "Thayeria boehlkei",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Standard tetra diet",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 5.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "green-neon-tetra",
+    "common_name": "Green Neon Tetra",
+    "scientific_name": "Paracheirodon simulans",
+    "food_types": [
+      "flakes",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Tiny crushed portions",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 30,
+      "ph_min": 5.0,
+      "ph_max": 6.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "silvertip-tetra",
+    "common_name": "Silvertip Tetra",
+    "scientific_name": "Hasemania nana",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Active fish regular feeding",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "gold-barb",
+    "common_name": "Gold Barb",
+    "scientific_name": "Barbodes semifasciolatus",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Varied omnivore diet",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 18,
+      "temperature_max": 25,
+      "ph_min": 6.0,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "checkerboard-barb",
+    "common_name": "Checkerboard Barb",
+    "scientific_name": "Oliotius oligolepis",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small regular portions",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 20,
+      "temperature_max": 25,
+      "ph_min": 6.0,
+      "ph_max": 7.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "five-banded-barb",
+    "common_name": "Five Banded Barb",
+    "scientific_name": "Desmopuntius pentazona",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Moderate school portions",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 26,
+      "ph_min": 5.0,
+      "ph_max": 7.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "tinfoil-barb",
+    "common_name": "Tinfoil Barb",
+    "scientific_name": "Barbonymus schwanenfeldii",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "vegetables",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Large portions for big fish",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 27,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "african-cichlid-yellow-lab",
+    "common_name": "Yellow Lab Cichlid",
+    "scientific_name": "Labidochromis caeruleus",
+    "food_types": [
+      "pellets",
+      "flakes",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Cichlid pellets",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 7.6,
+      "ph_max": 8.6,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "african-cichlid-mbuna-kenyi",
+    "common_name": "Kenyi Cichlid",
+    "scientific_name": "Maylandia lombardoi",
+    "food_types": [
+      "pellets",
+      "vegetables",
+      "algae"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Herbivore cichlid diet",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 7.6,
+      "ph_max": 8.6,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "african-cichlid-peacock",
+    "common_name": "Peacock Cichlid",
+    "scientific_name": "Aulonocara stuartgranti",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "High protein cichlid food",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 7.8,
+      "ph_max": 8.6,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "african-cichlid-frontosa",
+    "common_name": "Frontosa Cichlid",
+    "scientific_name": "Cyphotilapia frontosa",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Large protein-rich portions",
+    "care_level": "advanced",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 7.8,
+      "ph_max": 9.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "african-cichlid-tropheus",
+    "common_name": "Tropheus Cichlid",
+    "scientific_name": "Tropheus duboisi",
+    "food_types": [
+      "vegetables",
+      "algae",
+      "pellets"
+    ],
+    "feeding_frequency": 3,
+    "portion_hint": "Herbivore diet multiple times",
+    "care_level": "advanced",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 7.8,
+      "ph_max": 9.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "kribensis",
+    "common_name": "Kribensis",
+    "scientific_name": "Pelvicachromis pulcher",
+    "food_types": [
+      "pellets",
+      "flakes",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Varied diet for pair",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 5.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "convict-cichlid",
+    "common_name": "Convict Cichlid",
+    "scientific_name": "Amatitlania nigrofasciata",
+    "food_types": [
+      "pellets",
+      "flakes",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Omnivore cichlid diet",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "firemouth-cichlid",
+    "common_name": "Firemouth Cichlid",
+    "scientific_name": "Thorichthys meeki",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Protein-rich cichlid diet",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 30,
+      "ph_min": 6.5,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "jack-dempsey",
+    "common_name": "Jack Dempsey",
+    "scientific_name": "Rocio octofasciata",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Large carnivore portions",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "green-terror",
+    "common_name": "Green Terror",
+    "scientific_name": "Andinoacara rivulatus",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Protein-rich large portions",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 20,
+      "temperature_max": 26,
+      "ph_min": 6.5,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "blood-parrot-cichlid",
+    "common_name": "Blood Parrot Cichlid",
+    "scientific_name": "Hybrid",
+    "food_types": [
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small pellets for mouth shape",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "severum",
+    "common_name": "Severum",
+    "scientific_name": "Heros severus",
+    "food_types": [
+      "pellets",
+      "vegetables",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Omnivore varied diet",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "electric-blue-acara",
+    "common_name": "Electric Blue Acara",
+    "scientific_name": "Andinoacara pulcher",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "High quality cichlid food",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "bolivian-ram",
+    "common_name": "Bolivian Ram",
+    "scientific_name": "Mikrogeophagus altispinosus",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small high-quality food",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 26,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "apistogramma-borellii",
+    "common_name": "Umbrella Dwarf Cichlid",
+    "scientific_name": "Apistogramma borellii",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small protein portions",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 20,
+      "temperature_max": 26,
+      "ph_min": 5.5,
+      "ph_max": 7.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "apistogramma-agassizii",
+    "common_name": "Agassizi's Dwarf Cichlid",
+    "scientific_name": "Apistogramma agassizii",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small meaty foods",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 5.0,
+      "ph_max": 6.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "keyhole-cichlid",
+    "common_name": "Keyhole Cichlid",
+    "scientific_name": "Cleithracara maronii",
+    "food_types": [
+      "pellets",
+      "flakes",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Peaceful cichlid varied diet",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "sailfin-molly",
+    "common_name": "Sailfin Molly",
+    "scientific_name": "Poecilia latipinna",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "vegetables",
+      "algae"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Herbivore livebearer diet",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 20,
+      "temperature_max": 28,
+      "ph_min": 7.0,
+      "ph_max": 8.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "dalmatian-molly",
+    "common_name": "Dalmatian Molly",
+    "scientific_name": "Poecilia latipinna",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Standard molly diet",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 7.0,
+      "ph_max": 8.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "balloon-molly",
+    "common_name": "Balloon Molly",
+    "scientific_name": "Poecilia sphenops",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small frequent meals",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 7.0,
+      "ph_max": 8.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "lyretail-molly",
+    "common_name": "Lyretail Molly",
+    "scientific_name": "Poecilia sphenops",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "vegetables",
+      "algae"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Varied molly diet",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 7.0,
+      "ph_max": 8.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "variatus-platy",
+    "common_name": "Variatus Platy",
+    "scientific_name": "Xiphophorus variatus",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Standard platy portions",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 18,
+      "temperature_max": 26,
+      "ph_min": 7.0,
+      "ph_max": 8.2,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "mickey-mouse-platy",
+    "common_name": "Mickey Mouse Platy",
+    "scientific_name": "Xiphophorus maculatus",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small regular feedings",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 20,
+      "temperature_max": 26,
+      "ph_min": 7.0,
+      "ph_max": 8.2,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "red-wag-platy",
+    "common_name": "Red Wag Platy",
+    "scientific_name": "Xiphophorus maculatus",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Moderate platy diet",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 20,
+      "temperature_max": 26,
+      "ph_min": 7.0,
+      "ph_max": 8.2,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "green-swordtail",
+    "common_name": "Green Swordtail",
+    "scientific_name": "Xiphophorus hellerii",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Varied livebearer diet",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 7.0,
+      "ph_max": 8.4,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "pineapple-swordtail",
+    "common_name": "Pineapple Swordtail",
+    "scientific_name": "Xiphophorus hellerii",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Standard swordtail diet",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 7.0,
+      "ph_max": 8.4,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "fancy-guppy",
+    "common_name": "Fancy Guppy",
+    "scientific_name": "Poecilia reticulata",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small pinch twice daily",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 6.8,
+      "ph_max": 7.8,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "moscow-guppy",
+    "common_name": "Moscow Guppy",
+    "scientific_name": "Poecilia reticulata",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "High quality small portions",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 6.8,
+      "ph_max": 7.8,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "cobra-guppy",
+    "common_name": "Cobra Guppy",
+    "scientific_name": "Poecilia reticulata",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Standard guppy diet",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 6.8,
+      "ph_max": 7.8,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "siamese-fighting-fish",
+    "common_name": "Siamese Fighting Fish",
+    "scientific_name": "Betta splendens",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "2-3 pellets per feeding",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    },
+    "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/95/Betta_splendens_male.jpg/320px-Betta_splendens_male.jpg"
+  },
+  {
+    "id": "betta-halfmoon",
+    "common_name": "Halfmoon Betta",
+    "scientific_name": "Betta splendens",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "3-4 pellets twice daily",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "betta-crowntail",
+    "common_name": "Crowntail Betta",
+    "scientific_name": "Betta splendens",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small betta pellets",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "betta-plakat",
+    "common_name": "Plakat Betta",
+    "scientific_name": "Betta splendens",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "High protein betta food",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "betta-female",
+    "common_name": "Female Betta",
+    "scientific_name": "Betta splendens",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small regular portions",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "rainbow-shark",
+    "common_name": "Rainbow Shark",
+    "scientific_name": "Epalzeorhynchos frenatum",
+    "food_types": [
+      "pellets",
+      "vegetables",
+      "algae",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Sinking omnivore food",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "red-tail-shark",
+    "common_name": "Red Tail Shark",
+    "scientific_name": "Epalzeorhynchos bicolor",
+    "food_types": [
+      "pellets",
+      "vegetables",
+      "algae",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Varied sinking foods",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 26,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "bala-shark",
+    "common_name": "Bala Shark",
+    "scientific_name": "Balantiocheilos melanopterus",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Large omnivore portions",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "siamese-algae-eater",
+    "common_name": "Siamese Algae Eater",
+    "scientific_name": "Crossocheilus siamensis",
+    "food_types": [
+      "algae",
+      "vegetables",
+      "pellets"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Supplement with algae wafers",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "chinese-algae-eater",
+    "common_name": "Chinese Algae Eater",
+    "scientific_name": "Gyrinocheilus aymonieri",
+    "food_types": [
+      "algae",
+      "vegetables",
+      "pellets"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Algae and sinking foods",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "flying-fox",
+    "common_name": "Flying Fox",
+    "scientific_name": "Epalzeorhynchos kalopterum",
+    "food_types": [
+      "algae",
+      "vegetables",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Algae and varied diet",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "rubber-lip-pleco",
+    "common_name": "Rubber Lip Pleco",
+    "scientific_name": "Chaetostoma formosae",
+    "food_types": [
+      "algae",
+      "vegetables",
+      "pellets"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Algae and plant matter",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 26,
+      "ph_min": 6.5,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "clown-pleco",
+    "common_name": "Clown Pleco",
+    "scientific_name": "Panaque maccus",
+    "food_types": [
+      "vegetables",
+      "algae",
+      "pellets"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Wood and veggie diet",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "royal-pleco",
+    "common_name": "Royal Pleco",
+    "scientific_name": "Panaque nigrolineatus",
+    "food_types": [
+      "vegetables",
+      "algae",
+      "pellets"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Wood-heavy diet",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "zebra-pleco",
+    "common_name": "Zebra Pleco",
+    "scientific_name": "Hypancistrus zebra",
+    "food_types": [
+      "frozen",
+      "live",
+      "pellets"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "High protein carnivore diet",
+    "care_level": "advanced",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 26,
+      "temperature_max": 32,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "whiptail-catfish",
+    "common_name": "Whiptail Catfish",
+    "scientific_name": "Rineloricaria lanceolata",
+    "food_types": [
+      "algae",
+      "vegetables",
+      "pellets"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Algae and sinking foods",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 26,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "pictus-catfish",
+    "common_name": "Pictus Catfish",
+    "scientific_name": "Pimelodus pictus",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Night feeding carnivore",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "upside-down-catfish",
+    "common_name": "Upside Down Catfish",
+    "scientific_name": "Synodontis nigriventris",
+    "food_types": [
+      "pellets",
+      "flakes",
+      "frozen"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Surface and sinking foods",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 26,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "synodontis-eupterus",
+    "common_name": "Featherfin Synodontis",
+    "scientific_name": "Synodontis eupterus",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "vegetables"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Omnivore sinking foods",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 26,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "glass-catfish",
+    "common_name": "Glass Catfish",
+    "scientific_name": "Kryptopterus vitreolus",
+    "food_types": [
+      "frozen",
+      "live",
+      "flakes"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small live or frozen foods",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "striped-raphael-catfish",
+    "common_name": "Striped Raphael Catfish",
+    "scientific_name": "Platydoras armatulus",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Nocturnal sinking foods",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "asian-stone-catfish",
+    "common_name": "Asian Stone Catfish",
+    "scientific_name": "Hara jerdoni",
+    "food_types": [
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Tiny live foods",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 18,
+      "temperature_max": 24,
+      "ph_min": 5.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "dojo-loach",
+    "common_name": "Dojo Loach",
+    "scientific_name": "Misgurnus anguillicaudatus",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Sinking omnivore diet",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 18,
+      "temperature_max": 24,
+      "ph_min": 6.0,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "zebra-loach",
+    "common_name": "Zebra Loach",
+    "scientific_name": "Botia striata",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small sinking foods",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 21,
+      "temperature_max": 26,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "dwarf-chain-loach",
+    "common_name": "Dwarf Chain Loach",
+    "scientific_name": "Ambastaia sidthimunki",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small active fish portions",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 25,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "horsface-loach",
+    "common_name": "Horseface Loach",
+    "scientific_name": "Acantopsis dialuzona",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Sinking foods for burrower",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "boesemans-rainbowfish",
+    "common_name": "Boeseman's Rainbowfish",
+    "scientific_name": "Melanotaenia boesemani",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Varied colorful fish diet",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 7.0,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "turquoise-rainbowfish",
+    "common_name": "Turquoise Rainbowfish",
+    "scientific_name": "Melanotaenia lacustris",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Active schooler diet",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 26,
+      "ph_min": 7.0,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "red-rainbowfish",
+    "common_name": "Red Rainbowfish",
+    "scientific_name": "Glossolepis incisus",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "High quality varied diet",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 7.0,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "threadfin-rainbowfish",
+    "common_name": "Threadfin Rainbowfish",
+    "scientific_name": "Iriatherina werneri",
+    "food_types": [
+      "flakes",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small delicate fish food",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 30,
+      "ph_min": 5.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "forktail-rainbowfish",
+    "common_name": "Forktail Blue Eye",
+    "scientific_name": "Pseudomugil furcatus",
+    "food_types": [
+      "flakes",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small frequent meals",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 7.0,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "praecox-rainbowfish",
+    "common_name": "Dwarf Neon Rainbowfish",
+    "scientific_name": "Melanotaenia praecox",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small varied diet",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "killifish-lyretail",
+    "common_name": "Lyretail Killifish",
+    "scientific_name": "Aphyosemion australe",
+    "food_types": [
+      "frozen",
+      "live",
+      "flakes"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Live and frozen preferred",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 21,
+      "temperature_max": 26,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "killifish-gardneri",
+    "common_name": "Blue Lyretail Killifish",
+    "scientific_name": "Fundulopanchax gardneri",
+    "food_types": [
+      "frozen",
+      "live",
+      "flakes"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Protein-rich small foods",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 26,
+      "ph_min": 6.0,
+      "ph_max": 7.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "clown-killifish",
+    "common_name": "Clown Killifish",
+    "scientific_name": "Epiplatys annulatus",
+    "food_types": [
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Tiny surface foods",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 23,
+      "temperature_max": 27,
+      "ph_min": 6.0,
+      "ph_max": 7.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "normans-lampeye",
+    "common_name": "Norman's Lampeye",
+    "scientific_name": "Aplocheilichthys normani",
+    "food_types": [
+      "flakes",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Crushed flakes for nano fish",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 26,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "axolotl",
+    "common_name": "Axolotl",
+    "scientific_name": "Ambystoma mexicanum",
+    "food_types": [
+      "frozen",
+      "live",
+      "pellets"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Earthworms and pellets",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 16,
+      "temperature_max": 20,
+      "ph_min": 6.5,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "african-dwarf-frog",
+    "common_name": "African Dwarf Frog",
+    "scientific_name": "Hymenochirus boettgeri",
+    "food_types": [
+      "frozen",
+      "live",
+      "pellets"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Sinking frog pellets",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 26,
+      "ph_min": 6.5,
+      "ph_max": 7.8,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "mystery-snail",
+    "common_name": "Mystery Snail",
+    "scientific_name": "Pomacea bridgesii",
+    "food_types": [
+      "vegetables",
+      "algae",
+      "pellets"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Calcium-rich vegetables",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 20,
+      "temperature_max": 28,
+      "ph_min": 7.0,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "nerite-snail",
+    "common_name": "Nerite Snail",
+    "scientific_name": "Neritina natalensis",
+    "food_types": [
+      "algae",
+      "vegetables"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Algae supplement if needed",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 7.0,
+      "ph_max": 8.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "assassin-snail",
+    "common_name": "Assassin Snail",
+    "scientific_name": "Clea helena",
+    "food_types": [
+      "live",
+      "frozen"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Pest snails or meaty foods",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 7.0,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "rabbit-snail",
+    "common_name": "Rabbit Snail",
+    "scientific_name": "Tylomelania sp.",
+    "food_types": [
+      "vegetables",
+      "algae",
+      "pellets"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Calcium-rich plant matter",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 26,
+      "temperature_max": 30,
+      "ph_min": 7.5,
+      "ph_max": 8.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "cherry-shrimp",
+    "common_name": "Cherry Shrimp",
+    "scientific_name": "Neocaridina davidi",
+    "food_types": [
+      "algae",
+      "vegetables",
+      "pellets"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Biofilm and shrimp food",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 18,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "amano-shrimp",
+    "common_name": "Amano Shrimp",
+    "scientific_name": "Caridina multidentata",
+    "food_types": [
+      "algae",
+      "vegetables",
+      "pellets"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Algae and biofilm primary",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 18,
+      "temperature_max": 26,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "crystal-red-shrimp",
+    "common_name": "Crystal Red Shrimp",
+    "scientific_name": "Caridina cantonensis",
+    "food_types": [
+      "vegetables",
+      "pellets",
+      "algae"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Specialized shrimp food",
+    "care_level": "advanced",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 20,
+      "temperature_max": 24,
+      "ph_min": 5.8,
+      "ph_max": 6.8,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "ghost-shrimp",
+    "common_name": "Ghost Shrimp",
+    "scientific_name": "Palaemonetes paludosus",
+    "food_types": [
+      "algae",
+      "vegetables",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Detritus and supplements",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 18,
+      "temperature_max": 28,
+      "ph_min": 7.0,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "bamboo-shrimp",
+    "common_name": "Bamboo Shrimp",
+    "scientific_name": "Atyopsis moluccensis",
+    "food_types": [
+      "flakes",
+      "pellets"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Crushed food in current",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "blue-velvet-shrimp",
+    "common_name": "Blue Velvet Shrimp",
+    "scientific_name": "Neocaridina davidi",
+    "food_types": [
+      "algae",
+      "vegetables",
+      "pellets"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Shrimp-specific foods",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 18,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "vampire-shrimp",
+    "common_name": "Vampire Shrimp",
+    "scientific_name": "Atya gabonensis",
+    "food_types": [
+      "flakes",
+      "pellets"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Powdered food in current",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "espei-rasbora",
+    "common_name": "Lambchop Rasbora",
+    "scientific_name": "Trigonostigma espei",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small school portions",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 23,
+      "temperature_max": 28,
+      "ph_min": 5.5,
+      "ph_max": 7.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "scissortail-rasbora",
+    "common_name": "Scissortail Rasbora",
+    "scientific_name": "Rasbora trilineata",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Active swimmer portions",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 26,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "brilliant-rasbora",
+    "common_name": "Brilliant Rasbora",
+    "scientific_name": "Rasbora einthovenii",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Regular school feeding",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 26,
+      "ph_min": 6.0,
+      "ph_max": 7.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "phoenix-rasbora",
+    "common_name": "Phoenix Rasbora",
+    "scientific_name": "Boraras merah",
+    "food_types": [
+      "flakes",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Tiny nano fish food",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 4.0,
+      "ph_max": 7.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "strawberry-rasbora",
+    "common_name": "Strawberry Rasbora",
+    "scientific_name": "Boraras naevus",
+    "food_types": [
+      "flakes",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Crushed micro foods",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 4.0,
+      "ph_max": 7.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "exclamation-point-rasbora",
+    "common_name": "Exclamation Point Rasbora",
+    "scientific_name": "Boraras urophthalmoides",
+    "food_types": [
+      "flakes",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Micro portions",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 23,
+      "temperature_max": 28,
+      "ph_min": 5.0,
+      "ph_max": 7.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "leopard-danio",
+    "common_name": "Leopard Danio",
+    "scientific_name": "Danio rerio var. frankei",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Active fish portions",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 18,
+      "temperature_max": 25,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "gold-ring-danio",
+    "common_name": "Gold Ring Danio",
+    "scientific_name": "Danio tinwini",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small danio food",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 20,
+      "temperature_max": 26,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "spotted-danio",
+    "common_name": "Spotted Danio",
+    "scientific_name": "Danio nigrofasciatus",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Regular danio diet",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 26,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "glowlight-danio",
+    "common_name": "Glowlight Danio",
+    "scientific_name": "Danio choprae",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "School feeding portions",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 20,
+      "temperature_max": 26,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "white-cloud-mountain-minnow",
+    "common_name": "White Cloud Mountain Minnow",
+    "scientific_name": "Tanichthys albonubes",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Cold water fish diet",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 15,
+      "temperature_max": 22,
+      "ph_min": 6.0,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "ricefish-medaka",
+    "common_name": "Japanese Ricefish",
+    "scientific_name": "Oryzias latipes",
+    "food_types": [
+      "flakes",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small surface feeder diet",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 15,
+      "temperature_max": 28,
+      "ph_min": 7.0,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "pea-puffer",
+    "common_name": "Pea Puffer",
+    "scientific_name": "Carinotetraodon travancoricus",
+    "food_types": [
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Snails and frozen foods",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 22,
+      "temperature_max": 28,
+      "ph_min": 6.8,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "figure-eight-puffer",
+    "common_name": "Figure Eight Puffer",
+    "scientific_name": "Dichotomyctere ocellatus",
+    "food_types": [
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Shellfish and snails",
+    "care_level": "intermediate",
+    "water_type": "brackish",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 7.5,
+      "ph_max": 8.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "green-spotted-puffer",
+    "common_name": "Green Spotted Puffer",
+    "scientific_name": "Dichotomyctere nigroviridis",
+    "food_types": [
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Hard-shelled foods",
+    "care_level": "advanced",
+    "water_type": "brackish",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 7.5,
+      "ph_max": 8.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "archer-fish",
+    "common_name": "Archer Fish",
+    "scientific_name": "Toxotes jaculatrix",
+    "food_types": [
+      "live",
+      "frozen",
+      "pellets"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Insects and floating foods",
+    "care_level": "intermediate",
+    "water_type": "brackish",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 30,
+      "ph_min": 7.0,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "bumblebee-goby",
+    "common_name": "Bumblebee Goby",
+    "scientific_name": "Brachygobius xanthomelas",
+    "food_types": [
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Live and frozen only",
+    "care_level": "intermediate",
+    "water_type": "brackish",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 7.5,
+      "ph_max": 8.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "indian-glassfish",
+    "common_name": "Indian Glassfish",
+    "scientific_name": "Parambassis ranga",
+    "food_types": [
+      "frozen",
+      "live",
+      "flakes"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small live foods preferred",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 20,
+      "temperature_max": 28,
+      "ph_min": 7.0,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "scarlet-badis",
+    "common_name": "Scarlet Badis",
+    "scientific_name": "Dario dario",
+    "food_types": [
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Live foods required",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 18,
+      "temperature_max": 26,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "wrestling-halfbeak",
+    "common_name": "Wrestling Halfbeak",
+    "scientific_name": "Dermogenys pusilla",
+    "food_types": [
+      "flakes",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Surface floating foods",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 7.0,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "elephant-nose-fish",
+    "common_name": "Elephant Nose Fish",
+    "scientific_name": "Gnathonemus petersii",
+    "food_types": [
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Bloodworms at night",
+    "care_level": "advanced",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "african-butterfly-fish",
+    "common_name": "African Butterfly Fish",
+    "scientific_name": "Pantodon buchholzi",
+    "food_types": [
+      "live",
+      "frozen"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Floating insects and foods",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 30,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "rope-fish",
+    "common_name": "Rope Fish",
+    "scientific_name": "Erpetoichthys calabaricus",
+    "food_types": [
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Meaty foods at night",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "senegal-bichir",
+    "common_name": "Senegal Bichir",
+    "scientific_name": "Polypterus senegalus",
+    "food_types": [
+      "frozen",
+      "live",
+      "pellets"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Carnivore sinking foods",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "spotted-headstander",
+    "common_name": "Spotted Headstander",
+    "scientific_name": "Chilodus punctatus",
+    "food_types": [
+      "vegetables",
+      "algae",
+      "pellets"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Herbivore varied diet",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 5.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "silver-dollar",
+    "common_name": "Silver Dollar",
+    "scientific_name": "Metynnis argenteus",
+    "food_types": [
+      "vegetables",
+      "flakes",
+      "pellets"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Plant-heavy diet",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 5.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "red-belly-piranha",
+    "common_name": "Red Belly Piranha",
+    "scientific_name": "Pygocentrus nattereri",
+    "food_types": [
+      "frozen",
+      "live",
+      "pellets"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Meaty foods sparingly",
+    "care_level": "advanced",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "black-ghost-knifefish",
+    "common_name": "Black Ghost Knifefish",
+    "scientific_name": "Apteronotus albifrons",
+    "food_types": [
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Nocturnal meaty foods",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 23,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "arowana-silver",
+    "common_name": "Silver Arowana",
+    "scientific_name": "Osteoglossum bicirrhosum",
+    "food_types": [
+      "live",
+      "frozen",
+      "pellets"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Large carnivore portions",
+    "care_level": "advanced",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 30,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "pacu",
+    "common_name": "Pacu",
+    "scientific_name": "Piaractus brachypomus",
+    "food_types": [
+      "vegetables",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Large herbivore portions",
+    "care_level": "advanced",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "flowerhorn",
+    "common_name": "Flowerhorn Cichlid",
+    "scientific_name": "Hybrid",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "High protein cichlid food",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 26,
+      "temperature_max": 30,
+      "ph_min": 7.0,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "red-devil-cichlid",
+    "common_name": "Red Devil Cichlid",
+    "scientific_name": "Amphilophus labiatus",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Large carnivore portions",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.5,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "texas-cichlid",
+    "common_name": "Texas Cichlid",
+    "scientific_name": "Herichthys cyanoguttatus",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Omnivore cichlid diet",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 20,
+      "temperature_max": 26,
+      "ph_min": 6.5,
+      "ph_max": 8.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "jaguar-cichlid",
+    "common_name": "Jaguar Cichlid",
+    "scientific_name": "Parachromis managuensis",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 1,
+    "portion_hint": "Large predator diet",
+    "care_level": "advanced",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 7.0,
+      "ph_max": 8.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "festivum-cichlid",
+    "common_name": "Festivum Cichlid",
+    "scientific_name": "Mesonauta festivus",
+    "food_types": [
+      "flakes",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Peaceful cichlid diet",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 24,
+      "temperature_max": 28,
+      "ph_min": 6.0,
+      "ph_max": 7.5,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "uaru-cichlid",
+    "common_name": "Uaru Cichlid",
+    "scientific_name": "Uaru amphiacanthoides",
+    "food_types": [
+      "vegetables",
+      "pellets",
+      "frozen"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Heavy plant diet",
+    "care_level": "advanced",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 26,
+      "temperature_max": 30,
+      "ph_min": 5.5,
+      "ph_max": 7.0,
+      "is_popular": false
+    }
+  },
+  {
+    "id": "geophagus-tapajos",
+    "common_name": "Red Head Tapajos",
+    "scientific_name": "Geophagus sp. Tapajos",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "vegetables"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Sand sifter diet",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 26,
+      "temperature_max": 30,
+      "ph_min": 5.5,
+      "ph_max": 7.0,
+      "is_popular": false
+    }
+  }
+]
