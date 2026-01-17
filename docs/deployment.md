@@ -147,7 +147,7 @@ nano /home/balaganov/docker/fishfeed/.env
 POSTGRES_PASSWORD=<згенеруй: openssl rand -base64 32>
 JWT_SECRET_KEY=<згенеруй: openssl rand -base64 64>
 API_DOMAIN=api.yourdomain.com
-GITHUB_REPOSITORY=TrembitaLogs/fishfeed-backend
+GITHUB_REPOSITORY=trembitalogs/fishfeed-backend
 
 # S3 Storage (Hetzner Object Storage)
 S3_ENDPOINT_URL=https://fsn1.your-objectstorage.com
@@ -165,7 +165,7 @@ APNS_BUNDLE_ID=com.yourcompany.fishfeed
 - [+] `POSTGRES_PASSWORD` — випадковий пароль
 - [+] `JWT_SECRET_KEY` — випадковий секрет
 - [+] `API_DOMAIN` — твій домен
-- [+] `GITHUB_REPOSITORY` — `TrembitaLogs/fishfeed-backend`
+- [+] `GITHUB_REPOSITORY` — `trembitalogs/fishfeed-backend`
 - [ ] S3 credentials — з Hetzner Console
 - [ ] Push notification IDs — з Firebase/Apple
 
@@ -408,7 +408,7 @@ docker compose up -d
 | `POSTGRES_PASSWORD` | Пароль PostgreSQL | `secure-password-here` |
 | `JWT_SECRET_KEY` | Секретний ключ для JWT токенів | `your-256-bit-secret` |
 | `API_DOMAIN` | Домен для API (Traefik routing) | `api.fishfeed.app` |
-| `GITHUB_REPOSITORY` | GitHub репозиторій для image | `TrembitaLogs/fishfeed-backend` |
+| `GITHUB_REPOSITORY` | GitHub репозиторій для image | `trembitalogs/fishfeed-backend` |
 
 ### S3 Storage (Hetzner Object Storage)
 

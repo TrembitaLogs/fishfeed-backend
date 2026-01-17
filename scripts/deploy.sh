@@ -118,7 +118,7 @@ run_migrations() {
     fi
 
     log_info "Running database migrations..."
-    docker compose -f "${COMPOSE_FILE}" run --rm api alembic upgrade head
+    docker compose -f "${COMPOSE_FILE}" run --rm api uv run alembic upgrade head
 }
 
 restart_services() {
