@@ -328,7 +328,7 @@ class S3StorageService:
                 )
 
             logger.info(f"Generated presigned URL for: {object_key}")
-            return url
+            return str(url)
 
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
@@ -358,7 +358,7 @@ class S3StorageService:
                     Bucket=self._settings.S3_BUCKET_NAME,
                     Key=object_key,
                 )
-                return response.get("ContentLength", 0)
+                return int(response.get("ContentLength", 0))
 
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")

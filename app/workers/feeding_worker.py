@@ -20,7 +20,9 @@ import argparse
 import asyncio
 import logging
 import signal
+from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 from apscheduler import AsyncScheduler, ConflictPolicy
 from apscheduler.datastores.sqlalchemy import SQLAlchemyDataStore
@@ -421,7 +423,8 @@ async def run_once(job_name: str | None = None) -> None:
     """
     logger.info(f"Running jobs once (job_name={job_name})")
 
-    jobs = {
+    JobFunc = Callable[[], Awaitable[Any]]
+    jobs: dict[str, tuple[str, JobFunc]] = {
         "create_events": ("create_tomorrow_events", create_tomorrow_events_job),
         "mark_missed": ("mark_overdue_as_missed", mark_overdue_as_missed_job),
         "cleanup": ("cleanup_old_events", cleanup_old_events_job),
@@ -431,6 +434,7 @@ async def run_once(job_name: str | None = None) -> None:
         "analytics_cleanup": ("analytics_cleanup", analytics_cleanup_job),
     }
 
+    jobs_to_run: list[tuple[str, JobFunc]]
     if job_name:
         if job_name not in jobs:
             logger.error(f"Unknown job: {job_name}. Valid: {list(jobs.keys())}")

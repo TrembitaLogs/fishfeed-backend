@@ -21,6 +21,7 @@ import asyncio
 import logging
 import re
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import delete, func, select
 
@@ -43,7 +44,7 @@ PII_PATTERNS = [
 PII_KEYS = {"email", "phone", "name", "first_name", "last_name", "full_name", "address"}
 
 
-def remove_pii_from_properties(properties: dict | None) -> dict:
+def remove_pii_from_properties(properties: dict[str, Any] | None) -> dict[str, Any]:
     """Remove PII from event properties dictionary.
 
     Args:
@@ -55,7 +56,7 @@ def remove_pii_from_properties(properties: dict | None) -> dict:
     if not properties:
         return {}
 
-    cleaned = {}
+    cleaned: dict[str, Any] = {}
     for key, value in properties.items():
         key_lower = key.lower()
 
@@ -165,7 +166,7 @@ async def anonymize_old_events_job(dry_run: bool = False) -> dict:
                 .where(AnalyticsEvent.anonymized_at.is_(None))
             )
             result = await db.execute(count_stmt)
-            remaining_count = result.scalar_one()
+            remaining_count = result.scalar_one()  # type: ignore[assignment]
 
     stats = {
         "job": "anonymize_old_events",

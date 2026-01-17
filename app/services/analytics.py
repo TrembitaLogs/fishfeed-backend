@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 import httpx
@@ -323,7 +324,7 @@ async def export_user_data(
     )
 
     return DataExportResponse(
-        download_url=download_url,
+        download_url=download_url,  # type: ignore[arg-type]
         expires_at=expires_at,
         file_size_bytes=file_size,
         format="json",
@@ -334,7 +335,7 @@ async def _collect_user_data(
     db: AsyncSession,
     user_id: UUID,
     user: User,
-) -> dict:
+) -> dict[str, Any]:
     """Collect all user data from database tables.
 
     Args:
@@ -345,7 +346,7 @@ async def _collect_user_data(
     Returns:
         Dictionary with all user data.
     """
-    export_data = {
+    export_data: dict[str, Any] = {
         "exported_at": datetime.now(UTC).isoformat(),
         "user_id": str(user_id),
         "profile": {
