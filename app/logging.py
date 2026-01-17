@@ -28,12 +28,11 @@ def configure_logging() -> None:
     """Configure structlog for JSON output in production, console in development."""
     settings = get_settings()
 
-    # Shared processors
+    # Shared processors (note: add_logger_name removed - incompatible with PrintLoggerFactory)
     shared_processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,
         add_request_id,
         structlog.stdlib.add_log_level,
-        structlog.stdlib.add_logger_name,
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.UnicodeDecoder(),
