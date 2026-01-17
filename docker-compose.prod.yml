@@ -61,10 +61,13 @@ services:
       - fishfeed-internal
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=traefik_proxy"
       - "traefik.http.routers.fishfeed-api.rule=Host(`${API_DOMAIN}`)"
       - "traefik.http.routers.fishfeed-api.entrypoints=websecure"
       - "traefik.http.routers.fishfeed-api.tls=true"
-      - "traefik.http.routers.fishfeed-api.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.fishfeed-api.tls.certresolver=dns"
+      - "traefik.http.routers.fishfeed-api.tls.domains[0].main=${API_DOMAIN}"
+      - "traefik.http.routers.fishfeed-api.tls.domains[0].sans=*.${API_DOMAIN}"
       - "traefik.http.services.fishfeed-api.loadbalancer.server.port=8000"
       # HTTP to HTTPS redirect
       - "traefik.http.routers.fishfeed-api-http.rule=Host(`${API_DOMAIN}`)"
