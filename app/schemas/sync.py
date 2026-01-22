@@ -137,3 +137,56 @@ class SyncResponse(BaseModel):
         default=None,
         description="Cursor for fetching next page (None if no more pages)"
     )
+
+
+# ============ Mobile App Sync Schemas ============
+# These schemas support the mobile app's simplified sync format
+
+
+class MobileFeedingEvent(BaseModel):
+    """Schema for a feeding event from mobile app."""
+
+    id: str = Field(description="Event ID (UUID as string)")
+    local_id: str | None = Field(default=None, description="Local ID on device")
+    fish_id: str | None = Field(default=None, description="Fish ID")
+    aquarium_id: str | None = Field(default=None, description="Aquarium ID")
+    feeding_time: datetime = Field(description="When the feeding occurred")
+    amount: float | None = Field(default=None, description="Amount of food")
+    food_type: str | None = Field(default=None, description="Type of food")
+    notes: str | None = Field(default=None, description="Notes")
+    created_at: datetime = Field(description="When the event was created")
+    updated_at: datetime | None = Field(default=None, description="Last update time")
+    completed_by: str | None = Field(default=None, description="User ID who completed")
+    completed_by_name: str | None = Field(default=None, description="Name of who completed")
+    completed_by_avatar: str | None = Field(default=None, description="Avatar URL")
+
+
+class MobileSyncRequest(BaseModel):
+    """Schema for sync request from mobile app.
+
+    Mobile app sends feeding events in a simplified format.
+    """
+
+    events: list[MobileFeedingEvent] = Field(
+        default_factory=list,
+        description="List of feeding events to sync"
+    )
+    client_timestamp: datetime = Field(
+        description="Client timestamp when sync was initiated"
+    )
+
+
+class MobileSyncResponse(BaseModel):
+    """Schema for sync response to mobile app.
+
+    Mobile app expects synced_ids and optional server_events.
+    """
+
+    synced_ids: list[str] = Field(
+        default_factory=list,
+        description="List of event IDs that were successfully synced"
+    )
+    server_events: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Events from server that client should apply"
+    )
