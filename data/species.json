@@ -1,6 +1,6 @@
 [
   {
-    "id": "betta-splendens",
+    "id": "betta",
     "common_name": "Betta",
     "scientific_name": "Betta splendens",
     "food_types": [
@@ -66,7 +66,7 @@
     "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f2/Neonsalmler_Paracheirodon_innesi.jpg/320px-Neonsalmler_Paracheirodon_innesi.jpg"
   },
   {
-    "id": "goldfish-common",
+    "id": "goldfish",
     "common_name": "Common Goldfish",
     "scientific_name": "Carassius auratus",
     "food_types": [
@@ -133,7 +133,7 @@
     "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/Discus_fish.jpg/320px-Discus_fish.jpg"
   },
   {
-    "id": "corydoras-panda",
+    "id": "corydoras",
     "common_name": "Panda Corydoras",
     "scientific_name": "Corydoras panda",
     "food_types": [
@@ -154,7 +154,7 @@
     }
   },
   {
-    "id": "pleco-common",
+    "id": "pleco",
     "common_name": "Common Pleco",
     "scientific_name": "Hypostomus plecostomus",
     "food_types": [
@@ -175,7 +175,7 @@
     }
   },
   {
-    "id": "molly-black",
+    "id": "molly",
     "common_name": "Black Molly",
     "scientific_name": "Poecilia sphenops",
     "food_types": [
@@ -3823,5 +3823,27 @@
       "ph_max": 7.0,
       "is_popular": false
     }
+  },
+  {
+    "id": "ram-cichlid",
+    "common_name": "German Blue Ram",
+    "scientific_name": "Mikrogeophagus ramirezi",
+    "food_types": [
+      "pellets",
+      "frozen",
+      "live"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "Small portions, varied diet",
+    "care_level": "intermediate",
+    "water_type": "freshwater",
+    "metadata": {
+      "temperature_min": 26,
+      "temperature_max": 30,
+      "ph_min": 5.0,
+      "ph_max": 7.0,
+      "is_popular": true
+    },
+    "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/37/Mikrogeophagus_ramirezi_male.jpg/320px-Mikrogeophagus_ramirezi_male.jpg"
   }
 ]
