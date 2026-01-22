@@ -58,28 +58,26 @@ class SpeciesAlreadyExistsError(SpeciesError):
         )
 
 
-# Popular species IDs for onboarding
+# Popular species IDs for onboarding (must match IDs in species.json)
 POPULAR_SPECIES_IDS = [
-    "betta",
+    "betta-splendens",
     "guppy",
-    "goldfish",
     "neon-tetra",
+    "goldfish-common",
     "angelfish",
-    "molly",
+    "discus",
+    "corydoras-panda",
+    "pleco-common",
+    "molly-black",
     "platy",
-    "corydoras",
+    "swordtail",
+    "cardinal-tetra",
     "zebra-danio",
     "cherry-barb",
-    "swordtail",
-    "pleco",
-    "ram-cichlid",
-    "discus",
-    "oscar",
-    "kuhli-loach",
-    "bristlenose-pleco",
-    "cardinal-tetra",
-    "harlequin-rasbora",
     "dwarf-gourami",
+    "oscar",
+    "clown-loach",
+    "harlequin-rasbora",
 ]
 
 
