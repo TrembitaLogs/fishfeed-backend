@@ -1,7 +1,7 @@
 """Mobile sync service for processing mobile app sync requests."""
 
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
