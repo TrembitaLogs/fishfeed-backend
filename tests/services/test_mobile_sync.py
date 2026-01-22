@@ -572,17 +572,18 @@ async def test_mobile_sync_validation_error_for_missing_aquarium_id(
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_mobile_sync_validation_error_for_invalid_aquarium_id(
+async def test_mobile_sync_skips_events_with_invalid_aquarium_id(
     async_session: AsyncSession,
 ):
-    """Test that validation error is raised for invalid aquarium_id format."""
+    """Test that events with invalid aquarium_id are skipped but marked as synced."""
     await cleanup_test_data(async_session)
     try:
         user = await create_test_user(async_session)
+        event_id = str(uuid.uuid4())
 
         mobile_event = MobileFeedingEvent(
-            id=str(uuid.uuid4()),
-            aquarium_id="not-a-uuid",  # Invalid UUID
+            id=event_id,
+            aquarium_id="default",  # Invalid UUID (e.g., from onboarding)
             feeding_time=datetime.now(UTC),
             created_at=datetime.now(UTC),
         )
@@ -592,10 +593,16 @@ async def test_mobile_sync_validation_error_for_invalid_aquarium_id(
             client_timestamp=datetime.now(UTC),
         )
 
-        with pytest.raises(SyncValidationError) as exc_info:
-            await process_mobile_sync(async_session, user.id, request)
+        response = await process_mobile_sync(async_session, user.id, request)
 
-        assert "aquarium_id" in exc_info.value.message
+        # Event should be in synced_ids so client doesn't retry
+        assert event_id in response.synced_ids
+
+        # But event should NOT be saved to database
+        stmt = select(FeedingEvent).where(FeedingEvent.id == uuid.UUID(event_id))
+        result = await async_session.execute(stmt)
+        saved_event = result.scalar_one_or_none()
+        assert saved_event is None
     finally:
         await cleanup_test_data(async_session)
 
