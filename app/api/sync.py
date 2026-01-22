@@ -152,8 +152,8 @@ async def sync_data(
             error=str(e),
         )
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid sync request: {e}",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=e.errors(),
         ) from None
 
     log = logger.bind(
