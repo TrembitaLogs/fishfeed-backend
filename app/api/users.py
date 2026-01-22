@@ -1,4 +1,4 @@
-"""User API endpoints for GDPR compliance."""
+"""User API endpoints for profile and GDPR compliance."""
 
 from typing import Annotated
 
@@ -8,15 +8,104 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.dependencies import CurrentActiveUser
 from app.schemas.analytics import DataExportResponse
+from app.schemas.gamification import StreakResponse
+from app.schemas.user import UserProfileResponse, UserProfileUpdateRequest
 from app.services.analytics import (
     GDPRError,
     UserNotFoundError,
     delete_user_data,
     export_user_data,
 )
+from app.services.gamification import get_achievements, get_or_create_streak
 from app.services.storage import StorageNotConfiguredError
 
 router = APIRouter(prefix="/users", tags=["Users"])
+
+
+@router.get(
+    "/me",
+    response_model=UserProfileResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get current user profile",
+    responses={
+        200: {"description": "User profile retrieved successfully"},
+        401: {"description": "Not authenticated"},
+    },
+)
+async def get_current_user_profile(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: CurrentActiveUser,
+) -> UserProfileResponse:
+    """Get the profile of the currently authenticated user.
+
+    Returns user profile data including streak information and achievement count.
+    """
+    streak = await get_or_create_streak(db, current_user.id)
+    achievements = await get_achievements(db, current_user.id)
+
+    streak_response = StreakResponse.model_validate(streak)
+
+    return UserProfileResponse(
+        id=current_user.id,
+        email=current_user.email,
+        display_name=current_user.nickname,
+        avatar_url=current_user.avatar_url,
+        created_at=current_user.created_at,
+        subscription_status=current_user.subscription_status,
+        subscription_expires_at=current_user.subscription_expires_at,
+        streak=streak_response,
+        achievements_count=len(achievements),
+    )
+
+
+@router.put(
+    "/me",
+    response_model=UserProfileResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Update current user profile",
+    responses={
+        200: {"description": "User profile updated successfully"},
+        401: {"description": "Not authenticated"},
+        422: {"description": "Validation error"},
+    },
+)
+async def update_current_user_profile(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: CurrentActiveUser,
+    request: UserProfileUpdateRequest,
+) -> UserProfileResponse:
+    """Update the profile of the currently authenticated user.
+
+    Only provided fields will be updated. Empty request body results in no changes.
+    """
+    update_data = request.model_dump(exclude_unset=True)
+
+    if "display_name" in update_data:
+        current_user.nickname = update_data["display_name"]
+
+    if "avatar_url" in update_data:
+        current_user.avatar_url = update_data["avatar_url"]
+
+    if update_data:
+        await db.commit()
+        await db.refresh(current_user)
+
+    streak = await get_or_create_streak(db, current_user.id)
+    achievements = await get_achievements(db, current_user.id)
+
+    streak_response = StreakResponse.model_validate(streak)
+
+    return UserProfileResponse(
+        id=current_user.id,
+        email=current_user.email,
+        display_name=current_user.nickname,
+        avatar_url=current_user.avatar_url,
+        created_at=current_user.created_at,
+        subscription_status=current_user.subscription_status,
+        subscription_expires_at=current_user.subscription_expires_at,
+        streak=streak_response,
+        achievements_count=len(achievements),
+    )
 
 
 @router.get(

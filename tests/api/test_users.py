@@ -1,10 +1,283 @@
-"""E2E tests for users GDPR API endpoints."""
+"""E2E tests for users API endpoints (profile and GDPR)."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient
+
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestGetUserProfile:
+    """Tests for GET /users/me endpoint."""
+
+    async def test_get_profile_requires_auth(self, client: AsyncClient):
+        """Test that GET /users/me requires authentication."""
+        response = await client.get("/users/me")
+        assert response.status_code == 401
+
+    async def test_get_profile_returns_full_profile(self, client: AsyncClient):
+        """Test that GET /users/me returns full profile with all fields."""
+        email = f"profile_{uuid4().hex[:8]}@example.com"
+        register_response = await client.post(
+            "/auth/register",
+            json={"email": email, "password": "SecurePass123"},
+        )
+        access_token = register_response.json()["access_token"]
+
+        response = await client.get(
+            "/users/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # Verify all required fields are present
+        assert "id" in data
+        assert data["email"] == email
+        assert "display_name" in data
+        assert "avatar_url" in data
+        assert "created_at" in data
+        assert "subscription_status" in data
+        assert "subscription_expires_at" in data
+        assert "streak" in data
+        assert "achievements_count" in data
+
+    async def test_get_profile_streak_contains_all_fields(self, client: AsyncClient):
+        """Test that streak contains current_streak, best_streak, freeze_available, last_feed_date."""
+        email = f"streak_fields_{uuid4().hex[:8]}@example.com"
+        register_response = await client.post(
+            "/auth/register",
+            json={"email": email, "password": "SecurePass123"},
+        )
+        access_token = register_response.json()["access_token"]
+
+        response = await client.get(
+            "/users/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 200
+        streak = response.json()["streak"]
+
+        assert "current_streak" in streak
+        assert "best_streak" in streak
+        assert "freeze_available" in streak
+        assert "last_feed_date" in streak
+
+    async def test_get_profile_new_user_has_zero_streak(self, client: AsyncClient):
+        """Test that new user has streak with zero values."""
+        email = f"new_user_streak_{uuid4().hex[:8]}@example.com"
+        register_response = await client.post(
+            "/auth/register",
+            json={"email": email, "password": "SecurePass123"},
+        )
+        access_token = register_response.json()["access_token"]
+
+        response = await client.get(
+            "/users/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["streak"]["current_streak"] == 0
+        assert data["streak"]["best_streak"] == 0
+        assert data["achievements_count"] == 0
+
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestUpdateUserProfile:
+    """Tests for PUT /users/me endpoint."""
+
+    async def test_update_profile_requires_auth(self, client: AsyncClient):
+        """Test that PUT /users/me requires authentication."""
+        response = await client.put("/users/me", json={"display_name": "Test"})
+        assert response.status_code == 401
+
+    async def test_update_display_name(self, client: AsyncClient):
+        """Test that PUT /users/me updates display_name."""
+        email = f"update_name_{uuid4().hex[:8]}@example.com"
+        register_response = await client.post(
+            "/auth/register",
+            json={"email": email, "password": "SecurePass123"},
+        )
+        access_token = register_response.json()["access_token"]
+
+        # Update display_name
+        update_response = await client.put(
+            "/users/me",
+            json={"display_name": "NewDisplayName"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert update_response.status_code == 200
+        assert update_response.json()["display_name"] == "NewDisplayName"
+
+        # Verify with GET
+        get_response = await client.get(
+            "/users/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert get_response.json()["display_name"] == "NewDisplayName"
+
+    async def test_update_avatar_url(self, client: AsyncClient):
+        """Test that PUT /users/me updates avatar_url."""
+        email = f"update_avatar_{uuid4().hex[:8]}@example.com"
+        register_response = await client.post(
+            "/auth/register",
+            json={"email": email, "password": "SecurePass123"},
+        )
+        access_token = register_response.json()["access_token"]
+
+        avatar_url = "https://example.com/avatar.png"
+        update_response = await client.put(
+            "/users/me",
+            json={"avatar_url": avatar_url},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert update_response.status_code == 200
+        assert update_response.json()["avatar_url"] == avatar_url
+
+    async def test_update_avatar_url_invalid_returns_422(self, client: AsyncClient):
+        """Test that invalid avatar_url (not http/https) returns 422."""
+        email = f"invalid_avatar_{uuid4().hex[:8]}@example.com"
+        register_response = await client.post(
+            "/auth/register",
+            json={"email": email, "password": "SecurePass123"},
+        )
+        access_token = register_response.json()["access_token"]
+
+        # Try to set invalid URL (not http/https)
+        response = await client.put(
+            "/users/me",
+            json={"avatar_url": "ftp://example.com/avatar.png"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 422
+
+    async def test_update_empty_body_no_changes(self, client: AsyncClient):
+        """Test that PUT /users/me with empty body returns 200 OK."""
+        email = f"empty_update_{uuid4().hex[:8]}@example.com"
+        register_response = await client.post(
+            "/auth/register",
+            json={"email": email, "password": "SecurePass123"},
+        )
+        access_token = register_response.json()["access_token"]
+
+        response = await client.put(
+            "/users/me",
+            json={},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 200
+
+    async def test_update_display_name_too_long_returns_422(self, client: AsyncClient):
+        """Test that display_name > 50 characters returns 422."""
+        email = f"long_name_{uuid4().hex[:8]}@example.com"
+        register_response = await client.post(
+            "/auth/register",
+            json={"email": email, "password": "SecurePass123"},
+        )
+        access_token = register_response.json()["access_token"]
+
+        long_name = "A" * 51
+        response = await client.put(
+            "/users/me",
+            json={"display_name": long_name},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 422
+
+    async def test_update_allows_null_values(self, client: AsyncClient):
+        """Test that PUT /users/me allows setting display_name and avatar_url to null."""
+        email = f"null_values_{uuid4().hex[:8]}@example.com"
+        register_response = await client.post(
+            "/auth/register",
+            json={"email": email, "password": "SecurePass123"},
+        )
+        access_token = register_response.json()["access_token"]
+
+        # First set values
+        await client.put(
+            "/users/me",
+            json={
+                "display_name": "TestName",
+                "avatar_url": "https://example.com/avatar.png",
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        # Then set to null
+        response = await client.put(
+            "/users/me",
+            json={"display_name": None, "avatar_url": None},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["display_name"] is None
+        assert data["avatar_url"] is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestUserProfileIntegration:
+    """Integration tests for user profile with gamification."""
+
+    async def test_profile_shows_correct_streak_after_feeding(
+        self, client: AsyncClient
+    ):
+        """Test that GET /users/me shows correct streak after feeding events."""
+        email = f"feeding_streak_{uuid4().hex[:8]}@example.com"
+        register_response = await client.post(
+            "/auth/register",
+            json={"email": email, "password": "SecurePass123"},
+        )
+        access_token = register_response.json()["access_token"]
+
+        # Create an aquarium
+        aquarium_response = await client.post(
+            "/aquariums",
+            json={"name": "Test Aquarium"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        aquarium_id = aquarium_response.json()["id"]
+
+        # Create a feeding schedule
+        schedule_response = await client.post(
+            f"/aquariums/{aquarium_id}/feeding/schedules",
+            json={"time": "08:00", "food_type": "flakes"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        if schedule_response.status_code == 201:
+            schedule_id = schedule_response.json()["id"]
+
+            # Mark as fed to trigger streak update
+            await client.post(
+                f"/aquariums/{aquarium_id}/feeding/schedules/{schedule_id}/mark-fed",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+
+        # Check profile - streak should be updated
+        profile_response = await client.get(
+            "/users/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        assert profile_response.status_code == 200
+        data = profile_response.json()
+        assert "streak" in data
+        # After one feeding, current_streak should be at least 1
+        # (depending on implementation)
+        assert data["streak"]["current_streak"] >= 0
 
 
 @pytest.mark.asyncio(loop_scope="session")

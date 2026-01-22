@@ -1,7 +1,7 @@
 """Integration tests for sync API endpoint."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
@@ -490,3 +490,358 @@ class TestSyncAccessControl:
 
         # Should return 403 Access Denied
         assert response.status_code == 403
+
+
+# ============================================================================
+# Mobile Sync API Tests
+# ============================================================================
+
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestMobileSyncBasic:
+    """Tests for mobile sync endpoint basic functionality."""
+
+    async def test_mobile_sync_empty_events_returns_200(self, client: AsyncClient):
+        """Test that mobile sync with empty events returns 200."""
+        email = f"mobile-sync-empty-{uuid.uuid4()}@example.com"
+        tokens = await register_and_login(client, email)
+
+        response = await client.post(
+            "/sync",
+            json={
+                "events": [],
+                "client_timestamp": datetime.now(UTC).isoformat(),
+            },
+            headers=auth_headers(tokens),
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "synced_ids" in data
+        assert "server_events" in data
+        assert data["synced_ids"] == []
+
+    async def test_mobile_sync_creates_feeding_event(self, client: AsyncClient):
+        """Test that mobile sync creates a feeding event in database."""
+        email = f"mobile-sync-create-{uuid.uuid4()}@example.com"
+        tokens = await register_and_login(client, email)
+
+        # Create aquarium first
+        aq_response = await client.post(
+            "/aquariums",
+            json={"name": "Mobile Test Tank"},
+            headers=auth_headers(tokens),
+        )
+        aquarium_id = aq_response.json()["id"]
+        event_id = str(uuid.uuid4())
+
+        response = await client.post(
+            "/sync",
+            json={
+                "events": [
+                    {
+                        "id": event_id,
+                        "aquarium_id": aquarium_id,
+                        "feeding_time": datetime.now(UTC).isoformat(),
+                        "created_at": datetime.now(UTC).isoformat(),
+                    }
+                ],
+                "client_timestamp": (
+                    datetime.now(UTC) - timedelta(hours=1)
+                ).isoformat(),
+            },
+            headers=auth_headers(tokens),
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert event_id in data["synced_ids"]
+
+    async def test_mobile_sync_returns_server_events(self, client: AsyncClient):
+        """Test that mobile sync returns server events after client_timestamp."""
+        email = f"mobile-sync-server-{uuid.uuid4()}@example.com"
+        tokens = await register_and_login(client, email)
+
+        # Create aquarium
+        aq_response = await client.post(
+            "/aquariums",
+            json={"name": "Server Events Tank"},
+            headers=auth_headers(tokens),
+        )
+        aquarium_id = aq_response.json()["id"]
+
+        # Create an event via mobile sync
+        first_event_id = str(uuid.uuid4())
+        first_timestamp = datetime.now(UTC) - timedelta(hours=2)
+
+        await client.post(
+            "/sync",
+            json={
+                "events": [
+                    {
+                        "id": first_event_id,
+                        "aquarium_id": aquarium_id,
+                        "feeding_time": datetime.now(UTC).isoformat(),
+                        "created_at": datetime.now(UTC).isoformat(),
+                    }
+                ],
+                "client_timestamp": first_timestamp.isoformat(),
+            },
+            headers=auth_headers(tokens),
+        )
+
+        # Sync again with old timestamp to get server events
+        response = await client.post(
+            "/sync",
+            json={
+                "events": [],
+                "client_timestamp": first_timestamp.isoformat(),
+            },
+            headers=auth_headers(tokens),
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        server_event_ids = {e["id"] for e in data["server_events"]}
+        assert first_event_id in server_event_ids
+
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestMobileSyncValidation:
+    """Tests for mobile sync validation errors."""
+
+    async def test_mobile_sync_validation_error_missing_aquarium_id(
+        self, client: AsyncClient
+    ):
+        """Test that missing aquarium_id returns validation error."""
+        email = f"mobile-sync-val-{uuid.uuid4()}@example.com"
+        tokens = await register_and_login(client, email)
+
+        event_id = str(uuid.uuid4())
+
+        response = await client.post(
+            "/sync",
+            json={
+                "events": [
+                    {
+                        "id": event_id,
+                        # Missing aquarium_id
+                        "feeding_time": datetime.now(UTC).isoformat(),
+                        "created_at": datetime.now(UTC).isoformat(),
+                    }
+                ],
+                "client_timestamp": datetime.now(UTC).isoformat(),
+            },
+            headers=auth_headers(tokens),
+        )
+
+        assert response.status_code == 422
+
+    async def test_mobile_sync_validation_error_invalid_event_id(
+        self, client: AsyncClient
+    ):
+        """Test that invalid event ID returns validation error."""
+        email = f"mobile-sync-invalid-{uuid.uuid4()}@example.com"
+        tokens = await register_and_login(client, email)
+
+        # Create aquarium
+        aq_response = await client.post(
+            "/aquariums",
+            json={"name": "Validation Tank"},
+            headers=auth_headers(tokens),
+        )
+        aquarium_id = aq_response.json()["id"]
+
+        response = await client.post(
+            "/sync",
+            json={
+                "events": [
+                    {
+                        "id": "not-a-valid-uuid",
+                        "aquarium_id": aquarium_id,
+                        "feeding_time": datetime.now(UTC).isoformat(),
+                        "created_at": datetime.now(UTC).isoformat(),
+                    }
+                ],
+                "client_timestamp": datetime.now(UTC).isoformat(),
+            },
+            headers=auth_headers(tokens),
+        )
+
+        assert response.status_code == 422
+
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestMobileSyncAccessControl:
+    """Tests for mobile sync access control."""
+
+    async def test_mobile_sync_access_denied_other_user_aquarium(
+        self, client: AsyncClient
+    ):
+        """Test that mobile sync is denied for other user's aquarium."""
+        email1 = f"mobile-owner-{uuid.uuid4()}@example.com"
+        email2 = f"mobile-other-{uuid.uuid4()}@example.com"
+
+        tokens1 = await register_and_login(client, email1)
+        tokens2 = await register_and_login(client, email2)
+
+        # User 1 creates aquarium
+        aq_response = await client.post(
+            "/aquariums",
+            json={"name": "Owner's Mobile Tank"},
+            headers=auth_headers(tokens1),
+        )
+        aquarium_id = aq_response.json()["id"]
+
+        # User 2 tries to sync event to User 1's aquarium
+        response = await client.post(
+            "/sync",
+            json={
+                "events": [
+                    {
+                        "id": str(uuid.uuid4()),
+                        "aquarium_id": aquarium_id,
+                        "feeding_time": datetime.now(UTC).isoformat(),
+                        "created_at": datetime.now(UTC).isoformat(),
+                    }
+                ],
+                "client_timestamp": datetime.now(UTC).isoformat(),
+            },
+            headers=auth_headers(tokens2),
+        )
+
+        assert response.status_code == 403
+
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestMobileSyncMultiDevice:
+    """Tests for mobile sync multi-device scenarios."""
+
+    async def test_mobile_sync_device_a_creates_device_b_receives(
+        self, client: AsyncClient
+    ):
+        """Test that Device B receives events created by Device A."""
+        email = f"mobile-multidevice-{uuid.uuid4()}@example.com"
+        tokens = await register_and_login(client, email)
+
+        # Create aquarium
+        aq_response = await client.post(
+            "/aquariums",
+            json={"name": "Multi-device Tank"},
+            headers=auth_headers(tokens),
+        )
+        aquarium_id = aq_response.json()["id"]
+
+        # Initial timestamp for both devices
+        initial_time = datetime.now(UTC) - timedelta(hours=2)
+
+        # Device A creates and syncs an event
+        event_id = str(uuid.uuid4())
+        await client.post(
+            "/sync",
+            json={
+                "events": [
+                    {
+                        "id": event_id,
+                        "aquarium_id": aquarium_id,
+                        "feeding_time": datetime.now(UTC).isoformat(),
+                        "created_at": datetime.now(UTC).isoformat(),
+                    }
+                ],
+                "client_timestamp": initial_time.isoformat(),
+            },
+            headers=auth_headers(tokens),
+        )
+
+        # Device B syncs (no events, just getting server state)
+        response_b = await client.post(
+            "/sync",
+            json={
+                "events": [],
+                "client_timestamp": initial_time.isoformat(),
+            },
+            headers=auth_headers(tokens),
+        )
+
+        assert response_b.status_code == 200
+        data = response_b.json()
+        server_event_ids = {e["id"] for e in data["server_events"]}
+        assert event_id in server_event_ids
+
+    async def test_mobile_sync_conflict_resolution(self, client: AsyncClient):
+        """Test conflict resolution between devices."""
+        from datetime import timedelta
+
+        email = f"mobile-conflict-{uuid.uuid4()}@example.com"
+        tokens = await register_and_login(client, email)
+
+        # Get user ID from profile
+        profile_response = await client.get(
+            "/users/me",
+            headers=auth_headers(tokens),
+        )
+        user_id = profile_response.json()["id"]
+
+        # Create aquarium
+        aq_response = await client.post(
+            "/aquariums",
+            json={"name": "Conflict Tank"},
+            headers=auth_headers(tokens),
+        )
+        aquarium_id = aq_response.json()["id"]
+
+        event_id = str(uuid.uuid4())
+        base_time = datetime.now(UTC)
+
+        # Device A syncs event first with NEWER timestamp
+        device_a_time = base_time + timedelta(minutes=5)
+        await client.post(
+            "/sync",
+            json={
+                "events": [
+                    {
+                        "id": event_id,
+                        "aquarium_id": aquarium_id,
+                        "feeding_time": base_time.isoformat(),
+                        "created_at": base_time.isoformat(),
+                        "updated_at": device_a_time.isoformat(),
+                        "completed_by": user_id,  # Device A marks completed (valid user)
+                    }
+                ],
+                "client_timestamp": (base_time - timedelta(hours=1)).isoformat(),
+            },
+            headers=auth_headers(tokens),
+        )
+
+        # Device B tries to sync same event with OLDER timestamp
+        device_b_time = base_time - timedelta(minutes=5)
+        response_b = await client.post(
+            "/sync",
+            json={
+                "events": [
+                    {
+                        "id": event_id,
+                        "aquarium_id": aquarium_id,
+                        "feeding_time": base_time.isoformat(),
+                        "created_at": device_b_time.isoformat(),
+                        "updated_at": device_b_time.isoformat(),
+                        # Device B does NOT mark completed
+                    }
+                ],
+                "client_timestamp": (base_time - timedelta(hours=1)).isoformat(),
+            },
+            headers=auth_headers(tokens),
+        )
+
+        assert response_b.status_code == 200
+        data = response_b.json()
+
+        # Device B's event should NOT be in synced_ids (server wins)
+        assert event_id not in data["synced_ids"]
+
+        # Server event should show completed status (Device A's version)
+        server_event = next(
+            (e for e in data["server_events"] if e["id"] == event_id), None
+        )
+        assert server_event is not None
+        assert server_event["status"] == "completed"

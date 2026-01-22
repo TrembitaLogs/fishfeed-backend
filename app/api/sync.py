@@ -17,6 +17,7 @@ from app.schemas.sync import (
     SyncRequest,
     SyncResponse,
 )
+from app.services.mobile_sync import process_mobile_sync
 from app.services.sync import (
     SyncAccessDeniedError,
     SyncError,
@@ -65,36 +66,43 @@ async def _handle_mobile_sync(
             detail=f"Invalid mobile sync request: {e}",
         ) from None
 
-    events = mobile_request.events
     log.info(
         "mobile_sync_request_received",
-        events_count=len(events),
+        events_count=len(mobile_request.events),
         client_timestamp=mobile_request.client_timestamp.isoformat(),
     )
 
-    if not events:
-        # No events to sync, return empty success response
-        log.info("mobile_sync_no_events")
-        return MobileSyncResponse(synced_ids=[], server_events=[])
+    try:
+        response = await process_mobile_sync(db, current_user.id, mobile_request)
 
-    # For now, accept all events as synced
-    # In a full implementation, we would:
-    # 1. Validate event ownership
-    # 2. Store events in database
-    # 3. Detect conflicts with existing events
-    # 4. Return server-side updates
+        log.info(
+            "mobile_sync_completed",
+            synced_count=len(response.synced_ids),
+            server_events_count=len(response.server_events),
+        )
 
-    synced_ids = [event.id for event in events]
+        return response
 
-    log.info(
-        "mobile_sync_completed",
-        synced_count=len(synced_ids),
-    )
+    except SyncValidationError as e:
+        log.warning("mobile_sync_validation_error", error=e.message)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=e.message,
+        ) from None
 
-    return MobileSyncResponse(
-        synced_ids=synced_ids,
-        server_events=[],
-    )
+    except SyncAccessDeniedError as e:
+        log.warning("mobile_sync_access_denied", error=e.message)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=e.message,
+        ) from None
+
+    except SyncError as e:
+        log.error("mobile_sync_error", error=e.message)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Mobile sync processing failed",
+        ) from None
 
 
 @router.post(
