@@ -36,6 +36,8 @@ def _feeding_event_to_mobile_dict(event: FeedingEvent) -> dict[str, Any]:
     return {
         "id": str(event.id),
         "aquarium_id": str(event.aquarium_id),
+        "fish_id": str(event.fish_id) if event.fish_id else None,
+        "species_id": event.species_id,
         "feeding_time": event.scheduled_at.isoformat() if event.scheduled_at else None,
         "status": event.status,
         "completed_at": (
@@ -74,6 +76,14 @@ def _map_mobile_event_to_feeding_event_data(
         # Set completed_at to feeding_time when completed_by is present
         data["completed_at"] = event.feeding_time
         data["status"] = "completed"
+
+    # Handle fish_id - try as UUID first, otherwise store as species_id
+    if event.fish_id:
+        try:
+            data["fish_id"] = UUID(event.fish_id)
+        except (ValueError, TypeError):
+            # Not a valid UUID, store as species identifier string
+            data["species_id"] = event.fish_id
 
     return data
 
@@ -191,6 +201,10 @@ async def process_mobile_sync(
                     existing.completed_by = event_data["completed_by"]
                 if "completed_at" in event_data:
                     existing.completed_at = event_data["completed_at"]
+                if "fish_id" in event_data:
+                    existing.fish_id = event_data["fish_id"]
+                if "species_id" in event_data:
+                    existing.species_id = event_data["species_id"]
 
                 synced_ids.append(event.id)
                 logger.debug(
@@ -219,6 +233,8 @@ async def process_mobile_sync(
                 status=event_data["status"],
                 completed_at=event_data.get("completed_at"),
                 completed_by=event_data.get("completed_by"),
+                fish_id=event_data.get("fish_id"),
+                species_id=event_data.get("species_id"),
                 client_created_at=event.created_at,
             )
             db.add(new_event)

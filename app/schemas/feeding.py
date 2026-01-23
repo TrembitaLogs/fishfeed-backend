@@ -87,6 +87,8 @@ class EventResponse(BaseModel):
     id: UUID
     aquarium_id: UUID
     schedule_id: UUID | None
+    fish_id: UUID | None = None
+    species_id: str | None = None
     scheduled_at: datetime
     status: FeedingStatus
     completed_at: datetime | None

@@ -11,6 +11,7 @@ from app.models.user import JSONType
 
 if TYPE_CHECKING:
     from app.models.aquarium import Aquarium
+    from app.models.fish import Fish
     from app.models.user import User
 
 
@@ -81,6 +82,15 @@ class FeedingEvent(Base, TimestampMixin):
         ForeignKey("feeding_schedules.id", ondelete="SET NULL"),
         nullable=True,
     )
+    fish_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("fish.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    species_id: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
     scheduled_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -118,6 +128,10 @@ class FeedingEvent(Base, TimestampMixin):
     schedule: Mapped[FeedingSchedule | None] = relationship(
         "FeedingSchedule",
         back_populates="feeding_events",
+    )
+    fish: Mapped[Fish | None] = relationship(
+        "Fish",
+        foreign_keys=[fish_id],
     )
     completed_by_user: Mapped[User | None] = relationship(
         "User",

@@ -247,6 +247,8 @@ def _entity_to_dict(entity: Aquarium | Fish | FeedingEvent) -> dict[str, Any]:
             "id": str(entity.id),
             "aquarium_id": str(entity.aquarium_id),
             "schedule_id": str(entity.schedule_id) if entity.schedule_id else None,
+            "fish_id": str(entity.fish_id) if entity.fish_id else None,
+            "species_id": entity.species_id,
             "scheduled_at": (
                 entity.scheduled_at.isoformat() if entity.scheduled_at else None
             ),
@@ -651,6 +653,20 @@ async def _apply_event_change(
             if "schedule_id" in change.data and change.data["schedule_id"]:
                 schedule_id = UUID(str(change.data["schedule_id"]))
 
+            # Parse fish_id (UUID) and species_id (string)
+            fish_id: UUID | None = None
+            species_id: str | None = None
+            if "fish_id" in change.data and change.data["fish_id"]:
+                fish_id_value = str(change.data["fish_id"])
+                try:
+                    fish_id = UUID(fish_id_value)
+                except (ValueError, TypeError):
+                    # fish_id is not a valid UUID - treat as species_id
+                    species_id = fish_id_value
+            # Also check for explicit species_id field
+            if "species_id" in change.data and change.data["species_id"]:
+                species_id = str(change.data["species_id"])
+
             # Parse completed_at and completed_by for concurrent feeding detection
             event_completed_at: datetime | None = None
             event_completed_by: UUID | None = None
@@ -704,6 +720,8 @@ async def _apply_event_change(
                 status=status,
                 client_created_at=change.client_updated_at,
                 schedule_id=schedule_id,
+                fish_id=fish_id,
+                species_id=species_id,
                 completed_at=event_completed_at,
                 completed_by=event_completed_by,
             )
