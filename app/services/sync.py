@@ -1418,24 +1418,24 @@ async def get_server_state(
     streak_stmt = select(Streak).where(Streak.user_id == user_id)
     if since is not None:
         streak_stmt = streak_stmt.where(Streak.updated_at >= since)
-    result = await db.execute(streak_stmt)
-    for streak in result.scalars().all():
+    streak_result = await db.execute(streak_stmt)
+    for streak in streak_result.scalars().all():
         streaks_data.append(_entity_to_dict(streak))
 
     # Query achievements
     achievement_stmt = select(Achievement).where(Achievement.user_id == user_id)
     if since is not None:
         achievement_stmt = achievement_stmt.where(Achievement.unlocked_at >= since)
-    result = await db.execute(achievement_stmt)
-    for achievement in result.scalars().all():
+    achievement_result = await db.execute(achievement_stmt)
+    for achievement in achievement_result.scalars().all():
         achievements_data.append(_entity_to_dict(achievement))
 
     # Query progress
     progress_stmt = select(UserProgress).where(UserProgress.user_id == user_id)
     if since is not None:
         progress_stmt = progress_stmt.where(UserProgress.updated_at >= since)
-    result = await db.execute(progress_stmt)
-    for progress in result.scalars().all():
+    progress_result = await db.execute(progress_stmt)
+    for progress in progress_result.scalars().all():
         progress_data.append(_entity_to_dict(progress))
 
     if not user_aquarium_ids:
