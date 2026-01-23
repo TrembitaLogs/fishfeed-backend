@@ -14,7 +14,7 @@ JSONType = JSON().with_variant(JSONB(), "postgresql")
 if TYPE_CHECKING:
     from app.models.ai import AIScan
     from app.models.aquarium import Aquarium, AquariumMember
-    from app.models.gamification import Achievement, Streak
+    from app.models.gamification import Achievement, Streak, UserProgress
     from app.models.notification import NotificationPreference, PushToken
 
 
@@ -120,6 +120,12 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
     )
     notification_preferences: Mapped[NotificationPreference | None] = relationship(
         "NotificationPreference",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    progress: Mapped[UserProgress | None] = relationship(
+        "UserProgress",
         back_populates="user",
         uselist=False,
         cascade="all, delete-orphan",

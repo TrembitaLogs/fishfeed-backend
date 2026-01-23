@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.models.feeding import FeedingEvent
 from app.models.fish import Fish
 from app.models.species import Species
 from app.schemas.fish import FishCreate, FishUpdate
@@ -241,7 +242,21 @@ async def remove_fish(
 
     # Soft delete
     fish.deleted_at = datetime.now(UTC)
+
+    # Cascade delete: remove all feeding events for this fish
+    delete_stmt = select(FeedingEvent).where(FeedingEvent.fish_id == fish_id)
+    events_result = await db.execute(delete_stmt)
+    events_to_delete = events_result.scalars().all()
+    for event in events_to_delete:
+        await db.delete(event)
+
     await db.commit()
+
+    if events_to_delete:
+        logger.info(
+            f"Cascade deleted {len(events_to_delete)} feeding events "
+            f"for fish '{fish_id}'"
+        )
 
     logger.info(
         f"Soft deleted fish '{fish_id}' from aquarium '{fish.aquarium_id}' "

@@ -8,7 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-EntityType = Literal["aquarium", "fish", "event"]
+EntityType = Literal["aquarium", "fish", "event", "schedule", "streak", "achievement", "progress"]
 OperationType = Literal["create", "update", "delete"]
 
 
@@ -93,6 +93,10 @@ class DeletedEntities(BaseModel):
         default_factory=list,
         description="List of deleted fish IDs"
     )
+    schedules: list[UUID] = Field(
+        default_factory=list,
+        description="List of deleted feeding schedule IDs"
+    )
 
 
 class ServerState(BaseModel):
@@ -109,6 +113,22 @@ class ServerState(BaseModel):
     events: list[dict[str, Any]] = Field(
         default_factory=list,
         description="List of feeding event entities"
+    )
+    schedules: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="List of feeding schedule entities"
+    )
+    streaks: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="List of user streak entities"
+    )
+    achievements: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="List of user achievement entities"
+    )
+    progress: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="List of user progress entities"
     )
     deleted: DeletedEntities = Field(
         default_factory=DeletedEntities,

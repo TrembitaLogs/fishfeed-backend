@@ -9,8 +9,9 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.aquarium import Aquarium, AquariumMember
-from app.models.feeding import FeedingEvent
+from app.models.feeding import FeedingEvent, FeedingSchedule
 from app.models.fish import Fish
+from app.models.gamification import Achievement, Streak, UserProgress
 from app.schemas.sync import (
     ChangeItem,
     ConflictItem,
@@ -176,6 +177,41 @@ async def _validate_entity_ownership(
                 if aquarium_id not in user_aquarium_ids:
                     raise SyncAccessDeniedError("event", change.entity_id)
 
+        elif change.entity_type == "schedule":
+            if change.operation == "create":
+                # For create, check aquarium_id in data
+                aquarium_id = change.data.get("aquarium_id")
+                if not aquarium_id:
+                    raise SyncValidationError(
+                        f"Missing aquarium_id for schedule create: {change.entity_id}"
+                    )
+                try:
+                    aquarium_uuid = UUID(str(aquarium_id))
+                except (ValueError, TypeError):
+                    raise SyncValidationError(
+                        f"Invalid aquarium_id format for schedule: {change.entity_id}"
+                    ) from None
+                if aquarium_uuid not in user_aquarium_ids:
+                    raise SyncAccessDeniedError("aquarium", aquarium_uuid)
+            else:
+                # For update/delete, check existing schedule ownership
+                stmt = select(FeedingSchedule.aquarium_id).where(
+                    FeedingSchedule.id == change.entity_id
+                )
+                result = await db.execute(stmt)
+                aquarium_id = result.scalar_one_or_none()
+                if aquarium_id is None:
+                    # Entity doesn't exist - will be handled by apply_changes
+                    continue
+                if aquarium_id not in user_aquarium_ids:
+                    raise SyncAccessDeniedError("schedule", change.entity_id)
+
+        elif change.entity_type in ("streak", "achievement", "progress"):
+            # User-scoped entities - always allowed for the authenticated user
+            # The apply_*_change functions will enforce that they can only
+            # modify their own records by using user_id from the session
+            continue
+
 
 def _generate_sync_token() -> str:
     """Generate a unique sync token.
@@ -205,12 +241,24 @@ def resolve_conflict(
         'client' if client timestamp is newer, 'server' otherwise.
         When timestamps are equal, server wins for determinism.
     """
-    if client_updated_at > server_updated_at:
+    # Normalize both datetimes to UTC for comparison
+    # Handle both timezone-aware and timezone-naive datetimes
+    server_ts = server_updated_at
+    client_ts = client_updated_at
+
+    if server_ts.tzinfo is None:
+        server_ts = server_ts.replace(tzinfo=UTC)
+    if client_ts.tzinfo is None:
+        client_ts = client_ts.replace(tzinfo=UTC)
+
+    if client_ts > server_ts:
         return "client"
     return "server"
 
 
-def _entity_to_dict(entity: Aquarium | Fish | FeedingEvent) -> dict[str, Any]:
+def _entity_to_dict(
+    entity: Aquarium | Fish | FeedingEvent | FeedingSchedule | Streak | Achievement | UserProgress,
+) -> dict[str, Any]:
     """Convert entity to dictionary for conflict reporting.
 
     Args:
@@ -266,6 +314,51 @@ def _entity_to_dict(entity: Aquarium | Fish | FeedingEvent) -> dict[str, Any]:
                 else None
             ),
             "created_at": entity.created_at.isoformat() if entity.created_at else None,
+            "updated_at": entity.updated_at.isoformat() if entity.updated_at else None,
+        }
+    elif isinstance(entity, FeedingSchedule):
+        result = {
+            "id": str(entity.id),
+            "aquarium_id": str(entity.aquarium_id),
+            "times_per_day": entity.times_per_day,
+            "scheduled_times": entity.scheduled_times,
+            "food_type": entity.food_type,
+            "portion_hint": entity.portion_hint,
+            "created_at": entity.created_at.isoformat() if entity.created_at else None,
+            "updated_at": entity.updated_at.isoformat() if entity.updated_at else None,
+        }
+    elif isinstance(entity, Streak):
+        result = {
+            "id": str(entity.user_id),  # user_id is the primary key for streaks
+            "user_id": str(entity.user_id),
+            "current_streak": entity.current_streak,
+            "best_streak": entity.best_streak,
+            "freeze_available": entity.freeze_available,
+            "freeze_used_this_period": entity.freeze_used_this_period,
+            "period_start": entity.period_start.isoformat() if entity.period_start else None,
+            "last_feed_date": entity.last_feed_date.isoformat() if entity.last_feed_date else None,
+            "updated_at": entity.updated_at.isoformat() if entity.updated_at else None,
+        }
+    elif isinstance(entity, Achievement):
+        result = {
+            "id": str(entity.id),
+            "user_id": str(entity.user_id),
+            "achievement_type": entity.achievement_type,
+            "unlocked_at": entity.unlocked_at.isoformat() if entity.unlocked_at else None,
+            "shared_at": entity.shared_at.isoformat() if entity.shared_at else None,
+        }
+    elif isinstance(entity, UserProgress):
+        result = {
+            "id": str(entity.user_id),  # user_id is the primary key for progress
+            "user_id": str(entity.user_id),
+            "total_xp": entity.total_xp,
+            "level": entity.level,
+            "last_xp_awarded_at": (
+                entity.last_xp_awarded_at.isoformat() if entity.last_xp_awarded_at else None
+            ),
+            "last_level_up_at": (
+                entity.last_level_up_at.isoformat() if entity.last_level_up_at else None
+            ),
             "updated_at": entity.updated_at.isoformat() if entity.updated_at else None,
         }
 
@@ -340,6 +433,10 @@ def _group_changes_by_entity_type(
         "aquarium": [],
         "fish": [],
         "event": [],
+        "schedule": [],
+        "streak": [],
+        "achievement": [],
+        "progress": [],
     }
     for change in changes:
         grouped[change.entity_type].append(change)
@@ -574,6 +671,20 @@ async def _apply_fish_change(
         # Client wins - soft delete
         existing.deleted_at = datetime.now(UTC)
         logger.debug(f"Soft deleted fish {change.entity_id}")
+
+        # Cascade delete: also delete feeding events for this fish
+        delete_stmt = (
+            select(FeedingEvent)
+            .where(FeedingEvent.fish_id == change.entity_id)
+        )
+        events_result = await db.execute(delete_stmt)
+        events_to_delete = events_result.scalars().all()
+        for event in events_to_delete:
+            await db.delete(event)
+        if events_to_delete:
+            logger.debug(
+                f"Cascade deleted {len(events_to_delete)} feeding events for fish {change.entity_id}"
+            )
 
     return None
 
@@ -836,6 +947,348 @@ async def _apply_event_change(
     return None
 
 
+async def _apply_schedule_change(
+    db: AsyncSession,
+    user_id: UUID,
+    change: ChangeItem,
+) -> ConflictItem | None:
+    """Apply a single feeding schedule change.
+
+    Args:
+        db: Database session.
+        user_id: User ID applying the change.
+        change: Change item to apply.
+
+    Returns:
+        ConflictItem if conflict detected, None otherwise.
+    """
+    stmt = select(FeedingSchedule).where(FeedingSchedule.id == change.entity_id)
+    result = await db.execute(stmt)
+    existing = result.scalar_one_or_none()
+
+    if change.operation == "create":
+        if existing is not None:
+            # Entity exists, treat as update with conflict check
+            winner = resolve_conflict(existing.updated_at, change.client_updated_at)
+            if winner == "server":
+                logger.debug(f"CREATE conflict for schedule {change.entity_id}: server wins")
+                return ConflictItem(
+                    entity_type="schedule",
+                    entity_id=change.entity_id,
+                    client_data=change.data,
+                    server_data=_entity_to_dict(existing),
+                    client_updated_at=change.client_updated_at,
+                    server_updated_at=existing.updated_at,
+                    resolution="server_wins",
+                )
+            # Client wins - update existing
+            if "times_per_day" in change.data:
+                existing.times_per_day = change.data["times_per_day"]
+            if "scheduled_times" in change.data:
+                existing.scheduled_times = change.data["scheduled_times"]
+            if "food_type" in change.data:
+                existing.food_type = change.data["food_type"]
+            if "portion_hint" in change.data:
+                existing.portion_hint = change.data["portion_hint"]
+            logger.debug(f"CREATE->UPDATE schedule {change.entity_id}: client wins")
+        else:
+            # Create new schedule
+            aquarium_id = change.data.get("aquarium_id")
+            if aquarium_id:
+                aquarium_id = UUID(str(aquarium_id))
+
+            schedule = FeedingSchedule(
+                id=change.entity_id,
+                aquarium_id=aquarium_id,
+                times_per_day=change.data.get("times_per_day", 2),
+                scheduled_times=change.data.get("scheduled_times", []),
+                food_type=change.data.get("food_type", "flakes"),
+                portion_hint=change.data.get("portion_hint"),
+            )
+            db.add(schedule)
+            logger.debug(f"Created schedule {change.entity_id}")
+
+    elif change.operation == "update":
+        if existing is None:
+            logger.debug(f"UPDATE skipped for non-existent schedule {change.entity_id}")
+            return None
+
+        winner = resolve_conflict(existing.updated_at, change.client_updated_at)
+        if winner == "server":
+            logger.debug(f"UPDATE conflict for schedule {change.entity_id}: server wins")
+            return ConflictItem(
+                entity_type="schedule",
+                entity_id=change.entity_id,
+                client_data=change.data,
+                server_data=_entity_to_dict(existing),
+                client_updated_at=change.client_updated_at,
+                server_updated_at=existing.updated_at,
+                resolution="server_wins",
+            )
+
+        # Client wins - apply update
+        if "times_per_day" in change.data:
+            existing.times_per_day = change.data["times_per_day"]
+        if "scheduled_times" in change.data:
+            existing.scheduled_times = change.data["scheduled_times"]
+        if "food_type" in change.data:
+            existing.food_type = change.data["food_type"]
+        if "portion_hint" in change.data:
+            existing.portion_hint = change.data["portion_hint"]
+        logger.debug(f"Updated schedule {change.entity_id}")
+
+    elif change.operation == "delete":
+        if existing is None:
+            logger.debug(f"DELETE skipped for non-existent schedule {change.entity_id}")
+            return None
+
+        winner = resolve_conflict(existing.updated_at, change.client_updated_at)
+        if winner == "server":
+            logger.debug(f"DELETE conflict for schedule {change.entity_id}: server wins")
+            return ConflictItem(
+                entity_type="schedule",
+                entity_id=change.entity_id,
+                client_data=change.data,
+                server_data=_entity_to_dict(existing),
+                client_updated_at=change.client_updated_at,
+                server_updated_at=existing.updated_at,
+                resolution="server_wins",
+            )
+
+        # Client wins - hard delete
+        await db.delete(existing)
+        logger.debug(f"Hard deleted schedule {change.entity_id}")
+
+    return None
+
+
+async def _apply_streak_change(
+    db: AsyncSession,
+    user_id: UUID,
+    change: ChangeItem,
+) -> ConflictItem | None:
+    """Apply a single streak change.
+
+    Streaks are user-scoped and use user_id as primary key.
+    Only update operations are allowed - streaks are created server-side.
+
+    Args:
+        db: Database session.
+        user_id: User ID applying the change.
+        change: Change item to apply.
+
+    Returns:
+        ConflictItem if conflict detected, None otherwise.
+    """
+    # Streak uses user_id as primary key
+    stmt = select(Streak).where(Streak.user_id == user_id)
+    result = await db.execute(stmt)
+    existing = result.scalar_one_or_none()
+
+    if change.operation in ("create", "update"):
+        if existing is None:
+            # Create new streak for user
+            from datetime import date as date_type
+
+            last_feed_date = None
+            if "last_feed_date" in change.data and change.data["last_feed_date"]:
+                lfd = change.data["last_feed_date"]
+                if isinstance(lfd, str):
+                    last_feed_date = date_type.fromisoformat(lfd[:10])
+                else:
+                    last_feed_date = lfd
+
+            streak = Streak(
+                user_id=user_id,
+                current_streak=change.data.get("current_streak", 0),
+                best_streak=change.data.get("best_streak", 0),
+                freeze_available=change.data.get("freeze_available", 2),
+                freeze_used_this_period=change.data.get("freeze_used_this_period", 0),
+                last_feed_date=last_feed_date,
+            )
+            db.add(streak)
+            logger.debug(f"Created streak for user {user_id}")
+        else:
+            # Check for conflict
+            winner = resolve_conflict(existing.updated_at, change.client_updated_at)
+            if winner == "server":
+                logger.debug(f"UPDATE conflict for streak {user_id}: server wins")
+                return ConflictItem(
+                    entity_type="streak",
+                    entity_id=change.entity_id,
+                    client_data=change.data,
+                    server_data=_entity_to_dict(existing),
+                    client_updated_at=change.client_updated_at,
+                    server_updated_at=existing.updated_at,
+                    resolution="server_wins",
+                )
+
+            # Client wins - apply update
+            if "current_streak" in change.data:
+                existing.current_streak = change.data["current_streak"]
+            if "best_streak" in change.data:
+                existing.best_streak = change.data["best_streak"]
+            if "freeze_available" in change.data:
+                existing.freeze_available = change.data["freeze_available"]
+            if "freeze_used_this_period" in change.data:
+                existing.freeze_used_this_period = change.data["freeze_used_this_period"]
+            if "last_feed_date" in change.data:
+                from datetime import date as date_type
+
+                lfd = change.data["last_feed_date"]
+                if lfd:
+                    if isinstance(lfd, str):
+                        existing.last_feed_date = date_type.fromisoformat(lfd[:10])
+                    else:
+                        existing.last_feed_date = lfd
+                else:
+                    existing.last_feed_date = None
+            logger.debug(f"Updated streak for user {user_id}")
+
+    # Delete operation not supported for streaks
+    elif change.operation == "delete":
+        logger.debug(f"DELETE not supported for streaks, ignoring {change.entity_id}")
+
+    return None
+
+
+async def _apply_achievement_change(
+    db: AsyncSession,
+    user_id: UUID,
+    change: ChangeItem,
+) -> ConflictItem | None:
+    """Apply a single achievement change.
+
+    Achievements are typically created server-side when unlocked.
+    Client can report achievement unlocks for offline scenarios.
+
+    Args:
+        db: Database session.
+        user_id: User ID applying the change.
+        change: Change item to apply.
+
+    Returns:
+        ConflictItem if conflict detected, None otherwise.
+    """
+    stmt = select(Achievement).where(Achievement.id == change.entity_id)
+    result = await db.execute(stmt)
+    existing = result.scalar_one_or_none()
+
+    if change.operation == "create":
+        if existing is not None:
+            # Achievement already exists - no conflict, just skip
+            logger.debug(f"Achievement {change.entity_id} already exists, skipping")
+            return None
+
+        # Create new achievement
+        unlocked_at = None
+        if "unlocked_at" in change.data and change.data["unlocked_at"]:
+            ua = change.data["unlocked_at"]
+            if isinstance(ua, str):
+                unlocked_at = datetime.fromisoformat(ua.replace("Z", "+00:00"))
+            else:
+                unlocked_at = ua
+
+        achievement = Achievement(
+            id=change.entity_id,
+            user_id=user_id,
+            achievement_type=change.data.get("achievement_type", "unknown"),
+            unlocked_at=unlocked_at or datetime.now(UTC),
+        )
+        db.add(achievement)
+        logger.debug(f"Created achievement {change.entity_id}")
+
+    elif change.operation == "update":
+        if existing is None:
+            logger.debug(f"UPDATE skipped for non-existent achievement {change.entity_id}")
+            return None
+
+        # Achievements are mostly immutable, only shared_at can be updated
+        if "shared_at" in change.data:
+            sa = change.data["shared_at"]
+            if sa:
+                if isinstance(sa, str):
+                    existing.shared_at = datetime.fromisoformat(sa.replace("Z", "+00:00"))
+                else:
+                    existing.shared_at = sa
+            else:
+                existing.shared_at = None
+        logger.debug(f"Updated achievement {change.entity_id}")
+
+    # Delete operation not supported for achievements
+    elif change.operation == "delete":
+        logger.debug(f"DELETE not supported for achievements, ignoring {change.entity_id}")
+
+    return None
+
+
+async def _apply_progress_change(
+    db: AsyncSession,
+    user_id: UUID,
+    change: ChangeItem,
+) -> ConflictItem | None:
+    """Apply a single user progress change.
+
+    Progress is user-scoped and uses user_id as primary key.
+
+    Args:
+        db: Database session.
+        user_id: User ID applying the change.
+        change: Change item to apply.
+
+    Returns:
+        ConflictItem if conflict detected, None otherwise.
+    """
+    # Progress uses user_id as primary key
+    stmt = select(UserProgress).where(UserProgress.user_id == user_id)
+    result = await db.execute(stmt)
+    existing = result.scalar_one_or_none()
+
+    if change.operation in ("create", "update"):
+        if existing is None:
+            # Create new progress for user
+            progress = UserProgress(
+                user_id=user_id,
+                total_xp=change.data.get("total_xp", 0),
+                level=change.data.get("level", 1),
+            )
+            db.add(progress)
+            logger.debug(f"Created progress for user {user_id}")
+        else:
+            # Check for conflict
+            winner = resolve_conflict(existing.updated_at, change.client_updated_at)
+            if winner == "server":
+                logger.debug(f"UPDATE conflict for progress {user_id}: server wins")
+                return ConflictItem(
+                    entity_type="progress",
+                    entity_id=change.entity_id,
+                    client_data=change.data,
+                    server_data=_entity_to_dict(existing),
+                    client_updated_at=change.client_updated_at,
+                    server_updated_at=existing.updated_at,
+                    resolution="server_wins",
+                )
+
+            # Client wins - apply update (XP can only go up)
+            if "total_xp" in change.data:
+                new_xp = change.data["total_xp"]
+                if new_xp > existing.total_xp:
+                    existing.total_xp = new_xp
+                    existing.last_xp_awarded_at = datetime.now(UTC)
+            if "level" in change.data:
+                new_level = change.data["level"]
+                if new_level > existing.level:
+                    existing.level = new_level
+                    existing.last_level_up_at = datetime.now(UTC)
+            logger.debug(f"Updated progress for user {user_id}")
+
+    # Delete operation not supported for progress
+    elif change.operation == "delete":
+        logger.debug(f"DELETE not supported for progress, ignoring {change.entity_id}")
+
+    return None
+
+
 async def apply_changes(
     db: AsyncSession,
     user_id: UUID,
@@ -866,7 +1319,11 @@ async def apply_changes(
         f"Applying changes for user {user_id}: "
         f"{len(grouped['aquarium'])} aquariums, "
         f"{len(grouped['fish'])} fish, "
-        f"{len(grouped['event'])} events"
+        f"{len(grouped['event'])} events, "
+        f"{len(grouped['schedule'])} schedules, "
+        f"{len(grouped['streak'])} streaks, "
+        f"{len(grouped['achievement'])} achievements, "
+        f"{len(grouped['progress'])} progress"
     )
 
     # Process aquarium changes
@@ -884,6 +1341,30 @@ async def apply_changes(
     # Process event changes
     for change in grouped["event"]:
         conflict = await _apply_event_change(db, user_id, change)
+        if conflict:
+            conflicts.append(conflict)
+
+    # Process schedule changes
+    for change in grouped["schedule"]:
+        conflict = await _apply_schedule_change(db, user_id, change)
+        if conflict:
+            conflicts.append(conflict)
+
+    # Process streak changes (user-scoped)
+    for change in grouped["streak"]:
+        conflict = await _apply_streak_change(db, user_id, change)
+        if conflict:
+            conflicts.append(conflict)
+
+    # Process achievement changes (user-scoped)
+    for change in grouped["achievement"]:
+        conflict = await _apply_achievement_change(db, user_id, change)
+        if conflict:
+            conflicts.append(conflict)
+
+    # Process progress changes (user-scoped)
+    for change in grouped["progress"]:
+        conflict = await _apply_progress_change(db, user_id, change)
         if conflict:
             conflicts.append(conflict)
 
@@ -921,20 +1402,54 @@ async def get_server_state(
         db, user_id, include_deleted=include_deleted
     )
 
+    # Build queries based on delta sync or initial sync
+    aquariums_data: list[dict[str, Any]] = []
+    fish_data: list[dict[str, Any]] = []
+    events_data: list[dict[str, Any]] = []
+    schedules_data: list[dict[str, Any]] = []
+    streaks_data: list[dict[str, Any]] = []
+    achievements_data: list[dict[str, Any]] = []
+    progress_data: list[dict[str, Any]] = []
+    deleted = DeletedEntities()
+
+    # Query user-scoped entities (streaks, achievements, progress)
+    # These don't depend on aquariums
+    # Query streak
+    streak_stmt = select(Streak).where(Streak.user_id == user_id)
+    if since is not None:
+        streak_stmt = streak_stmt.where(Streak.updated_at >= since)
+    result = await db.execute(streak_stmt)
+    for streak in result.scalars().all():
+        streaks_data.append(_entity_to_dict(streak))
+
+    # Query achievements
+    achievement_stmt = select(Achievement).where(Achievement.user_id == user_id)
+    if since is not None:
+        achievement_stmt = achievement_stmt.where(Achievement.unlocked_at >= since)
+    result = await db.execute(achievement_stmt)
+    for achievement in result.scalars().all():
+        achievements_data.append(_entity_to_dict(achievement))
+
+    # Query progress
+    progress_stmt = select(UserProgress).where(UserProgress.user_id == user_id)
+    if since is not None:
+        progress_stmt = progress_stmt.where(UserProgress.updated_at >= since)
+    result = await db.execute(progress_stmt)
+    for progress in result.scalars().all():
+        progress_data.append(_entity_to_dict(progress))
+
     if not user_aquarium_ids:
         logger.debug(f"No aquariums found for user {user_id}")
         return ServerState(
             aquariums=[],
             fish=[],
             events=[],
+            schedules=[],
+            streaks=streaks_data,
+            achievements=achievements_data,
+            progress=progress_data,
             deleted=DeletedEntities(),
         )
-
-    # Build queries based on delta sync or initial sync
-    aquariums_data: list[dict[str, Any]] = []
-    fish_data: list[dict[str, Any]] = []
-    events_data: list[dict[str, Any]] = []
-    deleted = DeletedEntities()
 
     # Query aquariums
     aquarium_stmt = select(Aquarium).where(Aquarium.id.in_(user_aquarium_ids))
@@ -1004,10 +1519,24 @@ async def get_server_state(
     for event in result.scalars().all():
         events_data.append(_entity_to_dict(event))
 
+    # Query feeding schedules
+    schedule_stmt = select(FeedingSchedule).where(
+        FeedingSchedule.aquarium_id.in_(user_aquarium_ids)
+    )
+
+    if since is not None:
+        schedule_stmt = schedule_stmt.where(FeedingSchedule.updated_at >= since)
+
+    result = await db.execute(schedule_stmt)
+    for schedule in result.scalars().all():
+        schedules_data.append(_entity_to_dict(schedule))
+
     logger.debug(
         f"get_server_state returning: "
         f"{len(aquariums_data)} aquariums, {len(fish_data)} fish, "
-        f"{len(events_data)} events, "
+        f"{len(events_data)} events, {len(schedules_data)} schedules, "
+        f"{len(streaks_data)} streaks, {len(achievements_data)} achievements, "
+        f"{len(progress_data)} progress, "
         f"{len(deleted.aquariums)} deleted aquariums, "
         f"{len(deleted.fish)} deleted fish"
     )
@@ -1016,6 +1545,10 @@ async def get_server_state(
         aquariums=aquariums_data,
         fish=fish_data,
         events=events_data,
+        schedules=schedules_data,
+        streaks=streaks_data,
+        achievements=achievements_data,
+        progress=progress_data,
         deleted=deleted,
     )
 
@@ -1027,7 +1560,8 @@ def _apply_pagination(
 ) -> tuple[ServerState, bool, str | None]:
     """Apply pagination to server state.
 
-    Paginates across all entity types in order: aquariums, fish, events.
+    Paginates across all entity types in order: aquariums, fish, events, schedules.
+    User-scoped entities (streaks, achievements, progress) are always included in full.
     Uses cursor format: "entity_type:index" (e.g., "fish:50").
 
     Args:
@@ -1038,7 +1572,7 @@ def _apply_pagination(
     Returns:
         Tuple of (paginated_state, has_more, next_cursor).
     """
-    # Combine all items for pagination
+    # Combine all aquarium-scoped items for pagination
     all_items: list[tuple[str, dict[str, Any]]] = []
     for aquarium in server_state.aquariums:
         all_items.append(("aquarium", aquarium))
@@ -1046,6 +1580,8 @@ def _apply_pagination(
         all_items.append(("fish", fish))
     for event in server_state.events:
         all_items.append(("event", event))
+    for schedule in server_state.schedules:
+        all_items.append(("schedule", schedule))
 
     # Determine starting position from cursor
     start_index = 0
@@ -1066,6 +1602,7 @@ def _apply_pagination(
     paginated_aquariums: list[dict[str, Any]] = []
     paginated_fish: list[dict[str, Any]] = []
     paginated_events: list[dict[str, Any]] = []
+    paginated_schedules: list[dict[str, Any]] = []
 
     for entity_type, data in paginated_items:
         if entity_type == "aquarium":
@@ -1074,12 +1611,19 @@ def _apply_pagination(
             paginated_fish.append(data)
         elif entity_type == "event":
             paginated_events.append(data)
+        elif entity_type == "schedule":
+            paginated_schedules.append(data)
 
     return (
         ServerState(
             aquariums=paginated_aquariums,
             fish=paginated_fish,
             events=paginated_events,
+            schedules=paginated_schedules,
+            # User-scoped entities are always included in full (not paginated)
+            streaks=server_state.streaks,
+            achievements=server_state.achievements,
+            progress=server_state.progress,
             deleted=server_state.deleted,  # Deleted items are always included in full
         ),
         has_more,
