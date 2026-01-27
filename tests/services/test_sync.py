@@ -1081,11 +1081,12 @@ async def test_apply_changes_delete_event_client_wins(
 
         assert response.conflicts == []
 
-        # Verify event was hard deleted
+        # Verify event was soft deleted
         stmt = select(FeedingEvent).where(FeedingEvent.id == event_id)
         result = await async_session.execute(stmt)
         deleted_event = result.scalar_one_or_none()
-        assert deleted_event is None
+        assert deleted_event is not None
+        assert deleted_event.deleted_at is not None
     finally:
         await cleanup_sync_test_data(async_session)
 
@@ -1646,12 +1647,15 @@ async def test_process_sync_includes_server_state_with_entities(
         response = await process_sync(async_session, user.id, request)
 
         # Verify server_state contains entities
+        # Note: process_sync auto-generates feeding schedules/events for aquariums with fish
         assert len(response.server_state.aquariums) == 1
         assert len(response.server_state.fish) == 1
-        assert len(response.server_state.events) == 1
+        assert len(response.server_state.events) >= 1  # May include auto-generated events
         assert response.server_state.aquariums[0]["id"] == str(aquarium.id)
         assert response.server_state.fish[0]["id"] == str(fish.id)
-        assert response.server_state.events[0]["id"] == str(event.id)
+        # Verify our test event is included in the response
+        event_ids = [e["id"] for e in response.server_state.events]
+        assert str(event.id) in event_ids
     finally:
         await cleanup_sync_test_data(async_session)
 

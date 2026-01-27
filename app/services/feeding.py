@@ -4,7 +4,7 @@ import logging
 from datetime import UTC, date, datetime, time
 from uuid import UUID
 
-from sqlalchemy import and_, delete, select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -40,9 +40,7 @@ class ScheduleNotFoundError(FeedingError):
     """Raised when feeding schedule is not found."""
 
     def __init__(self, aquarium_id: UUID):
-        super().__init__(
-            f"Feeding schedule not found for aquarium '{aquarium_id}'", status_code=404
-        )
+        super().__init__(f"Feeding schedule not found for aquarium '{aquarium_id}'", status_code=404)
 
 
 class EventNotFoundError(FeedingError):
@@ -56,9 +54,7 @@ class EventAlreadyCompletedError(FeedingError):
     """Raised when trying to mark an already completed event."""
 
     def __init__(self, event_id: UUID):
-        super().__init__(
-            f"Feeding event '{event_id}' is already completed", status_code=400
-        )
+        super().__init__(f"Feeding event '{event_id}' is already completed", status_code=400)
 
 
 async def generate_schedule(
@@ -114,9 +110,7 @@ async def generate_schedule(
     scheduled_times = DEFAULT_TIMES[max_frequency]
 
     # Check for existing schedule
-    schedule_stmt = select(FeedingSchedule).where(
-        FeedingSchedule.aquarium_id == aquarium_id
-    )
+    schedule_stmt = select(FeedingSchedule).where(FeedingSchedule.aquarium_id == aquarium_id)
     schedule_result = await db.execute(schedule_stmt)
     schedule = schedule_result.scalar_one_or_none()
 
@@ -145,10 +139,7 @@ async def generate_schedule(
     await db.commit()
     await db.refresh(schedule)
 
-    logger.info(
-        f"Generated schedule for aquarium '{aquarium_id}': "
-        f"{max_frequency}x/day at {scheduled_times}"
-    )
+    logger.info(f"Generated schedule for aquarium '{aquarium_id}': {max_frequency}x/day at {scheduled_times}")
     return schedule
 
 
@@ -215,8 +206,7 @@ async def update_schedule(
     # Convert time objects to strings for scheduled_times
     if "scheduled_times" in update_data and update_data["scheduled_times"]:
         update_data["scheduled_times"] = [
-            t.strftime("%H:%M") if isinstance(t, time) else t
-            for t in update_data["scheduled_times"]
+            t.strftime("%H:%M") if isinstance(t, time) else t for t in update_data["scheduled_times"]
         ]
 
     for field, value in update_data.items():
@@ -259,6 +249,7 @@ async def get_all_events(
     stmt = (
         select(FeedingEvent)
         .where(FeedingEvent.aquarium_id == aquarium_id)
+        .where(FeedingEvent.deleted_at.is_(None))
         .order_by(FeedingEvent.scheduled_at.desc())
     )
 
@@ -296,6 +287,7 @@ async def get_today_events(
         .where(FeedingEvent.aquarium_id == aquarium_id)
         .where(FeedingEvent.scheduled_at >= today_start)
         .where(FeedingEvent.scheduled_at <= today_end)
+        .where(FeedingEvent.deleted_at.is_(None))
         .order_by(FeedingEvent.scheduled_at)
     )
 
@@ -319,10 +311,13 @@ async def get_event(
         FeedingEvent.
 
     Raises:
-        EventNotFoundError: If event not found.
+        EventNotFoundError: If event not found or deleted.
         AquariumAccessDeniedError: If user doesn't have access.
     """
-    stmt = select(FeedingEvent).where(FeedingEvent.id == event_id)
+    stmt = select(FeedingEvent).where(
+        FeedingEvent.id == event_id,
+        FeedingEvent.deleted_at.is_(None),
+    )
     result = await db.execute(stmt)
     event = result.scalar_one_or_none()
 
@@ -402,9 +397,12 @@ async def mark_as_missed(
         Updated FeedingEvent.
 
     Raises:
-        EventNotFoundError: If event not found.
+        EventNotFoundError: If event not found or deleted.
     """
-    stmt = select(FeedingEvent).where(FeedingEvent.id == event_id)
+    stmt = select(FeedingEvent).where(
+        FeedingEvent.id == event_id,
+        FeedingEvent.deleted_at.is_(None),
+    )
     result = await db.execute(stmt)
     event = result.scalar_one_or_none()
 
@@ -492,7 +490,7 @@ async def _regenerate_events_for_date(
 ) -> None:
     """Regenerate events for a schedule on specific date.
 
-    Deletes existing pending events and creates new ones based on schedule.
+    Soft deletes existing pending events and creates new ones based on schedule.
     Preserves completed/missed events.
 
     Args:
@@ -502,17 +500,23 @@ async def _regenerate_events_for_date(
     """
     date_start = datetime.combine(target_date, time.min, tzinfo=UTC)
     date_end = datetime.combine(target_date, time.max, tzinfo=UTC)
+    now = datetime.now(UTC)
 
-    # Delete only pending events for this schedule on this date
-    delete_stmt = delete(FeedingEvent).where(
+    # Soft delete only pending, non-deleted events for this schedule on this date
+    select_stmt = select(FeedingEvent).where(
         and_(
             FeedingEvent.schedule_id == schedule.id,
             FeedingEvent.scheduled_at >= date_start,
             FeedingEvent.scheduled_at <= date_end,
             FeedingEvent.status == "pending",
+            FeedingEvent.deleted_at.is_(None),
         )
     )
-    await db.execute(delete_stmt)
+    result = await db.execute(select_stmt)
+    events_to_delete = result.scalars().all()
+
+    for event in events_to_delete:
+        event.deleted_at = now
 
     # Create new events
     await _create_events_for_schedule(db, schedule, target_date)
@@ -525,6 +529,8 @@ async def _create_events_for_schedule(
 ) -> int:
     """Create feeding events for a schedule on specific date.
 
+    Creates events per species based on each species' feeding frequency.
+    Each species in the aquarium gets events at times appropriate for it.
     Checks for existing events to avoid duplicates.
 
     Args:
@@ -538,40 +544,87 @@ async def _create_events_for_schedule(
     date_start = datetime.combine(target_date, time.min, tzinfo=UTC)
     date_end = datetime.combine(target_date, time.max, tzinfo=UTC)
 
-    # Get existing events for this schedule on this date
+    # Get ALL active fish from aquarium with species loaded
+    fish_stmt = (
+        select(Fish)
+        .where(Fish.aquarium_id == schedule.aquarium_id)
+        .where(Fish.deleted_at.is_(None))
+        .options(selectinload(Fish.species))
+    )
+    fish_result = await db.execute(fish_stmt)
+    all_fish = list(fish_result.scalars().all())
+
+    # Get unique species with their feeding frequencies
+    # Use dict to get one fish per species (for species_id tracking)
+    species_map: dict[str, Fish] = {}
+    for fish in all_fish:
+        if fish.species_id not in species_map:
+            species_map[fish.species_id] = fish
+
+    # Get existing active events for this schedule on this date
     existing_stmt = (
         select(FeedingEvent)
         .where(FeedingEvent.schedule_id == schedule.id)
         .where(FeedingEvent.scheduled_at >= date_start)
         .where(FeedingEvent.scheduled_at <= date_end)
+        .where(FeedingEvent.deleted_at.is_(None))
     )
     existing_result = await db.execute(existing_stmt)
     existing_events = list(existing_result.scalars().all())
 
-    # Get existing scheduled times
-    existing_times = {event.scheduled_at for event in existing_events}
+    # Track existing (scheduled_at, species_id) pairs to avoid duplicates
+    existing_pairs = {(event.scheduled_at, event.species_id) for event in existing_events}
 
     created_count = 0
 
-    for time_str in schedule.scheduled_times:
-        # Parse time string (format: "HH:MM")
-        hour, minute = map(int, time_str.split(":"))
-        scheduled_time = time(hour, minute, tzinfo=UTC)
-        scheduled_at = datetime.combine(
-            target_date, scheduled_time, tzinfo=UTC
-        )
+    # Create events for each species based on its feeding frequency
+    for species_id, fish in species_map.items():
+        # Get feeding frequency for this species
+        frequency = DEFAULT_FREQUENCY
+        if fish.species and fish.species.feeding_frequency:
+            frequency = max(1, min(3, fish.species.feeding_frequency))
 
-        # Skip if event already exists for this time
-        if scheduled_at in existing_times:
-            continue
+        # Get scheduled times for this frequency
+        species_times = DEFAULT_TIMES.get(frequency, DEFAULT_TIMES[DEFAULT_FREQUENCY])
 
-        event = FeedingEvent(
-            aquarium_id=schedule.aquarium_id,
-            schedule_id=schedule.id,
-            scheduled_at=scheduled_at,
-            status="pending",
-        )
-        db.add(event)
-        created_count += 1
+        for time_str in species_times:
+            # Parse time string (format: "HH:MM")
+            hour, minute = map(int, time_str.split(":"))
+            scheduled_time = time(hour, minute, tzinfo=UTC)
+            scheduled_at = datetime.combine(target_date, scheduled_time, tzinfo=UTC)
+
+            # Skip if event already exists for this time + species
+            if (scheduled_at, species_id) in existing_pairs:
+                continue
+
+            event = FeedingEvent(
+                aquarium_id=schedule.aquarium_id,
+                schedule_id=schedule.id,
+                fish_id=None,  # No longer tied to specific fish
+                species_id=species_id,  # Tied to species instead
+                scheduled_at=scheduled_at,
+                status="pending",
+            )
+            db.add(event)
+            created_count += 1
+
+    # If no fish in aquarium, create events based on schedule's times_per_day
+    if not species_map:
+        for time_str in schedule.scheduled_times:
+            hour, minute = map(int, time_str.split(":"))
+            scheduled_time = time(hour, minute, tzinfo=UTC)
+            scheduled_at = datetime.combine(target_date, scheduled_time, tzinfo=UTC)
+
+            if (scheduled_at, None) not in existing_pairs:
+                event = FeedingEvent(
+                    aquarium_id=schedule.aquarium_id,
+                    schedule_id=schedule.id,
+                    fish_id=None,
+                    species_id=None,
+                    scheduled_at=scheduled_at,
+                    status="pending",
+                )
+                db.add(event)
+                created_count += 1
 
     return created_count

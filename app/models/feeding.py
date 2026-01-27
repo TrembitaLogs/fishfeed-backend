@@ -6,7 +6,7 @@ from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.models.base import Base, TimestampMixin
+from app.models.base import Base, SoftDeleteMixin, TimestampMixin
 from app.models.user import JSONType
 
 if TYPE_CHECKING:
@@ -62,7 +62,7 @@ class FeedingSchedule(Base, TimestampMixin):
     )
 
 
-class FeedingEvent(Base, TimestampMixin):
+class FeedingEvent(Base, TimestampMixin, SoftDeleteMixin):
     """Feeding event model for tracking individual feeding occurrences."""
 
     __tablename__ = "feeding_events"
@@ -153,5 +153,11 @@ class FeedingEvent(Base, TimestampMixin):
             "idx_feeding_events_pending",
             "status",
             postgresql_where=text("status = 'pending'"),
+        ),
+        Index(
+            "idx_feeding_events_active",
+            "aquarium_id",
+            "scheduled_at",
+            postgresql_where=text("deleted_at IS NULL"),
         ),
     )

@@ -160,12 +160,7 @@ async def get_fish(
         FishNotFoundError: If fish not found or deleted.
         AquariumAccessDeniedError: If user doesn't have access.
     """
-    stmt = (
-        select(Fish)
-        .where(Fish.id == fish_id)
-        .where(Fish.deleted_at.is_(None))
-        .options(selectinload(Fish.species))
-    )
+    stmt = select(Fish).where(Fish.id == fish_id).where(Fish.deleted_at.is_(None)).options(selectinload(Fish.species))
 
     result = await db.execute(stmt)
     fish = result.scalar_one_or_none()
@@ -226,7 +221,7 @@ async def remove_fish(
     fish_id: UUID,
     user_id: UUID,
 ) -> None:
-    """Soft delete a fish.
+    """Soft delete a fish and regenerate feeding schedule.
 
     Args:
         db: Database session.
@@ -239,29 +234,48 @@ async def remove_fish(
     """
     # Get fish with access check
     fish = await get_fish(db, fish_id, user_id)
+    aquarium_id = fish.aquarium_id
+    species_id = fish.species_id
 
-    # Soft delete
+    # Soft delete the fish
     fish.deleted_at = datetime.now(UTC)
+    await db.flush()
 
-    # Cascade delete: remove all feeding events for this fish
-    delete_stmt = select(FeedingEvent).where(FeedingEvent.fish_id == fish_id)
-    events_result = await db.execute(delete_stmt)
-    events_to_delete = events_result.scalars().all()
-    for event in events_to_delete:
-        await db.delete(event)
+    # Check if there are other fish of the same species remaining
+    remaining_stmt = (
+        select(Fish)
+        .where(Fish.aquarium_id == aquarium_id)
+        .where(Fish.species_id == species_id)
+        .where(Fish.deleted_at.is_(None))
+    )
+    remaining_result = await db.execute(remaining_stmt)
+    remaining_fish = remaining_result.scalars().first()
+
+    # If no fish of this species remaining, soft delete events for this species
+    deleted_events_count = 0
+    if remaining_fish is None:
+        now = datetime.now(UTC)
+        events_stmt = (
+            select(FeedingEvent)
+            .where(FeedingEvent.aquarium_id == aquarium_id)
+            .where(FeedingEvent.species_id == species_id)
+            .where(FeedingEvent.status == "pending")
+            .where(FeedingEvent.deleted_at.is_(None))
+        )
+        events_result = await db.execute(events_stmt)
+        events_to_delete = events_result.scalars().all()
+        for event in events_to_delete:
+            event.deleted_at = now
+        deleted_events_count = len(events_to_delete)
 
     await db.commit()
 
-    if events_to_delete:
+    if deleted_events_count:
         logger.info(
-            f"Cascade deleted {len(events_to_delete)} feeding events "
-            f"for fish '{fish_id}'"
+            f"Soft deleted {deleted_events_count} feeding events for species '{species_id}' in aquarium '{aquarium_id}'"
         )
 
-    logger.info(
-        f"Soft deleted fish '{fish_id}' from aquarium '{fish.aquarium_id}' "
-        f"by user '{user_id}'"
-    )
+    logger.info(f"Soft deleted fish '{fish_id}' from aquarium '{aquarium_id}' by user '{user_id}'")
 
 
 async def get_fish_by_species(
