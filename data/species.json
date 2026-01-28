@@ -3845,5 +3845,19 @@
       "is_popular": true
     },
     "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/37/Mikrogeophagus_ramirezi_male.jpg/320px-Mikrogeophagus_ramirezi_male.jpg"
+  },
+  {
+    "id": "default",
+    "common_name": "Unknown Species",
+    "scientific_name": null,
+    "food_types": [
+      "flakes"
+    ],
+    "feeding_frequency": 2,
+    "portion_hint": "small pinch",
+    "care_level": "beginner",
+    "water_type": "freshwater",
+    "metadata": {},
+    "image_url": null
   }
 ]
