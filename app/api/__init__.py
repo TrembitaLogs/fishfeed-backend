@@ -11,6 +11,7 @@ from app.api.gamification import router as gamification_router
 from app.api.health import router as health_router
 from app.api.purchase import router as purchase_router
 from app.api.push import router as push_router
+from app.api.releases import router as releases_router
 from app.api.species import admin_router as species_admin_router
 from app.api.species import router as species_router
 from app.api.sync import router as sync_router
@@ -31,5 +32,6 @@ __all__ = [
     "gamification_router",
     "health_router",
     "purchase_router",
+    "releases_router",
     "users_router",
 ]

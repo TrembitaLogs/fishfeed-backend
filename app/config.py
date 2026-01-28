@@ -116,6 +116,9 @@ class Settings(BaseSettings):
     ANALYTICS_FORWARD_TIMEOUT_SECONDS: int = 10  # Timeout for external analytics forwarding
     ANALYTICS_FORWARD_MAX_RETRIES: int = 3  # Max retries for external forwarding
 
+    # Mobile Releases
+    RELEASES_DIR: str = "/app/mobile/releases"
+
     # Analytics Cleanup (GDPR compliance)
     ANALYTICS_ANONYMIZE_AFTER_DAYS: int = 30  # Days before anonymizing events
     ANALYTICS_RETENTION_DAYS: int = 90  # Days before deleting events

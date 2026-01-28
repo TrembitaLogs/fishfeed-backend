@@ -17,6 +17,7 @@ from app.api import (
     health_router,
     purchase_router,
     push_router,
+    releases_router,
     species_admin_router,
     species_router,
     sync_router,
@@ -104,4 +105,5 @@ app.include_router(push_router)
 app.include_router(ai_router)
 app.include_router(gamification_router)
 app.include_router(purchase_router)
+app.include_router(releases_router)
 app.include_router(admin_router)

@@ -7,6 +7,7 @@ services:
       - "8000:8000"
     volumes:
       - ./app:/app/app
+      - ./mobile/releases:/app/mobile/releases:ro
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/fishfeed
       - REDIS_URL=redis://redis:6379/0

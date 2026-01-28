@@ -45,6 +45,7 @@ services:
       - REVENUECAT_WEBHOOK_SECRET=${REVENUECAT_WEBHOOK_SECRET:-}
     volumes:
       - ./secrets:/app/secrets:ro
+      - ./mobile/releases:/app/mobile/releases:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
       interval: 30s
@@ -75,6 +76,15 @@ services:
       - "traefik.http.routers.fishfeed-api-http.middlewares=https-redirect"
       - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
       - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"
+      # Mobile releases with BasicAuth
+      - "traefik.http.routers.fishfeed-releases.rule=Host(`${API_DOMAIN}`) && PathPrefix(`/mobile/releases/`)"
+      - "traefik.http.routers.fishfeed-releases.entrypoints=websecure"
+      - "traefik.http.routers.fishfeed-releases.tls=true"
+      - "traefik.http.routers.fishfeed-releases.tls.certresolver=dns"
+      - "traefik.http.routers.fishfeed-releases.middlewares=releases-auth"
+      - "traefik.http.routers.fishfeed-releases.service=fishfeed-api"
+      - "traefik.http.routers.fishfeed-releases.priority=200"
+      - "traefik.http.middlewares.releases-auth.basicauth.users=${RELEASES_BASIC_AUTH}"
 
   worker:
     image: ghcr.io/${GITHUB_REPOSITORY:-owner/fishfeed}:${IMAGE_TAG:-latest}
