@@ -1,10 +1,12 @@
 """Mobile releases download page for testers."""
 
+import json
 import mimetypes
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from app.config import get_settings
 
@@ -101,7 +103,7 @@ HTML_PAGE = """<!DOCTYPE html>
       const meta = [date, size].filter(Boolean).join(' · ');
       return `<div class="card">
         <div class="card-header">
-          <span class="version">v${r.version}</span>
+          <span class="version">${r.version.startsWith('v') ? '' : 'v'}${r.version}</span>
           ${i === 0 ? '<span class="badge">latest</span>' : ''}
         </div>
         ${meta ? `<div class="meta">${meta}</div>` : ''}
@@ -124,9 +126,34 @@ async def releases_page() -> HTMLResponse:
     return HTMLResponse(content=HTML_PAGE)
 
 
+@router.get("/index.json")
+async def releases_index() -> JSONResponse:
+    """Serve index.json enriched with file size and upload date."""
+    settings = get_settings()
+    base = Path(settings.RELEASES_DIR).resolve()
+    index_file = base / "index.json"
+
+    if not index_file.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    data = json.loads(index_file.read_text())
+    releases = data.get("releases", data) if isinstance(data, dict) else data
+
+    for release in releases:
+        apk_path = base / (release.get("apk") or release.get("file", ""))
+        if apk_path.is_file():
+            stat = apk_path.stat()
+            release["size_mb"] = round(stat.st_size / (1024 * 1024), 1)
+            release["date"] = datetime.fromtimestamp(stat.st_mtime, tz=UTC).strftime(
+                "%Y-%m-%d %H:%M"
+            )
+
+    return JSONResponse(content=releases)
+
+
 @router.get("/{file_path:path}")
 async def releases_file(file_path: str) -> FileResponse:
-    """Serve static files (APK, index.json, etc.) from the releases directory."""
+    """Serve static files (APK, release-notes.txt, etc.) from the releases directory."""
     settings = get_settings()
     base = Path(settings.RELEASES_DIR).resolve()
     target = (base / file_path).resolve()

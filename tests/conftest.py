@@ -19,6 +19,7 @@ from app.api import (
     health_router,
     purchase_router,
     push_router,
+    releases_router,
     species_admin_router,
     species_router,
     sync_router,
@@ -140,6 +141,7 @@ async def app(async_engine, redis_client) -> AsyncGenerator[FastAPI]:
     app.include_router(ai_router)
     app.include_router(gamification_router)
     app.include_router(purchase_router)
+    app.include_router(releases_router)
     app.include_router(admin_router)
 
     async_session_maker = async_sessionmaker(
