@@ -828,10 +828,10 @@ async def test_create_daily_events_does_not_create_duplicates(
         user = await create_test_user(async_session)
         aquarium = await create_test_aquarium(async_session, user)
 
-        # Create schedule (creates today's events)
+        # Create schedule (creates today's events in UTC)
         await generate_schedule(async_session, aquarium.id, user.id)
 
-        today = date.today()
+        today = datetime.now(UTC).date()
 
         # Try to create events again for today
         count = await create_daily_events(async_session, today)
