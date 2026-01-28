@@ -386,6 +386,9 @@ async def start_scheduler() -> AsyncScheduler:
         f"(daily at {settings.ANALYTICS_CLEANUP_HOUR:02d}:{settings.ANALYTICS_CLEANUP_MINUTE:02d} UTC)"
     )
 
+    # Start processing schedules in background
+    await _scheduler.start_in_background()
+
     logger.info("Scheduler started successfully")
     return _scheduler
 

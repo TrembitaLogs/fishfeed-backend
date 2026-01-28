@@ -537,6 +537,53 @@ async def test_run_once_runs_specific_job(async_session: AsyncSession):
         await cleanup_worker_data(async_session)
 
 
+# Scheduler startup tests
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_start_scheduler_calls_start_in_background():
+    """Test that start_scheduler() calls start_in_background() to process jobs.
+
+    This is a regression test for a bug where scheduler was initialized
+    but never started processing jobs because start_in_background() was missing.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.workers import feeding_worker
+
+    # Save original state
+    original_scheduler = feeding_worker._scheduler
+    original_shutdown_event = feeding_worker._shutdown_event
+
+    # Reset global state for test
+    feeding_worker._scheduler = None
+    feeding_worker._shutdown_event = None
+
+    try:
+        # Create mock scheduler
+        mock_scheduler = MagicMock()
+        mock_scheduler.__aenter__ = AsyncMock(return_value=mock_scheduler)
+        mock_scheduler.__aexit__ = AsyncMock(return_value=None)
+        mock_scheduler.add_schedule = AsyncMock()
+        mock_scheduler.start_in_background = AsyncMock()
+
+        with (
+            patch.object(
+                feeding_worker, "AsyncScheduler", return_value=mock_scheduler
+            ),
+            patch.object(feeding_worker, "SQLAlchemyDataStore"),
+            patch.object(feeding_worker, "AsyncpgEventBroker"),
+        ):
+            await feeding_worker.start_scheduler()
+
+            # Verify start_in_background was called - this is critical!
+            mock_scheduler.start_in_background.assert_called_once()
+    finally:
+        # Restore original state
+        feeding_worker._scheduler = original_scheduler
+        feeding_worker._shutdown_event = original_shutdown_event
+
+
 # Streak break detection tests
 
 
