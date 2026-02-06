@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.aquarium import Aquarium, AquariumMember
-from app.models.feeding import FeedingEvent
+from app.models.feeding import FeedingLog
 from app.models.fish import Fish
 from app.models.gamification import Achievement, Streak
 from app.schemas.gamification import AchievementType
@@ -374,25 +374,24 @@ async def _get_user_stats(db: AsyncSession, user_id: UUID) -> UserStats:
         stats.family_members_count = int(family_result.scalar_one())
 
         # Get total completed feedings and time-based achievements
-        feeding_stmt = select(FeedingEvent).where(
-            FeedingEvent.aquarium_id.in_(aquarium_ids),
-            FeedingEvent.status == "completed",
-            FeedingEvent.completed_by == user_id,
+        feeding_stmt = select(FeedingLog).where(
+            FeedingLog.aquarium_id.in_(aquarium_ids),
+            FeedingLog.action == "fed",
+            FeedingLog.acted_by_user_id == user_id,
         )
         feeding_result = await db.execute(feeding_stmt)
-        feedings: list[FeedingEvent] = list(feeding_result.scalars().all())
+        feedings: list[FeedingLog] = list(feeding_result.scalars().all())
         stats.total_feedings = len(feedings)
 
         # Check for early bird (before 7 AM) and night owl (after 10 PM)
         for feeding in feedings:
-            if feeding.completed_at:
-                hour = feeding.completed_at.hour
-                if hour < 7:
-                    stats.has_early_bird_feeding = True
-                if hour >= 22:
-                    stats.has_night_owl_feeding = True
-                if stats.has_early_bird_feeding and stats.has_night_owl_feeding:
-                    break
+            hour = feeding.acted_at.hour
+            if hour < 7:
+                stats.has_early_bird_feeding = True
+            if hour >= 22:
+                stats.has_night_owl_feeding = True
+            if stats.has_early_bird_feeding and stats.has_night_owl_feeding:
+                break
 
     # Check for shared achievements
     shared_stmt = select(Achievement).where(

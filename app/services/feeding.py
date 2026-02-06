@@ -1,30 +1,30 @@
-"""Feeding service with business logic for feeding schedules and events."""
+"""Feeding service with business logic for feeding schedules and logs."""
 
 import logging
-from datetime import UTC, date, datetime, time
+from datetime import date, datetime, timedelta
+from datetime import time as dt_time
 from uuid import UUID
 
-from sqlalchemy import and_, select
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.jobs.notification_jobs import family_feeding_trigger
-from app.models.feeding import FeedingEvent, FeedingSchedule
+from app.models.feeding import FeedingLog, FeedingSchedule
 from app.models.fish import Fish
-from app.schemas.feeding import ScheduleUpdate
+from app.schemas.feeding import FeedingLogCreate, ScheduleCreate, ScheduleUpdate
 from app.services.aquarium import check_access
 from app.services.gamification import check_achievements, update_streak
 
 logger = logging.getLogger(__name__)
 
-# Default scheduled times based on feeding frequency
+# Predefined time distributions for common feeding frequencies
 DEFAULT_TIMES: dict[int, list[str]] = {
-    1: ["08:00"],
-    2: ["08:00", "20:00"],
-    3: ["08:00", "14:00", "20:00"],
+    1: ["09:00"],
+    2: ["09:00", "18:00"],
+    3: ["08:00", "13:00", "18:00"],
 }
-
-DEFAULT_FREQUENCY = 2
 
 
 class FeedingError(Exception):
@@ -39,45 +39,53 @@ class FeedingError(Exception):
 class ScheduleNotFoundError(FeedingError):
     """Raised when feeding schedule is not found."""
 
-    def __init__(self, aquarium_id: UUID):
-        super().__init__(f"Feeding schedule not found for aquarium '{aquarium_id}'", status_code=404)
+    def __init__(self, schedule_id: UUID):
+        super().__init__(f"Feeding schedule '{schedule_id}' not found", status_code=404)
 
 
-class EventNotFoundError(FeedingError):
-    """Raised when feeding event is not found."""
+class FeedingLogConflictError(FeedingError):
+    """Raised when a duplicate feeding log is detected."""
 
-    def __init__(self, event_id: UUID):
-        super().__init__(f"Feeding event '{event_id}' not found", status_code=404)
+    def __init__(self, existing_log: FeedingLog, acted_by_user_name: str | None = None):
+        self.existing_log = existing_log
+        self.acted_by_user_name = acted_by_user_name
+        super().__init__("Feeding log already exists for this schedule and time", status_code=409)
 
 
-class EventAlreadyCompletedError(FeedingError):
-    """Raised when trying to mark an already completed event."""
+def _compute_even_times(frequency: int) -> list[str]:
+    """Compute evenly distributed feeding times for a given frequency.
 
-    def __init__(self, event_id: UUID):
-        super().__init__(f"Feeding event '{event_id}' is already completed", status_code=400)
+    For 1-3 uses predefined times, for 4+ distributes between 07:00 and 21:00.
+    """
+    if frequency in DEFAULT_TIMES:
+        return DEFAULT_TIMES[frequency]
+
+    # Distribute between 07:00 and 21:00
+    start_minutes = 7 * 60
+    end_minutes = 21 * 60
+    step = (end_minutes - start_minutes) / (frequency - 1)
+
+    times: list[str] = []
+    for i in range(frequency):
+        total_minutes = int(start_minutes + i * step)
+        # Round to nearest 5 minutes
+        total_minutes = round(total_minutes / 5) * 5
+        hours, minutes = divmod(total_minutes, 60)
+        times.append(f"{hours:02d}:{minutes:02d}")
+    return times
 
 
 async def generate_schedule(
     db: AsyncSession,
     aquarium_id: UUID,
     user_id: UUID,
-) -> FeedingSchedule:
-    """Generate or update feeding schedule based on fish species in aquarium.
+) -> list[FeedingSchedule]:
+    """Generate feeding schedules based on fish species in aquarium.
 
-    Analyzes all fish in the aquarium, selects max(feeding_frequency) among
-    all species, and generates evenly distributed scheduled_times.
+    Creates per-fish schedules: for each fish, creates N schedules where N
+    equals species.feeding_frequency, with evenly distributed times.
 
-    Args:
-        db: Database session.
-        aquarium_id: Aquarium ID.
-        user_id: User ID for access check.
-
-    Returns:
-        Created or updated FeedingSchedule.
-
-    Raises:
-        AquariumNotFoundError: If aquarium not found.
-        AquariumAccessDeniedError: If user doesn't have access.
+    Idempotent: skips fish that already have schedules to prevent duplicates.
     """
     await check_access(db, aquarium_id, user_id)
 
@@ -91,540 +99,302 @@ async def generate_schedule(
     fish_result = await db.execute(fish_stmt)
     fish_list = list(fish_result.scalars().all())
 
-    # Determine feeding frequency and aggregate food types
-    if fish_list:
-        max_frequency = max(fish.species.feeding_frequency for fish in fish_list)
-        # Aggregate unique food types from all species
-        all_food_types: set[str] = set()
-        for fish in fish_list:
-            if fish.species.food_types:
-                all_food_types.update(fish.species.food_types)
-        food_type = ", ".join(sorted(all_food_types)) if all_food_types else "flakes"
-    else:
-        # Default schedule when no fish
-        max_frequency = DEFAULT_FREQUENCY
-        food_type = "flakes"
+    if not fish_list:
+        return []
 
-    # Clamp frequency to 1-3 range
-    max_frequency = max(1, min(3, max_frequency))
-    scheduled_times = DEFAULT_TIMES[max_frequency]
+    # Get existing schedules to avoid duplicates
+    fish_ids = [f.id for f in fish_list]
+    existing_stmt = select(FeedingSchedule.fish_id, FeedingSchedule.time).where(
+        FeedingSchedule.fish_id.in_(fish_ids)
+    )
+    existing_result = await db.execute(existing_stmt)
+    existing_schedules: set[tuple[UUID, dt_time]] = {
+        (row.fish_id, row.time) for row in existing_result
+    }
 
-    # Check for existing schedule
-    schedule_stmt = select(FeedingSchedule).where(FeedingSchedule.aquarium_id == aquarium_id)
-    schedule_result = await db.execute(schedule_stmt)
-    schedule = schedule_result.scalar_one_or_none()
+    created_schedules: list[FeedingSchedule] = []
+    today = date.today()
 
-    if schedule:
-        # Update existing schedule
-        schedule.times_per_day = max_frequency
-        schedule.scheduled_times = scheduled_times
-        schedule.food_type = food_type
-    else:
-        # Create new schedule
-        schedule = FeedingSchedule(
-            aquarium_id=aquarium_id,
-            times_per_day=max_frequency,
-            scheduled_times=scheduled_times,
-            food_type=food_type,
+    for fish in fish_list:
+        frequency = (
+            fish.species.feeding_frequency
+            if fish.species and fish.species.feeding_frequency
+            else 1
         )
-        db.add(schedule)
+        frequency = max(1, frequency)
 
-    await db.flush()
-    await db.refresh(schedule)
+        food_types = (
+            ", ".join(sorted(fish.species.food_types))
+            if fish.species and fish.species.food_types
+            else "flakes"
+        )
+        portion_hint = fish.species.portion_hint if fish.species else None
 
-    # Regenerate today's events
-    today = datetime.now(UTC).date()
-    await _regenerate_events_for_date(db, schedule, today)
+        times = _compute_even_times(frequency)
 
-    await db.commit()
-    await db.refresh(schedule)
+        for time_str in times:
+            time_obj = dt_time.fromisoformat(time_str)
 
-    logger.info(f"Generated schedule for aquarium '{aquarium_id}': {max_frequency}x/day at {scheduled_times}")
-    return schedule
+            # Skip if schedule already exists for this fish+time combination
+            if (fish.id, time_obj) in existing_schedules:
+                logger.debug(f"Skipping existing schedule for fish {fish.id} at {time_str}")
+                continue
+
+            schedule = FeedingSchedule(
+                aquarium_id=aquarium_id,
+                fish_id=fish.id,
+                time=time_obj,
+                interval_days=1,
+                anchor_date=today,
+                food_type=food_types,
+                portion_hint=portion_hint,
+                active=True,
+                created_by_user_id=user_id,
+            )
+            db.add(schedule)
+            created_schedules.append(schedule)
+
+    if created_schedules:
+        await db.flush()
+        for schedule in created_schedules:
+            await db.refresh(schedule)
+        await db.commit()
+
+    logger.info(
+        f"Generated {len(created_schedules)} new schedules for aquarium"
+        f" '{aquarium_id}' (skipped {len(existing_schedules)} existing)"
+    )
+    return created_schedules
 
 
-async def get_schedule(
+async def get_schedules(
     db: AsyncSession,
     aquarium_id: UUID,
     user_id: UUID,
-) -> FeedingSchedule | None:
-    """Get current feeding schedule for aquarium.
-
-    Args:
-        db: Database session.
-        aquarium_id: Aquarium ID.
-        user_id: User ID for access check.
-
-    Returns:
-        FeedingSchedule if exists, None otherwise.
-
-    Raises:
-        AquariumNotFoundError: If aquarium not found.
-        AquariumAccessDeniedError: If user doesn't have access.
-    """
+    active: bool | None = None,
+) -> list[FeedingSchedule]:
+    """Get feeding schedules for aquarium with optional active filter."""
     await check_access(db, aquarium_id, user_id)
 
     stmt = select(FeedingSchedule).where(FeedingSchedule.aquarium_id == aquarium_id)
+    if active is not None:
+        stmt = stmt.where(FeedingSchedule.active == active)
+
     result = await db.execute(stmt)
-    return result.scalar_one_or_none()
+    return list(result.scalars().all())
+
+
+async def create_schedule(
+    db: AsyncSession,
+    aquarium_id: UUID,
+    user_id: UUID,
+    data: ScheduleCreate,
+) -> FeedingSchedule:
+    """Create a single feeding schedule with validation."""
+    await check_access(db, aquarium_id, user_id)
+
+    # Validate fish belongs to this aquarium
+    fish_stmt = select(Fish).where(
+        Fish.id == data.fish_id,
+        Fish.aquarium_id == aquarium_id,
+        Fish.deleted_at.is_(None),
+    )
+    fish_result = await db.execute(fish_stmt)
+    fish = fish_result.scalar_one_or_none()
+    if fish is None:
+        raise FeedingError(
+            f"Fish '{data.fish_id}' not found in aquarium '{aquarium_id}'",
+            status_code=400,
+        )
+
+    # Validate anchor_date not >7 days in future
+    max_anchor = date.today() + timedelta(days=7)
+    if data.anchor_date > max_anchor:
+        raise FeedingError(
+            "anchor_date cannot be more than 7 days in the future",
+            status_code=400,
+        )
+
+    schedule = FeedingSchedule(
+        aquarium_id=aquarium_id,
+        fish_id=data.fish_id,
+        time=dt_time.fromisoformat(data.time),
+        interval_days=data.interval_days,
+        anchor_date=data.anchor_date,
+        food_type=data.food_type,
+        portion_hint=data.portion_hint,
+        active=True,
+        created_by_user_id=user_id,
+    )
+    db.add(schedule)
+    await db.commit()
+    await db.refresh(schedule)
+
+    logger.info(f"Created schedule '{schedule.id}' for aquarium '{aquarium_id}'")
+    return schedule
 
 
 async def update_schedule(
     db: AsyncSession,
     aquarium_id: UUID,
+    schedule_id: UUID,
     user_id: UUID,
     data: ScheduleUpdate,
 ) -> FeedingSchedule:
-    """Manually update feeding schedule.
-
-    Args:
-        db: Database session.
-        aquarium_id: Aquarium ID.
-        user_id: User ID for access check.
-        data: Partial update data.
-
-    Returns:
-        Updated FeedingSchedule.
-
-    Raises:
-        AquariumNotFoundError: If aquarium not found.
-        AquariumAccessDeniedError: If user doesn't have access.
-        ScheduleNotFoundError: If schedule doesn't exist.
-    """
+    """Update a single schedule by ID with partial data."""
     await check_access(db, aquarium_id, user_id)
 
-    stmt = select(FeedingSchedule).where(FeedingSchedule.aquarium_id == aquarium_id)
+    stmt = select(FeedingSchedule).where(
+        FeedingSchedule.id == schedule_id,
+        FeedingSchedule.aquarium_id == aquarium_id,
+    )
     result = await db.execute(stmt)
     schedule = result.scalar_one_or_none()
 
     if schedule is None:
-        raise ScheduleNotFoundError(aquarium_id)
+        raise ScheduleNotFoundError(schedule_id)
 
-    # Apply partial update
     update_data = data.model_dump(exclude_unset=True)
 
-    # Convert time objects to strings for scheduled_times
-    if "scheduled_times" in update_data and update_data["scheduled_times"]:
-        update_data["scheduled_times"] = [
-            t.strftime("%H:%M") if isinstance(t, time) else t for t in update_data["scheduled_times"]
-        ]
+    # Convert time string to time object if provided
+    if "time" in update_data and update_data["time"] is not None:
+        update_data["time"] = dt_time.fromisoformat(update_data["time"])
+
+    # Validate anchor_date if provided
+    if "anchor_date" in update_data and update_data["anchor_date"] is not None:
+        max_anchor = date.today() + timedelta(days=7)
+        if update_data["anchor_date"] > max_anchor:
+            raise FeedingError(
+                "anchor_date cannot be more than 7 days in the future",
+                status_code=400,
+            )
 
     for field, value in update_data.items():
         setattr(schedule, field, value)
 
-    await db.flush()
-
-    # Regenerate today's events with new schedule
-    today = datetime.now(UTC).date()
-    await _regenerate_events_for_date(db, schedule, today)
-
     await db.commit()
     await db.refresh(schedule)
 
-    logger.info(f"Updated schedule for aquarium '{aquarium_id}': {update_data}")
+    logger.info(f"Updated schedule '{schedule_id}'")
     return schedule
 
 
-async def get_all_events(
+async def delete_schedule(
     db: AsyncSession,
     aquarium_id: UUID,
+    schedule_id: UUID,
     user_id: UUID,
-) -> list[FeedingEvent]:
-    """Get all feeding events for an aquarium.
-
-    Args:
-        db: Database session.
-        aquarium_id: Aquarium ID.
-        user_id: User ID for access check.
-
-    Returns:
-        List of FeedingEvent sorted by scheduled_at DESC.
-
-    Raises:
-        AquariumNotFoundError: If aquarium not found.
-        AquariumAccessDeniedError: If user doesn't have access.
-    """
-    await check_access(db, aquarium_id, user_id)
-
-    stmt = (
-        select(FeedingEvent)
-        .where(FeedingEvent.aquarium_id == aquarium_id)
-        .where(FeedingEvent.deleted_at.is_(None))
-        .order_by(FeedingEvent.scheduled_at.desc())
-    )
-
-    result = await db.execute(stmt)
-    return list(result.scalars().all())
-
-
-async def get_today_events(
-    db: AsyncSession,
-    aquarium_id: UUID,
-    user_id: UUID,
-) -> list[FeedingEvent]:
-    """Get feeding events for today.
-
-    Args:
-        db: Database session.
-        aquarium_id: Aquarium ID.
-        user_id: User ID for access check.
-
-    Returns:
-        List of FeedingEvent sorted by scheduled_at.
-
-    Raises:
-        AquariumNotFoundError: If aquarium not found.
-        AquariumAccessDeniedError: If user doesn't have access.
-    """
-    await check_access(db, aquarium_id, user_id)
-
-    today = datetime.now(UTC).date()
-    today_start = datetime.combine(today, time.min, tzinfo=UTC)
-    today_end = datetime.combine(today, time.max, tzinfo=UTC)
-
-    stmt = (
-        select(FeedingEvent)
-        .where(FeedingEvent.aquarium_id == aquarium_id)
-        .where(FeedingEvent.scheduled_at >= today_start)
-        .where(FeedingEvent.scheduled_at <= today_end)
-        .where(FeedingEvent.deleted_at.is_(None))
-        .order_by(FeedingEvent.scheduled_at)
-    )
-
-    result = await db.execute(stmt)
-    return list(result.scalars().all())
-
-
-async def get_event(
-    db: AsyncSession,
-    event_id: UUID,
-    user_id: UUID,
-) -> FeedingEvent:
-    """Get feeding event by ID with access check.
-
-    Args:
-        db: Database session.
-        event_id: Event ID.
-        user_id: User ID for access check.
-
-    Returns:
-        FeedingEvent.
-
-    Raises:
-        EventNotFoundError: If event not found or deleted.
-        AquariumAccessDeniedError: If user doesn't have access.
-    """
-    stmt = select(FeedingEvent).where(
-        FeedingEvent.id == event_id,
-        FeedingEvent.deleted_at.is_(None),
-    )
-    result = await db.execute(stmt)
-    event = result.scalar_one_or_none()
-
-    if event is None:
-        raise EventNotFoundError(event_id)
-
-    # Check access through aquarium
-    await check_access(db, event.aquarium_id, user_id)
-
-    return event
-
-
-async def mark_as_fed(
-    db: AsyncSession,
-    event_id: UUID,
-    user_id: UUID,
-) -> FeedingEvent:
-    """Mark feeding event as completed.
-
-    Args:
-        db: Database session.
-        event_id: Event ID.
-        user_id: User ID who completed the feeding.
-
-    Returns:
-        Updated FeedingEvent.
-
-    Raises:
-        EventNotFoundError: If event not found.
-        AquariumAccessDeniedError: If user doesn't have access.
-        EventAlreadyCompletedError: If event already completed.
-    """
-    event = await get_event(db, event_id, user_id)
-
-    if event.status == "completed":
-        raise EventAlreadyCompletedError(event_id)
-
-    event.status = "completed"
-    event.completed_at = datetime.now(UTC)
-    event.completed_by = user_id
-
-    await db.commit()
-    await db.refresh(event)
-
-    logger.info(f"Marked event '{event_id}' as fed by user '{user_id}'")
-
-    # Update user streak and check achievements
-    try:
-        await update_streak(db, user_id)
-        await check_achievements(db, user_id)
-    except Exception as e:
-        logger.error(f"Failed to update streak/achievements for user '{user_id}': {e}")
-
-    # Notify family members about the completed feeding
-    try:
-        await family_feeding_trigger(db, event_id, user_id)
-    except Exception as e:
-        # Log but don't fail the feeding completion if notification fails
-        logger.error(f"Failed to send family feeding notification: {e}")
-
-    return event
-
-
-async def mark_as_missed(
-    db: AsyncSession,
-    event_id: UUID,
-) -> FeedingEvent:
-    """Mark feeding event as missed.
-
-    Called automatically by background worker when scheduled time passes.
-
-    Args:
-        db: Database session.
-        event_id: Event ID.
-
-    Returns:
-        Updated FeedingEvent.
-
-    Raises:
-        EventNotFoundError: If event not found or deleted.
-    """
-    stmt = select(FeedingEvent).where(
-        FeedingEvent.id == event_id,
-        FeedingEvent.deleted_at.is_(None),
-    )
-    result = await db.execute(stmt)
-    event = result.scalar_one_or_none()
-
-    if event is None:
-        raise EventNotFoundError(event_id)
-
-    # Only mark as missed if still pending
-    if event.status == "pending":
-        event.status = "missed"
-        await db.commit()
-        await db.refresh(event)
-        logger.info(f"Marked event '{event_id}' as missed")
-
-    return event
-
-
-async def mark_as_missed_by_user(
-    db: AsyncSession,
-    event_id: UUID,
-    user_id: UUID,
-) -> FeedingEvent:
-    """Mark feeding event as missed by user (manual action).
-
-    Args:
-        db: Database session.
-        event_id: Event ID.
-        user_id: User ID for access check.
-
-    Returns:
-        Updated FeedingEvent.
-
-    Raises:
-        EventNotFoundError: If event not found.
-        AquariumAccessDeniedError: If user doesn't have access.
-    """
-    event = await get_event(db, event_id, user_id)
-
-    # Only mark as missed if still pending
-    if event.status == "pending":
-        event.status = "missed"
-        await db.commit()
-        await db.refresh(event)
-        logger.info(f"Marked event '{event_id}' as missed by user '{user_id}'")
-
-    return event
-
-
-async def create_daily_events(
-    db: AsyncSession,
-    target_date: date,
-) -> int:
-    """Create feeding events for all active schedules on specified date.
-
-    Called by background worker to pre-create next day's events.
-    Skips creating duplicates if events already exist for the date.
-
-    Args:
-        db: Database session.
-        target_date: Date to create events for.
-
-    Returns:
-        Number of events created.
-    """
-    # Get all active schedules
-    schedules_stmt = select(FeedingSchedule)
-    schedules_result = await db.execute(schedules_stmt)
-    schedules = list(schedules_result.scalars().all())
-
-    total_created = 0
-
-    for schedule in schedules:
-        created = await _create_events_for_schedule(db, schedule, target_date)
-        total_created += created
-
-    await db.commit()
-
-    logger.info(f"Created {total_created} feeding events for {target_date}")
-    return total_created
-
-
-async def _regenerate_events_for_date(
-    db: AsyncSession,
-    schedule: FeedingSchedule,
-    target_date: date,
 ) -> None:
-    """Regenerate events for a schedule on specific date.
+    """Hard delete a schedule by ID."""
+    await check_access(db, aquarium_id, user_id)
 
-    Soft deletes existing pending events and creates new ones based on schedule.
-    Preserves completed/missed events.
-
-    Args:
-        db: Database session.
-        schedule: FeedingSchedule to regenerate events for.
-        target_date: Date to regenerate events for.
-    """
-    date_start = datetime.combine(target_date, time.min, tzinfo=UTC)
-    date_end = datetime.combine(target_date, time.max, tzinfo=UTC)
-    now = datetime.now(UTC)
-
-    # Soft delete only pending, non-deleted events for this schedule on this date
-    select_stmt = select(FeedingEvent).where(
-        and_(
-            FeedingEvent.schedule_id == schedule.id,
-            FeedingEvent.scheduled_at >= date_start,
-            FeedingEvent.scheduled_at <= date_end,
-            FeedingEvent.status == "pending",
-            FeedingEvent.deleted_at.is_(None),
-        )
+    stmt = select(FeedingSchedule).where(
+        FeedingSchedule.id == schedule_id,
+        FeedingSchedule.aquarium_id == aquarium_id,
     )
-    result = await db.execute(select_stmt)
-    events_to_delete = result.scalars().all()
+    result = await db.execute(stmt)
+    schedule = result.scalar_one_or_none()
 
-    for event in events_to_delete:
-        event.deleted_at = now
+    if schedule is None:
+        raise ScheduleNotFoundError(schedule_id)
 
-    # Create new events
-    await _create_events_for_schedule(db, schedule, target_date)
+    await db.delete(schedule)
+    await db.commit()
+
+    logger.info(f"Deleted schedule '{schedule_id}'")
 
 
-async def _create_events_for_schedule(
+async def get_feeding_logs(
     db: AsyncSession,
-    schedule: FeedingSchedule,
-    target_date: date,
-) -> int:
-    """Create feeding events for a schedule on specific date.
+    aquarium_id: UUID,
+    user_id: UUID,
+    from_date: datetime,
+    to_date: datetime,
+    fish_id: UUID | None = None,
+) -> list[FeedingLog]:
+    """Get feeding logs for aquarium within date range."""
+    await check_access(db, aquarium_id, user_id)
 
-    Creates events per species based on each species' feeding frequency.
-    Each species in the aquarium gets events at times appropriate for it.
-    Checks for existing events to avoid duplicates.
+    stmt = (
+        select(FeedingLog)
+        .where(FeedingLog.aquarium_id == aquarium_id)
+        .where(FeedingLog.scheduled_for >= from_date)
+        .where(FeedingLog.scheduled_for <= to_date)
+        .options(selectinload(FeedingLog.acted_by_user))
+        .order_by(FeedingLog.scheduled_for.desc())
+    )
 
-    Args:
-        db: Database session.
-        schedule: FeedingSchedule to create events for.
-        target_date: Date to create events for.
+    if fish_id is not None:
+        stmt = stmt.where(FeedingLog.fish_id == fish_id)
 
-    Returns:
-        Number of events created.
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def create_feeding_log(
+    db: AsyncSession,
+    aquarium_id: UUID,
+    user_id: UUID,
+    data: FeedingLogCreate,
+) -> FeedingLog:
+    """Create a feeding log with duplicate detection.
+
+    On UNIQUE(schedule_id, scheduled_for) conflict, raises FeedingLogConflictError
+    with the existing log details.
     """
-    date_start = datetime.combine(target_date, time.min, tzinfo=UTC)
-    date_end = datetime.combine(target_date, time.max, tzinfo=UTC)
+    await check_access(db, aquarium_id, user_id)
 
-    # Get ALL active fish from aquarium with species loaded
-    fish_stmt = (
-        select(Fish)
-        .where(Fish.aquarium_id == schedule.aquarium_id)
-        .where(Fish.deleted_at.is_(None))
-        .options(selectinload(Fish.species))
+    log = FeedingLog(
+        schedule_id=data.schedule_id,
+        fish_id=data.fish_id,
+        aquarium_id=aquarium_id,
+        scheduled_for=data.scheduled_for,
+        action=data.action.value,
+        acted_by_user_id=user_id,
+        device_id=data.device_id,
+        notes=data.notes,
     )
-    fish_result = await db.execute(fish_stmt)
-    all_fish = list(fish_result.scalars().all())
+    db.add(log)
 
-    # Get unique species with their feeding frequencies
-    # Use dict to get one fish per species (for species_id tracking)
-    species_map: dict[str, Fish] = {}
-    for fish in all_fish:
-        if fish.species_id not in species_map:
-            species_map[fish.species_id] = fish
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
 
-    # Get existing active events for this schedule on this date
-    existing_stmt = (
-        select(FeedingEvent)
-        .where(FeedingEvent.schedule_id == schedule.id)
-        .where(FeedingEvent.scheduled_at >= date_start)
-        .where(FeedingEvent.scheduled_at <= date_end)
-        .where(FeedingEvent.deleted_at.is_(None))
-    )
-    existing_result = await db.execute(existing_stmt)
-    existing_events = list(existing_result.scalars().all())
-
-    # Track existing (scheduled_at, species_id) pairs to avoid duplicates
-    existing_pairs = {(event.scheduled_at, event.species_id) for event in existing_events}
-
-    created_count = 0
-
-    # Create events for each species based on its feeding frequency
-    for species_id, fish in species_map.items():
-        # Get feeding frequency for this species
-        frequency = DEFAULT_FREQUENCY
-        if fish.species and fish.species.feeding_frequency:
-            frequency = max(1, min(3, fish.species.feeding_frequency))
-
-        # Get scheduled times for this frequency
-        species_times = DEFAULT_TIMES.get(frequency, DEFAULT_TIMES[DEFAULT_FREQUENCY])
-
-        for time_str in species_times:
-            # Parse time string (format: "HH:MM")
-            hour, minute = map(int, time_str.split(":"))
-            scheduled_time = time(hour, minute, tzinfo=UTC)
-            scheduled_at = datetime.combine(target_date, scheduled_time, tzinfo=UTC)
-
-            # Skip if event already exists for this time + species
-            if (scheduled_at, species_id) in existing_pairs:
-                continue
-
-            event = FeedingEvent(
-                aquarium_id=schedule.aquarium_id,
-                schedule_id=schedule.id,
-                fish_id=None,  # No longer tied to specific fish
-                species_id=species_id,  # Tied to species instead
-                scheduled_at=scheduled_at,
-                status="pending",
+        # Fetch existing log with user info for conflict response
+        existing_stmt = (
+            select(FeedingLog)
+            .where(
+                FeedingLog.schedule_id == data.schedule_id,
+                FeedingLog.scheduled_for == data.scheduled_for,
             )
-            db.add(event)
-            created_count += 1
+            .options(selectinload(FeedingLog.acted_by_user))
+        )
+        existing_result = await db.execute(existing_stmt)
+        existing_log = existing_result.scalar_one()
 
-    # If no fish in aquarium, create events based on schedule's times_per_day
-    if not species_map:
-        for time_str in schedule.scheduled_times:
-            hour, minute = map(int, time_str.split(":"))
-            scheduled_time = time(hour, minute, tzinfo=UTC)
-            scheduled_at = datetime.combine(target_date, scheduled_time, tzinfo=UTC)
+        user_name = (
+            existing_log.acted_by_user.nickname
+            if existing_log.acted_by_user
+            else None
+        )
+        raise FeedingLogConflictError(existing_log, user_name) from None
 
-            if (scheduled_at, None) not in existing_pairs:
-                event = FeedingEvent(
-                    aquarium_id=schedule.aquarium_id,
-                    schedule_id=schedule.id,
-                    fish_id=None,
-                    species_id=None,
-                    scheduled_at=scheduled_at,
-                    status="pending",
-                )
-                db.add(event)
-                created_count += 1
+    await db.commit()
+    await db.refresh(log, ["acted_by_user"])
 
-    return created_count
+    # Post-create side effects for 'fed' action
+    if data.action.value == "fed":
+        try:
+            await update_streak(db, user_id)
+            await check_achievements(db, user_id)
+        except Exception as e:
+            logger.error(f"Failed to update streak/achievements for user '{user_id}': {e}")
+
+        try:
+            await family_feeding_trigger(db, log.id, user_id)
+        except Exception as e:
+            logger.error(f"Failed to send family feeding notification: {e}")
+
+    logger.info(f"Created feeding log '{log.id}' for aquarium '{aquarium_id}'")
+    return log

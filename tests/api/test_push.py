@@ -12,11 +12,11 @@ async def register_and_login(
 ) -> dict:
     """Helper to register and login a user, returns tokens."""
     await client.post(
-        "/auth/register",
+        "/api/v1/auth/register",
         json={"email": email, "password": "SecurePass123"},
     )
     response = await client.post(
-        "/auth/login",
+        "/api/v1/auth/login",
         json={"email": email, "password": "SecurePass123"},
     )
     return response.json()
@@ -37,7 +37,7 @@ class TestRegisterPushToken:
         tokens = await register_and_login(client, email)
 
         response = await client.post(
-            "/push/token",
+            "/api/v1/push/token",
             json={"token": "test_device_token_123", "platform": "ios"},
             headers=auth_headers(tokens),
         )
@@ -55,7 +55,7 @@ class TestRegisterPushToken:
         tokens = await register_and_login(client, email)
 
         response = await client.post(
-            "/push/token",
+            "/api/v1/push/token",
             json={"token": "fcm_token_abc", "platform": "android"},
             headers=auth_headers(tokens),
         )
@@ -70,7 +70,7 @@ class TestRegisterPushToken:
 
         # First registration
         response1 = await client.post(
-            "/push/token",
+            "/api/v1/push/token",
             json={"token": "duplicate_token", "platform": "ios"},
             headers=auth_headers(tokens),
         )
@@ -79,7 +79,7 @@ class TestRegisterPushToken:
 
         # Second registration with same token - should update
         response2 = await client.post(
-            "/push/token",
+            "/api/v1/push/token",
             json={"token": "duplicate_token", "platform": "android"},
             headers=auth_headers(tokens),
         )
@@ -91,7 +91,7 @@ class TestRegisterPushToken:
     async def test_register_token_without_auth_returns_401(self, client: AsyncClient):
         """Test that registering token without auth returns 401."""
         response = await client.post(
-            "/push/token",
+            "/api/v1/push/token",
             json={"token": "unauthorized_token", "platform": "ios"},
         )
         assert response.status_code == 401
@@ -104,7 +104,7 @@ class TestRegisterPushToken:
         tokens = await register_and_login(client, email)
 
         response = await client.post(
-            "/push/token",
+            "/api/v1/push/token",
             json={"token": "some_token", "platform": "windows"},
             headers=auth_headers(tokens),
         )
@@ -116,7 +116,7 @@ class TestRegisterPushToken:
         tokens = await register_and_login(client, email)
 
         response = await client.post(
-            "/push/token",
+            "/api/v1/push/token",
             json={"token": "", "platform": "ios"},
             headers=auth_headers(tokens),
         )
@@ -134,7 +134,7 @@ class TestUnregisterPushToken:
 
         # First register
         await client.post(
-            "/push/token",
+            "/api/v1/push/token",
             json={"token": "token_to_delete", "platform": "ios"},
             headers=auth_headers(tokens),
         )
@@ -142,7 +142,7 @@ class TestUnregisterPushToken:
         # Then unregister
         response = await client.request(
             "DELETE",
-            "/push/token",
+            "/api/v1/push/token",
             json={"token": "token_to_delete", "platform": "ios"},
             headers=auth_headers(tokens),
         )
@@ -155,7 +155,7 @@ class TestUnregisterPushToken:
 
         response = await client.request(
             "DELETE",
-            "/push/token",
+            "/api/v1/push/token",
             json={"token": "nonexistent_token", "platform": "ios"},
             headers=auth_headers(tokens),
         )
@@ -165,7 +165,7 @@ class TestUnregisterPushToken:
         """Test that unregistering token without auth returns 401."""
         response = await client.request(
             "DELETE",
-            "/push/token",
+            "/api/v1/push/token",
             json={"token": "some_token", "platform": "ios"},
         )
         assert response.status_code == 401
@@ -180,7 +180,7 @@ class TestUnregisterPushToken:
 
         # User 1 registers token
         await client.post(
-            "/push/token",
+            "/api/v1/push/token",
             json={"token": "user1_token", "platform": "ios"},
             headers=auth_headers(tokens1),
         )
@@ -188,7 +188,7 @@ class TestUnregisterPushToken:
         # User 2 tries to unregister user 1's token - should 404 (not found for user2)
         response = await client.request(
             "DELETE",
-            "/push/token",
+            "/api/v1/push/token",
             json={"token": "user1_token", "platform": "ios"},
             headers=auth_headers(tokens2),
         )
@@ -205,7 +205,7 @@ class TestGetNotificationPreferences:
         tokens = await register_and_login(client, email)
 
         response = await client.get(
-            "/users/me/notifications",
+            "/api/v1/users/me/notifications",
             headers=auth_headers(tokens),
         )
 
@@ -221,7 +221,7 @@ class TestGetNotificationPreferences:
 
     async def test_get_preferences_without_auth_returns_401(self, client: AsyncClient):
         """Test that getting preferences without auth returns 401."""
-        response = await client.get("/users/me/notifications")
+        response = await client.get("/api/v1/users/me/notifications")
         assert response.status_code == 401
 
 
@@ -235,7 +235,7 @@ class TestUpdateNotificationPreferences:
         tokens = await register_and_login(client, email)
 
         response = await client.put(
-            "/users/me/notifications",
+            "/api/v1/users/me/notifications",
             json={"feeding_reminders": False, "marketing": True},
             headers=auth_headers(tokens),
         )
@@ -255,14 +255,14 @@ class TestUpdateNotificationPreferences:
 
         # Update preferences
         await client.put(
-            "/users/me/notifications",
+            "/api/v1/users/me/notifications",
             json={"weekly_summary": False, "family_updates": False},
             headers=auth_headers(tokens),
         )
 
         # Get preferences
         response = await client.get(
-            "/users/me/notifications",
+            "/api/v1/users/me/notifications",
             headers=auth_headers(tokens),
         )
 
@@ -279,7 +279,7 @@ class TestUpdateNotificationPreferences:
 
         # First update - set some preferences
         await client.put(
-            "/users/me/notifications",
+            "/api/v1/users/me/notifications",
             json={
                 "feeding_reminders": False,
                 "overdue_alerts": False,
@@ -290,7 +290,7 @@ class TestUpdateNotificationPreferences:
 
         # Second update - only change one field
         response = await client.put(
-            "/users/me/notifications",
+            "/api/v1/users/me/notifications",
             json={"feeding_reminders": True},
             headers=auth_headers(tokens),
         )
@@ -306,7 +306,7 @@ class TestUpdateNotificationPreferences:
     ):
         """Test that updating preferences without auth returns 401."""
         response = await client.put(
-            "/users/me/notifications",
+            "/api/v1/users/me/notifications",
             json={"feeding_reminders": False},
         )
         assert response.status_code == 401
@@ -317,7 +317,7 @@ class TestUpdateNotificationPreferences:
         tokens = await register_and_login(client, email)
 
         response = await client.put(
-            "/users/me/notifications",
+            "/api/v1/users/me/notifications",
             json={
                 "feeding_reminders": False,
                 "overdue_alerts": False,

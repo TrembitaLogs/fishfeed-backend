@@ -2,7 +2,7 @@ from app.models.ai import AIScan
 from app.models.analytics import AnalyticsEvent
 from app.models.aquarium import Aquarium, AquariumMember, FamilyInvite
 from app.models.base import Base, SoftDeleteMixin, TimestampMixin
-from app.models.feeding import FeedingEvent, FeedingSchedule
+from app.models.feeding import FeedingLog, FeedingSchedule
 from app.models.fish import Fish
 from app.models.gamification import Achievement, Streak, UserProgress
 from app.models.notification import NotificationPreference, PushToken
@@ -22,7 +22,7 @@ __all__ = [
     "Species",
     "Fish",
     "FeedingSchedule",
-    "FeedingEvent",
+    "FeedingLog",
     "Streak",
     "Achievement",
     "UserProgress",

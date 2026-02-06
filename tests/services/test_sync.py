@@ -1,14 +1,14 @@
 """Integration tests for sync service."""
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.aquarium import Aquarium, AquariumMember
-from app.models.feeding import FeedingEvent, FeedingSchedule
+from app.models.feeding import FeedingLog, FeedingSchedule
 from app.models.fish import Fish
 from app.models.species import Species
 from app.models.user import User
@@ -16,13 +16,14 @@ from app.schemas.sync import ChangeItem, SyncRequest
 from app.services.sync import (
     SyncAccessDeniedError,
     SyncValidationError,
+    _ensure_schedules_for_user,
     process_sync,
 )
 
 
 async def cleanup_sync_test_data(session: AsyncSession) -> None:
     """Helper to cleanup sync test data."""
-    await session.execute(text("DELETE FROM feeding_events"))
+    await session.execute(text("DELETE FROM feeding_logs"))
     await session.execute(text("DELETE FROM feeding_schedules"))
     await session.execute(text("DELETE FROM fish"))
     await session.execute(text("DELETE FROM aquarium_members"))
@@ -76,8 +77,6 @@ async def ensure_test_species(
     species_id: str = "test-guppy",
 ) -> Species:
     """Ensure test species exists, create if not."""
-    from sqlalchemy import select
-
     stmt = select(Species).where(Species.id == species_id)
     result = await session.execute(stmt)
     species = result.scalar_one_or_none()
@@ -117,24 +116,59 @@ async def create_test_fish(
     return fish
 
 
-async def create_test_feeding_event(
+async def create_test_schedule(
     session: AsyncSession,
     aquarium_id: uuid.UUID,
-    scheduled_at: datetime | None = None,
-) -> FeedingEvent:
-    """Helper to create a test feeding event."""
-    event = FeedingEvent(
+    fish_id: uuid.UUID,
+    user_id: uuid.UUID,
+    schedule_time: time | None = None,
+) -> FeedingSchedule:
+    """Helper to create a test feeding schedule."""
+    schedule = FeedingSchedule(
         aquarium_id=aquarium_id,
-        scheduled_at=scheduled_at or datetime.now(UTC),
-        status="pending",
+        fish_id=fish_id,
+        time=schedule_time or time(9, 0),
+        interval_days=1,
+        anchor_date=date.today(),
+        food_type="flakes",
+        active=True,
+        created_by_user_id=user_id,
     )
-    session.add(event)
+    session.add(schedule)
     await session.commit()
-    await session.refresh(event)
-    return event
+    await session.refresh(schedule)
+    return schedule
 
 
+async def create_test_feeding_log(
+    session: AsyncSession,
+    schedule_id: uuid.UUID,
+    fish_id: uuid.UUID,
+    aquarium_id: uuid.UUID,
+    user_id: uuid.UUID,
+    scheduled_for: datetime | None = None,
+    action: str = "fed",
+) -> FeedingLog:
+    """Helper to create a test feeding log."""
+    log = FeedingLog(
+        schedule_id=schedule_id,
+        fish_id=fish_id,
+        aquarium_id=aquarium_id,
+        scheduled_for=scheduled_for or datetime.now(UTC).replace(tzinfo=None),
+        action=action,
+        acted_at=datetime.now(UTC),
+        acted_by_user_id=user_id,
+        device_id=uuid.uuid4(),
+    )
+    session.add(log)
+    await session.commit()
+    await session.refresh(log)
+    return log
+
+
+# ============================================================================
 # process_sync tests - empty changes
+# ============================================================================
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -194,7 +228,9 @@ async def test_process_sync_with_last_sync_at(
         await cleanup_sync_test_data(async_session)
 
 
+# ============================================================================
 # Entity ownership validation tests - aquarium
+# ============================================================================
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -215,7 +251,6 @@ async def test_process_sync_allows_create_aquarium(
         )
         request = SyncRequest(changes=[change], last_sync_at=None)
 
-        # Should not raise - create is allowed
         response = await process_sync(async_session, user.id, request)
 
         assert response.sync_token is not None
@@ -278,7 +313,9 @@ async def test_process_sync_denies_update_other_user_aquarium(
         await cleanup_sync_test_data(async_session)
 
 
+# ============================================================================
 # Entity ownership validation tests - fish
+# ============================================================================
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -349,7 +386,7 @@ async def test_process_sync_denies_create_fish_missing_aquarium_id(
             entity_type="fish",
             entity_id=uuid.uuid4(),
             operation="create",
-            data={"species_id": "test-guppy"},  # Missing aquarium_id
+            data={"species_id": "test-guppy"},
             client_updated_at=datetime.now(UTC),
         )
         request = SyncRequest(changes=[change], last_sync_at=None)
@@ -362,82 +399,34 @@ async def test_process_sync_denies_create_fish_missing_aquarium_id(
         await cleanup_sync_test_data(async_session)
 
 
+# ============================================================================
+# Entity ownership validation tests - feeding_log
+# ============================================================================
+
+
 @pytest.mark.asyncio(loop_scope="session")
-async def test_process_sync_allows_update_fish_in_owned_aquarium(
+async def test_process_sync_allows_create_feeding_log_in_owned_aquarium(
     async_session: AsyncSession,
 ):
-    """Test that update fish is allowed for fish in owned aquarium."""
+    """Test that create feeding_log is allowed in owned aquarium."""
     await cleanup_sync_test_data(async_session)
     try:
         user = await create_test_user(async_session)
         aquarium = await create_test_aquarium(async_session, user.id)
         fish = await create_test_fish(async_session, aquarium.id)
+        schedule = await create_test_schedule(async_session, aquarium.id, fish.id, user.id)
 
         change = ChangeItem(
-            entity_type="fish",
-            entity_id=fish.id,
-            operation="update",
-            data={"quantity": 5},
-            client_updated_at=datetime.now(UTC),
-        )
-        request = SyncRequest(changes=[change], last_sync_at=None)
-
-        response = await process_sync(async_session, user.id, request)
-
-        assert response.sync_token is not None
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_process_sync_denies_update_fish_in_other_user_aquarium(
-    async_session: AsyncSession,
-):
-    """Test that update fish is denied for fish in other user's aquarium."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        owner = await create_test_user(async_session, "owner@example.com")
-        other_user = await create_test_user(async_session, "other@example.com")
-        aquarium = await create_test_aquarium(async_session, owner.id)
-        fish = await create_test_fish(async_session, aquarium.id)
-
-        change = ChangeItem(
-            entity_type="fish",
-            entity_id=fish.id,
-            operation="update",
-            data={"quantity": 100},
-            client_updated_at=datetime.now(UTC),
-        )
-        request = SyncRequest(changes=[change], last_sync_at=None)
-
-        with pytest.raises(SyncAccessDeniedError) as exc_info:
-            await process_sync(async_session, other_user.id, request)
-
-        assert exc_info.value.status_code == 403
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-# Entity ownership validation tests - events
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_process_sync_allows_create_event_in_owned_aquarium(
-    async_session: AsyncSession,
-):
-    """Test that create event is allowed in owned aquarium."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user.id)
-
-        change = ChangeItem(
-            entity_type="event",
+            entity_type="feeding_log",
             entity_id=uuid.uuid4(),
             operation="create",
             data={
                 "aquarium_id": str(aquarium.id),
-                "scheduled_at": datetime.now(UTC).isoformat(),
+                "schedule_id": str(schedule.id),
+                "fish_id": str(fish.id),
+                "scheduled_for": datetime.now(UTC).isoformat(),
+                "action": "fed",
+                "device_id": str(uuid.uuid4()),
             },
             client_updated_at=datetime.now(UTC),
         )
@@ -446,15 +435,16 @@ async def test_process_sync_allows_create_event_in_owned_aquarium(
         response = await process_sync(async_session, user.id, request)
 
         assert response.sync_token is not None
+        assert response.conflicts == []
     finally:
         await cleanup_sync_test_data(async_session)
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_process_sync_denies_create_event_in_other_user_aquarium(
+async def test_process_sync_denies_create_feeding_log_in_other_user_aquarium(
     async_session: AsyncSession,
 ):
-    """Test that create event is denied in other user's aquarium."""
+    """Test that create feeding_log is denied in other user's aquarium."""
     await cleanup_sync_test_data(async_session)
     try:
         owner = await create_test_user(async_session, "owner@example.com")
@@ -462,12 +452,12 @@ async def test_process_sync_denies_create_event_in_other_user_aquarium(
         aquarium = await create_test_aquarium(async_session, owner.id)
 
         change = ChangeItem(
-            entity_type="event",
+            entity_type="feeding_log",
             entity_id=uuid.uuid4(),
             operation="create",
             data={
                 "aquarium_id": str(aquarium.id),
-                "scheduled_at": datetime.now(UTC).isoformat(),
+                "scheduled_for": datetime.now(UTC).isoformat(),
             },
             client_updated_at=datetime.now(UTC),
         )
@@ -482,19 +472,19 @@ async def test_process_sync_denies_create_event_in_other_user_aquarium(
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_process_sync_denies_create_event_missing_aquarium_id(
+async def test_process_sync_denies_create_feeding_log_missing_aquarium_id(
     async_session: AsyncSession,
 ):
-    """Test that create event without aquarium_id raises validation error."""
+    """Test that create feeding_log without aquarium_id raises validation error."""
     await cleanup_sync_test_data(async_session)
     try:
         user = await create_test_user(async_session)
 
         change = ChangeItem(
-            entity_type="event",
+            entity_type="feeding_log",
             entity_id=uuid.uuid4(),
             operation="create",
-            data={"scheduled_at": datetime.now(UTC).isoformat()},
+            data={"scheduled_for": datetime.now(UTC).isoformat()},
             client_updated_at=datetime.now(UTC),
         )
         request = SyncRequest(changes=[change], last_sync_at=None)
@@ -507,245 +497,672 @@ async def test_process_sync_denies_create_event_missing_aquarium_id(
         await cleanup_sync_test_data(async_session)
 
 
+# ============================================================================
+# Cascading creates in a single batch
+# ============================================================================
+
+
 @pytest.mark.asyncio(loop_scope="session")
-async def test_process_sync_allows_update_event_in_owned_aquarium(
+async def test_process_sync_batch_aquarium_fish_schedule_creates(
     async_session: AsyncSession,
 ):
-    """Test that update event is allowed for event in owned aquarium."""
+    """Test that a batch with aquarium + fish + schedule creates works.
+
+    The mobile client sends all three in a single sync batch.
+    The server must accept fish/schedule that reference an aquarium
+    being created in the same batch.
+    """
     await cleanup_sync_test_data(async_session)
     try:
         user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user.id)
-        event = await create_test_feeding_event(async_session, aquarium.id)
+        await ensure_test_species(async_session)
 
-        change = ChangeItem(
-            entity_type="event",
-            entity_id=event.id,
-            operation="update",
-            data={"status": "completed"},
-            client_updated_at=datetime.now(UTC),
-        )
-        request = SyncRequest(changes=[change], last_sync_at=None)
+        aquarium_id = uuid.uuid4()
+        fish_id = uuid.uuid4()
+        schedule_id = uuid.uuid4()
+        now = datetime.now(UTC)
 
-        response = await process_sync(async_session, user.id, request)
-
-        assert response.sync_token is not None
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_process_sync_denies_update_event_in_other_user_aquarium(
-    async_session: AsyncSession,
-):
-    """Test that update event is denied for event in other user's aquarium."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        owner = await create_test_user(async_session, "owner@example.com")
-        other_user = await create_test_user(async_session, "other@example.com")
-        aquarium = await create_test_aquarium(async_session, owner.id)
-        event = await create_test_feeding_event(async_session, aquarium.id)
-
-        change = ChangeItem(
-            entity_type="event",
-            entity_id=event.id,
-            operation="update",
-            data={"status": "completed"},
-            client_updated_at=datetime.now(UTC),
-        )
-        request = SyncRequest(changes=[change], last_sync_at=None)
-
-        with pytest.raises(SyncAccessDeniedError) as exc_info:
-            await process_sync(async_session, other_user.id, request)
-
-        assert exc_info.value.status_code == 403
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-# Member access tests
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_process_sync_allows_member_to_update_shared_aquarium_fish(
-    async_session: AsyncSession,
-):
-    """Test that aquarium members can update fish in shared aquarium."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        owner = await create_test_user(async_session, "owner@example.com")
-        member_user = await create_test_user(async_session, "member@example.com")
-        aquarium = await create_test_aquarium(async_session, owner.id)
-        fish = await create_test_fish(async_session, aquarium.id)
-
-        # Add member_user as member
-        member = AquariumMember(
-            aquarium_id=aquarium.id,
-            user_id=member_user.id,
-            role="member",
-        )
-        async_session.add(member)
-        await async_session.commit()
-
-        change = ChangeItem(
-            entity_type="fish",
-            entity_id=fish.id,
-            operation="update",
-            data={"quantity": 3},
-            client_updated_at=datetime.now(UTC),
-        )
-        request = SyncRequest(changes=[change], last_sync_at=None)
-
-        # Member should be allowed
-        response = await process_sync(async_session, member_user.id, request)
-
-        assert response.sync_token is not None
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-# Multiple changes tests
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_process_sync_validates_all_changes(
-    async_session: AsyncSession,
-):
-    """Test that sync validates all changes before processing."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        owner = await create_test_user(async_session, "owner@example.com")
-        other_user = await create_test_user(async_session, "other@example.com")
-        aquarium = await create_test_aquarium(async_session, owner.id)
-
-        # First change is valid (create new aquarium)
-        # Second change is invalid (access other user's aquarium)
         changes = [
             ChangeItem(
                 entity_type="aquarium",
-                entity_id=uuid.uuid4(),
+                entity_id=aquarium_id,
                 operation="create",
-                data={"name": "My New Aquarium"},
-                client_updated_at=datetime.now(UTC),
+                data={"name": "New Tank"},
+                client_updated_at=now,
             ),
             ChangeItem(
-                entity_type="aquarium",
-                entity_id=aquarium.id,
-                operation="update",
-                data={"name": "Hacked"},
-                client_updated_at=datetime.now(UTC),
+                entity_type="fish",
+                entity_id=fish_id,
+                operation="create",
+                data={
+                    "aquarium_id": str(aquarium_id),
+                    "species_id": "test-guppy",
+                    "quantity": 3,
+                },
+                client_updated_at=now,
+            ),
+            ChangeItem(
+                entity_type="schedule",
+                entity_id=schedule_id,
+                operation="create",
+                data={
+                    "aquarium_id": str(aquarium_id),
+                    "fish_id": str(fish_id),
+                    "time": "09:00",
+                    "food_type": "flakes",
+                },
+                client_updated_at=now,
             ),
         ]
         request = SyncRequest(changes=changes, last_sync_at=None)
 
-        # Should fail on the second change
-        with pytest.raises(SyncAccessDeniedError):
-            await process_sync(async_session, other_user.id, request)
+        response = await process_sync(async_session, user.id, request)
+
+        assert response.sync_token is not None
+        assert len(response.conflicts) == 0
+        assert aquarium_id in response.synced_ids
+        assert fish_id in response.synced_ids
+        assert schedule_id in response.synced_ids
+
+        # Verify entities were actually persisted
+        aq = await async_session.get(Aquarium, aquarium_id)
+        assert aq is not None
+        assert aq.name == "New Tank"
+
+        f = await async_session.get(Fish, fish_id)
+        assert f is not None
+        assert f.aquarium_id == aquarium_id
+
+        s = await async_session.get(FeedingSchedule, schedule_id)
+        assert s is not None
+        assert s.aquarium_id == aquarium_id
+        assert s.fish_id == fish_id
     finally:
         await cleanup_sync_test_data(async_session)
 
 
-# Non-existent entity tests
+# ============================================================================
+# _apply_feeding_log_change: first-write-wins tests
+# ============================================================================
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_process_sync_allows_update_nonexistent_fish(
+async def test_feeding_log_create_successful_insert(
     async_session: AsyncSession,
 ):
-    """Test that update for non-existent fish passes validation (handled by apply_changes)."""
+    """Test _apply_feeding_log_change CREATE: successful insert returns no conflict."""
     await cleanup_sync_test_data(async_session)
     try:
         user = await create_test_user(async_session)
-        nonexistent_fish_id = uuid.uuid4()
+        aquarium = await create_test_aquarium(async_session, user.id)
+        fish = await create_test_fish(async_session, aquarium.id)
+        schedule = await create_test_schedule(async_session, aquarium.id, fish.id, user.id)
+
+        new_log_id = uuid.uuid4()
+        scheduled_for = datetime(2024, 6, 15, 9, 0)
 
         change = ChangeItem(
-            entity_type="fish",
-            entity_id=nonexistent_fish_id,
+            entity_type="feeding_log",
+            entity_id=new_log_id,
+            operation="create",
+            data={
+                "aquarium_id": str(aquarium.id),
+                "schedule_id": str(schedule.id),
+                "fish_id": str(fish.id),
+                "scheduled_for": scheduled_for.isoformat(),
+                "action": "fed",
+                "device_id": str(uuid.uuid4()),
+            },
+            client_updated_at=datetime.now(UTC),
+        )
+        request = SyncRequest(changes=[change], last_sync_at=None)
+
+        response = await process_sync(async_session, user.id, request)
+
+        assert response.conflicts == []
+
+        # Verify log was created
+        stmt = select(FeedingLog).where(FeedingLog.id == new_log_id)
+        result = await async_session.execute(stmt)
+        log = result.scalar_one_or_none()
+
+        assert log is not None
+        assert log.action == "fed"
+        assert log.schedule_id == schedule.id
+        assert log.fish_id == fish.id
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_feeding_log_create_duplicate_schedule_scheduled_for_returns_conflict(
+    async_session: AsyncSession,
+):
+    """Test _apply_feeding_log_change CREATE: duplicate (schedule_id, scheduled_for) returns conflict (first-write-wins)."""
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        fish = await create_test_fish(async_session, aquarium.id)
+        schedule = await create_test_schedule(async_session, aquarium.id, fish.id, user.id)
+
+        scheduled_for = datetime(2024, 6, 15, 9, 0)
+
+        # Create existing log
+        existing_log = await create_test_feeding_log(
+            async_session, schedule.id, fish.id, aquarium.id, user.id,
+            scheduled_for=scheduled_for, action="fed",
+        )
+
+        # Try to create a second log for the same (schedule_id, scheduled_for)
+        new_log_id = uuid.uuid4()
+        change = ChangeItem(
+            entity_type="feeding_log",
+            entity_id=new_log_id,
+            operation="create",
+            data={
+                "aquarium_id": str(aquarium.id),
+                "schedule_id": str(schedule.id),
+                "fish_id": str(fish.id),
+                "scheduled_for": scheduled_for.isoformat(),
+                "action": "skipped",
+                "device_id": str(uuid.uuid4()),
+            },
+            client_updated_at=datetime.now(UTC),
+        )
+        request = SyncRequest(changes=[change], last_sync_at=None)
+
+        response = await process_sync(async_session, user.id, request)
+
+        # Should have conflict - first-write-wins
+        assert len(response.conflicts) == 1
+        conflict = response.conflicts[0]
+        assert conflict.entity_type == "feeding_log"
+        assert conflict.entity_id == new_log_id
+        assert conflict.resolution == "server_wins"
+        assert conflict.server_data["id"] == str(existing_log.id)
+
+        # Verify the new log was NOT created
+        stmt = select(FeedingLog).where(FeedingLog.id == new_log_id)
+        result = await async_session.execute(stmt)
+        assert result.scalar_one_or_none() is None
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_feeding_log_create_existing_id_returns_conflict(
+    async_session: AsyncSession,
+):
+    """Test _apply_feeding_log_change CREATE: existing log ID returns conflict."""
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        fish = await create_test_fish(async_session, aquarium.id)
+        schedule = await create_test_schedule(async_session, aquarium.id, fish.id, user.id)
+
+        existing_log = await create_test_feeding_log(
+            async_session, schedule.id, fish.id, aquarium.id, user.id,
+        )
+
+        # Try to create with same ID
+        change = ChangeItem(
+            entity_type="feeding_log",
+            entity_id=existing_log.id,
+            operation="create",
+            data={
+                "aquarium_id": str(aquarium.id),
+                "schedule_id": str(schedule.id),
+                "fish_id": str(fish.id),
+                "scheduled_for": datetime(2024, 7, 1, 9, 0).isoformat(),
+                "action": "fed",
+                "device_id": str(uuid.uuid4()),
+            },
+            client_updated_at=datetime.now(UTC),
+        )
+        request = SyncRequest(changes=[change], last_sync_at=None)
+
+        response = await process_sync(async_session, user.id, request)
+
+        assert len(response.conflicts) == 1
+        assert response.conflicts[0].resolution == "server_wins"
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_feeding_log_update_ignored(
+    async_session: AsyncSession,
+):
+    """Test that UPDATE operation is ignored for immutable feeding logs."""
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        fish = await create_test_fish(async_session, aquarium.id)
+        schedule = await create_test_schedule(async_session, aquarium.id, fish.id, user.id)
+
+        existing_log = await create_test_feeding_log(
+            async_session, schedule.id, fish.id, aquarium.id, user.id,
+            action="fed",
+        )
+
+        change = ChangeItem(
+            entity_type="feeding_log",
+            entity_id=existing_log.id,
             operation="update",
-            data={"quantity": 5},
+            data={"action": "skipped"},
             client_updated_at=datetime.now(UTC),
         )
         request = SyncRequest(changes=[change], last_sync_at=None)
 
-        # Should not raise - non-existent entities pass validation
-        # (will be handled by apply_changes in task 6.3)
         response = await process_sync(async_session, user.id, request)
 
-        assert response.sync_token is not None
+        # No conflicts, update silently ignored
+        assert response.conflicts == []
+
+        # Verify log was NOT updated
+        await async_session.refresh(existing_log)
+        assert existing_log.action == "fed"
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+# ============================================================================
+# _apply_schedule_change tests with new fields
+# ============================================================================
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_schedule_change_handles_new_fields(
+    async_session: AsyncSession,
+):
+    """Test _apply_schedule_change handles new fields (fish_id, time, interval_days, etc.)."""
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        fish = await create_test_fish(async_session, aquarium.id)
+
+        new_schedule_id = uuid.uuid4()
+        change = ChangeItem(
+            entity_type="schedule",
+            entity_id=new_schedule_id,
+            operation="create",
+            data={
+                "aquarium_id": str(aquarium.id),
+                "fish_id": str(fish.id),
+                "time": "14:30",
+                "interval_days": 3,
+                "anchor_date": "2024-06-01",
+                "food_type": "pellets",
+                "portion_hint": "small pinch",
+                "active": True,
+            },
+            client_updated_at=datetime.now(UTC),
+        )
+        request = SyncRequest(changes=[change], last_sync_at=None)
+
+        response = await process_sync(async_session, user.id, request)
+
+        assert response.conflicts == []
+
+        stmt = select(FeedingSchedule).where(FeedingSchedule.id == new_schedule_id)
+        result = await async_session.execute(stmt)
+        schedule = result.scalar_one_or_none()
+
+        assert schedule is not None
+        assert schedule.fish_id == fish.id
+        assert schedule.time == time(14, 30)
+        assert schedule.interval_days == 3
+        assert schedule.anchor_date == date(2024, 6, 1)
+        assert schedule.food_type == "pellets"
+        assert schedule.portion_hint == "small pinch"
+        assert schedule.active is True
+        assert schedule.created_by_user_id == user.id
     finally:
         await cleanup_sync_test_data(async_session)
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_process_sync_allows_delete_nonexistent_event(
+async def test_schedule_update_handles_new_fields(
     async_session: AsyncSession,
 ):
-    """Test that delete for non-existent event passes validation."""
+    """Test schedule update with new fields (time, interval_days, active, etc.)."""
     await cleanup_sync_test_data(async_session)
     try:
         user = await create_test_user(async_session)
-        nonexistent_event_id = uuid.uuid4()
+        aquarium = await create_test_aquarium(async_session, user.id)
+        fish = await create_test_fish(async_session, aquarium.id)
+        schedule = await create_test_schedule(async_session, aquarium.id, fish.id, user.id)
 
         change = ChangeItem(
-            entity_type="event",
-            entity_id=nonexistent_event_id,
-            operation="delete",
-            data={},
+            entity_type="schedule",
+            entity_id=schedule.id,
+            operation="update",
+            data={
+                "time": "18:00",
+                "interval_days": 2,
+                "active": False,
+            },
+            client_updated_at=schedule.updated_at + timedelta(hours=1),
+        )
+        request = SyncRequest(changes=[change], last_sync_at=None)
+
+        response = await process_sync(async_session, user.id, request)
+
+        assert response.conflicts == []
+
+        await async_session.refresh(schedule)
+        assert schedule.time == time(18, 0)
+        assert schedule.interval_days == 2
+        assert schedule.active is False
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+# ============================================================================
+# _validate_entity_ownership tests for feeding_log
+# ============================================================================
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_validate_entity_ownership_feeding_log(
+    async_session: AsyncSession,
+):
+    """Test _validate_entity_ownership works for feeding_log entity type."""
+    await cleanup_sync_test_data(async_session)
+    try:
+        owner = await create_test_user(async_session, "owner@example.com")
+        other_user = await create_test_user(async_session, "other@example.com")
+        aquarium = await create_test_aquarium(async_session, owner.id)
+        fish = await create_test_fish(async_session, aquarium.id)
+        schedule = await create_test_schedule(async_session, aquarium.id, fish.id, owner.id)
+
+        existing_log = await create_test_feeding_log(
+            async_session, schedule.id, fish.id, aquarium.id, owner.id,
+        )
+
+        # Other user tries to update existing log
+        change = ChangeItem(
+            entity_type="feeding_log",
+            entity_id=existing_log.id,
+            operation="update",
+            data={"action": "skipped"},
+            client_updated_at=datetime.now(UTC),
+        )
+        request = SyncRequest(changes=[change], last_sync_at=None)
+
+        with pytest.raises(SyncAccessDeniedError) as exc_info:
+            await process_sync(async_session, other_user.id, request)
+
+        assert exc_info.value.status_code == 403
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+# ============================================================================
+# _entity_to_dict tests
+# ============================================================================
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_entity_to_dict_feeding_log(
+    async_session: AsyncSession,
+):
+    """Test _entity_to_dict correctly serializes FeedingLog."""
+    from app.services.sync import _entity_to_dict
+
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        fish = await create_test_fish(async_session, aquarium.id)
+        schedule = await create_test_schedule(async_session, aquarium.id, fish.id, user.id)
+
+        log = await create_test_feeding_log(
+            async_session, schedule.id, fish.id, aquarium.id, user.id,
+            action="fed",
+        )
+
+        result = _entity_to_dict(log)
+
+        assert result["id"] == str(log.id)
+        assert result["schedule_id"] == str(schedule.id)
+        assert result["fish_id"] == str(fish.id)
+        assert result["aquarium_id"] == str(aquarium.id)
+        assert result["action"] == "fed"
+        assert result["acted_by_user_id"] == str(user.id)
+        assert result["device_id"] == str(log.device_id)
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_entity_to_dict_feeding_schedule(
+    async_session: AsyncSession,
+):
+    """Test _entity_to_dict correctly serializes updated FeedingSchedule."""
+    from app.services.sync import _entity_to_dict
+
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        fish = await create_test_fish(async_session, aquarium.id)
+        schedule = await create_test_schedule(
+            async_session, aquarium.id, fish.id, user.id,
+            schedule_time=time(14, 30),
+        )
+
+        result = _entity_to_dict(schedule)
+
+        assert result["id"] == str(schedule.id)
+        assert result["aquarium_id"] == str(aquarium.id)
+        assert result["fish_id"] == str(fish.id)
+        assert result["time"] == "14:30"
+        assert result["interval_days"] == 1
+        assert result["active"] is True
+        assert result["created_by_user_id"] == str(user.id)
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+# ============================================================================
+# get_server_state tests
+# ============================================================================
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_server_state_returns_feeding_logs(
+    async_session: AsyncSession,
+):
+    """Test get_server_state returns feeding_logs instead of events."""
+    from app.services.sync import get_server_state
+
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        fish = await create_test_fish(async_session, aquarium.id)
+        schedule = await create_test_schedule(async_session, aquarium.id, fish.id, user.id)
+        log = await create_test_feeding_log(
+            async_session, schedule.id, fish.id, aquarium.id, user.id,
+        )
+
+        server_state = await get_server_state(async_session, user.id, since=None)
+
+        assert len(server_state.feeding_logs) >= 1
+        log_ids = {entry["id"] for entry in server_state.feeding_logs}
+        assert str(log.id) in log_ids
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_server_state_initial_sync_returns_all_active_records(
+    async_session: AsyncSession,
+):
+    """Test that initial sync (since=None) returns all active records."""
+    from app.services.sync import get_server_state
+
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        fish = await create_test_fish(async_session, aquarium.id)
+        schedule = await create_test_schedule(async_session, aquarium.id, fish.id, user.id)
+        log = await create_test_feeding_log(
+            async_session, schedule.id, fish.id, aquarium.id, user.id,
+        )
+
+        server_state = await get_server_state(async_session, user.id, since=None)
+
+        assert len(server_state.aquariums) == 1
+        assert len(server_state.fish) == 1
+        assert len(server_state.feeding_logs) >= 1
+
+        assert server_state.aquariums[0]["id"] == str(aquarium.id)
+        assert server_state.fish[0]["id"] == str(fish.id)
+
+        assert server_state.deleted.aquariums == []
+        assert server_state.deleted.fish == []
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_server_state_delta_sync_returns_only_updated_records(
+    async_session: AsyncSession,
+):
+    """Test that delta sync returns only records updated after since timestamp."""
+    from app.services.sync import get_server_state
+
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        fish = await create_test_fish(async_session, aquarium.id)
+
+        since_time = fish.updated_at + timedelta(microseconds=1)
+
+        new_fish = await create_test_fish(async_session, aquarium.id)
+
+        server_state = await get_server_state(async_session, user.id, since=since_time)
+
+        assert len(server_state.fish) >= 1
+        fish_ids = {f["id"] for f in server_state.fish}
+        assert str(new_fish.id) in fish_ids
+
+        # Aquarium was created before since_time
+        assert len(server_state.aquariums) == 0
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_server_state_delta_sync_includes_deleted_entities(
+    async_session: AsyncSession,
+):
+    """Test that delta sync includes soft-deleted entities in deleted list."""
+    from app.services.sync import get_server_state
+
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        fish = await create_test_fish(async_session, aquarium.id)
+        fish_id = fish.id
+
+        since_time = datetime.now(UTC)
+
+        fish.deleted_at = datetime.now(UTC)
+        await async_session.commit()
+
+        server_state = await get_server_state(async_session, user.id, since=since_time)
+
+        assert len(server_state.fish) == 0
+        assert len(server_state.deleted.fish) == 1
+        assert server_state.deleted.fish[0] == fish_id
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_server_state_no_aquariums_returns_empty(
+    async_session: AsyncSession,
+):
+    """Test that user with no aquariums gets empty server state."""
+    from app.services.sync import get_server_state
+
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+
+        server_state = await get_server_state(async_session, user.id, since=None)
+
+        assert server_state.aquariums == []
+        assert server_state.fish == []
+        assert server_state.feeding_logs == []
+        assert server_state.deleted.aquariums == []
+        assert server_state.deleted.fish == []
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+# ============================================================================
+# Full sync flow tests
+# ============================================================================
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_full_sync_flow_feeding_log(
+    async_session: AsyncSession,
+):
+    """Test full sync flow: client sends feeding_log changes, server applies and returns state."""
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        fish = await create_test_fish(async_session, aquarium.id)
+        schedule = await create_test_schedule(async_session, aquarium.id, fish.id, user.id)
+
+        log_id = uuid.uuid4()
+        scheduled_for = datetime(2024, 6, 15, 9, 0)
+
+        change = ChangeItem(
+            entity_type="feeding_log",
+            entity_id=log_id,
+            operation="create",
+            data={
+                "aquarium_id": str(aquarium.id),
+                "schedule_id": str(schedule.id),
+                "fish_id": str(fish.id),
+                "scheduled_for": scheduled_for.isoformat(),
+                "action": "fed",
+                "acted_at": datetime.now(UTC).isoformat(),
+                "device_id": str(uuid.uuid4()),
+            },
             client_updated_at=datetime.now(UTC),
         )
         request = SyncRequest(changes=[change], last_sync_at=None)
 
         response = await process_sync(async_session, user.id, request)
 
+        assert response.conflicts == []
         assert response.sync_token is not None
+
+        # Verify feeding_log is in server state
+        log_ids = {entry["id"] for entry in response.server_state.feeding_logs}
+        assert str(log_id) in log_ids
     finally:
         await cleanup_sync_test_data(async_session)
 
 
 # ============================================================================
-# Task 6.3: apply_changes with last-write-wins conflict resolution tests
+# Batch and conflict tests
 # ============================================================================
-
-
-# resolve_conflict unit tests
-
-
-def test_resolve_conflict_client_wins_when_newer():
-    """Test that client wins when client timestamp is newer."""
-    from app.services.sync import resolve_conflict
-
-    server_time = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
-    client_time = datetime(2024, 1, 1, 12, 0, 1, tzinfo=UTC)  # 1 second newer
-
-    result = resolve_conflict(server_time, client_time)
-
-    assert result == "client"
-
-
-def test_resolve_conflict_server_wins_when_newer():
-    """Test that server wins when server timestamp is newer."""
-    from app.services.sync import resolve_conflict
-
-    server_time = datetime(2024, 1, 1, 12, 0, 1, tzinfo=UTC)  # 1 second newer
-    client_time = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
-
-    result = resolve_conflict(server_time, client_time)
-
-    assert result == "server"
-
-
-def test_resolve_conflict_server_wins_on_tie():
-    """Test that server wins when timestamps are equal (determinism)."""
-    from app.services.sync import resolve_conflict
-
-    same_time = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
-
-    result = resolve_conflict(same_time, same_time)
-
-    assert result == "server"
-
-
-# apply_changes CREATE tests
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -769,10 +1186,8 @@ async def test_apply_changes_create_aquarium_new_entity(
 
         response = await process_sync(async_session, user.id, request)
 
-        # Verify no conflicts
         assert response.conflicts == []
 
-        # Verify aquarium was created
         stmt = select(Aquarium).where(Aquarium.id == new_aquarium_id)
         result = await async_session.execute(stmt)
         aquarium = result.scalar_one_or_none()
@@ -782,90 +1197,6 @@ async def test_apply_changes_create_aquarium_new_entity(
         assert aquarium.owner_id == user.id
     finally:
         await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_apply_changes_create_fish_new_entity(
-    async_session: AsyncSession,
-):
-    """Test that CREATE creates new fish when entity doesn't exist."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user.id)
-        await ensure_test_species(async_session)
-        new_fish_id = uuid.uuid4()
-
-        change = ChangeItem(
-            entity_type="fish",
-            entity_id=new_fish_id,
-            operation="create",
-            data={
-                "aquarium_id": str(aquarium.id),
-                "species_id": "test-guppy",
-                "quantity": 5,
-            },
-            client_updated_at=datetime.now(UTC),
-        )
-        request = SyncRequest(changes=[change], last_sync_at=None)
-
-        response = await process_sync(async_session, user.id, request)
-
-        assert response.conflicts == []
-
-        # Verify fish was created
-        stmt = select(Fish).where(Fish.id == new_fish_id)
-        result = await async_session.execute(stmt)
-        fish = result.scalar_one_or_none()
-
-        assert fish is not None
-        assert fish.quantity == 5
-        assert fish.species_id == "test-guppy"
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_apply_changes_create_event_new_entity(
-    async_session: AsyncSession,
-):
-    """Test that CREATE creates new feeding event when entity doesn't exist."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user.id)
-        new_event_id = uuid.uuid4()
-        scheduled_at = datetime.now(UTC)
-
-        change = ChangeItem(
-            entity_type="event",
-            entity_id=new_event_id,
-            operation="create",
-            data={
-                "aquarium_id": str(aquarium.id),
-                "scheduled_at": scheduled_at.isoformat(),
-                "status": "pending",
-            },
-            client_updated_at=datetime.now(UTC),
-        )
-        request = SyncRequest(changes=[change], last_sync_at=None)
-
-        response = await process_sync(async_session, user.id, request)
-
-        assert response.conflicts == []
-
-        # Verify event was created
-        stmt = select(FeedingEvent).where(FeedingEvent.id == new_event_id)
-        result = await async_session.execute(stmt)
-        event = result.scalar_one_or_none()
-
-        assert event is not None
-        assert event.status == "pending"
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-# apply_changes UPDATE tests - client wins
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -879,7 +1210,6 @@ async def test_apply_changes_update_fish_client_wins(
         aquarium = await create_test_aquarium(async_session, user.id)
         fish = await create_test_fish(async_session, aquarium.id)
 
-        # Client timestamp is 1 hour newer than server
         client_time = fish.updated_at + timedelta(hours=1)
 
         change = ChangeItem(
@@ -893,49 +1223,12 @@ async def test_apply_changes_update_fish_client_wins(
 
         response = await process_sync(async_session, user.id, request)
 
-        # No conflicts - client wins
         assert response.conflicts == []
 
-        # Verify fish was updated
         await async_session.refresh(fish)
         assert fish.quantity == 10
     finally:
         await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_apply_changes_update_aquarium_client_wins(
-    async_session: AsyncSession,
-):
-    """Test that UPDATE with newer client timestamp updates aquarium."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user.id)
-
-        # Client timestamp is 1 hour newer than server
-        client_time = aquarium.updated_at + timedelta(hours=1)
-
-        change = ChangeItem(
-            entity_type="aquarium",
-            entity_id=aquarium.id,
-            operation="update",
-            data={"name": "Updated Name"},
-            client_updated_at=client_time,
-        )
-        request = SyncRequest(changes=[change], last_sync_at=None)
-
-        response = await process_sync(async_session, user.id, request)
-
-        assert response.conflicts == []
-
-        await async_session.refresh(aquarium)
-        assert aquarium.name == "Updated Name"
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-# apply_changes UPDATE tests - server wins (conflict)
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -950,7 +1243,6 @@ async def test_apply_changes_update_fish_server_wins_conflict(
         fish = await create_test_fish(async_session, aquarium.id)
         original_quantity = fish.quantity
 
-        # Client timestamp is 1 hour OLDER than server
         client_time = fish.updated_at - timedelta(hours=1)
 
         change = ChangeItem(
@@ -964,59 +1256,13 @@ async def test_apply_changes_update_fish_server_wins_conflict(
 
         response = await process_sync(async_session, user.id, request)
 
-        # Should have 1 conflict
         assert len(response.conflicts) == 1
+        assert response.conflicts[0].resolution == "server_wins"
 
-        conflict = response.conflicts[0]
-        assert conflict.entity_type == "fish"
-        assert conflict.entity_id == fish.id
-        assert conflict.resolution == "server_wins"
-        assert conflict.client_data == {"quantity": 100}
-
-        # Verify fish was NOT updated
         await async_session.refresh(fish)
         assert fish.quantity == original_quantity
     finally:
         await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_apply_changes_update_event_server_wins_conflict(
-    async_session: AsyncSession,
-):
-    """Test that UPDATE event with older timestamp returns conflict."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user.id)
-        event = await create_test_feeding_event(async_session, aquarium.id)
-        original_status = event.status
-
-        # Client timestamp is older
-        client_time = event.updated_at - timedelta(hours=1)
-
-        change = ChangeItem(
-            entity_type="event",
-            entity_id=event.id,
-            operation="update",
-            data={"status": "completed"},
-            client_updated_at=client_time,
-        )
-        request = SyncRequest(changes=[change], last_sync_at=None)
-
-        response = await process_sync(async_session, user.id, request)
-
-        assert len(response.conflicts) == 1
-        assert response.conflicts[0].resolution == "server_wins"
-
-        # Verify event was NOT updated
-        await async_session.refresh(event)
-        assert event.status == original_status
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-# apply_changes DELETE tests
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -1030,7 +1276,6 @@ async def test_apply_changes_delete_fish_client_wins(
         aquarium = await create_test_aquarium(async_session, user.id)
         fish = await create_test_fish(async_session, aquarium.id)
 
-        # Client timestamp is newer
         client_time = fish.updated_at + timedelta(hours=1)
 
         change = ChangeItem(
@@ -1046,1125 +1291,577 @@ async def test_apply_changes_delete_fish_client_wins(
 
         assert response.conflicts == []
 
-        # Verify fish was soft deleted
         await async_session.refresh(fish)
         assert fish.deleted_at is not None
     finally:
         await cleanup_sync_test_data(async_session)
 
 
+# ============================================================================
+# resolve_conflict unit tests
+# ============================================================================
+
+
+def test_resolve_conflict_client_wins_when_newer():
+    """Test that client wins when client timestamp is newer."""
+    from app.services.sync import resolve_conflict
+
+    server_time = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+    client_time = datetime(2024, 1, 1, 12, 0, 1, tzinfo=UTC)
+
+    result = resolve_conflict(server_time, client_time)
+
+    assert result == "client"
+
+
+def test_resolve_conflict_server_wins_when_newer():
+    """Test that server wins when server timestamp is newer."""
+    from app.services.sync import resolve_conflict
+
+    server_time = datetime(2024, 1, 1, 12, 0, 1, tzinfo=UTC)
+    client_time = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+    result = resolve_conflict(server_time, client_time)
+
+    assert result == "server"
+
+
+def test_resolve_conflict_server_wins_on_tie():
+    """Test that server wins when timestamps are equal (determinism)."""
+    from app.services.sync import resolve_conflict
+
+    same_time = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+    result = resolve_conflict(same_time, same_time)
+
+    assert result == "server"
+
+
+# ============================================================================
+# Verify _detect_concurrent_feeding is removed
+# ============================================================================
+
+
+def test_detect_concurrent_feeding_removed():
+    """Verify _detect_concurrent_feeding function is removed."""
+    import app.services.sync as sync_module
+
+    assert not hasattr(sync_module, "_detect_concurrent_feeding")
+    assert not hasattr(sync_module, "CONCURRENT_FEEDING_WINDOW")
+
+
+# ============================================================================
+# _ensure_schedules_for_user tests (per-fish schedule generation)
+# ============================================================================
+
+
 @pytest.mark.asyncio(loop_scope="session")
-async def test_apply_changes_delete_event_client_wins(
-    async_session: AsyncSession,
-):
-    """Test that DELETE event with newer timestamp hard deletes (no SoftDeleteMixin)."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user.id)
-        event = await create_test_feeding_event(async_session, aquarium.id)
-        event_id = event.id
+class TestEnsureSchedulesPerFish:
+    """Tests for _ensure_schedules_for_user — per-fish schedule generation."""
 
-        # Client timestamp is newer
-        client_time = event.updated_at + timedelta(hours=1)
-
-        change = ChangeItem(
-            entity_type="event",
-            entity_id=event_id,
-            operation="delete",
-            data={},
-            client_updated_at=client_time,
-        )
-        request = SyncRequest(changes=[change], last_sync_at=None)
-
-        response = await process_sync(async_session, user.id, request)
-
-        assert response.conflicts == []
-
-        # Verify event was soft deleted
-        stmt = select(FeedingEvent).where(FeedingEvent.id == event_id)
-        result = await async_session.execute(stmt)
-        deleted_event = result.scalar_one_or_none()
-        assert deleted_event is not None
-        assert deleted_event.deleted_at is not None
-    finally:
+    async def test_creates_schedules_for_fish_without_schedules(
+        self, async_session: AsyncSession
+    ):
+        """Fish without schedules should get schedules created."""
         await cleanup_sync_test_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            aquarium = await create_test_aquarium(async_session, user.id)
+            fish = await create_test_fish(async_session, aquarium.id)
 
+            # No schedules initially
+            stmt = select(FeedingSchedule).where(FeedingSchedule.fish_id == fish.id)
+            result = await async_session.execute(stmt)
+            assert len(result.scalars().all()) == 0
 
-@pytest.mark.asyncio(loop_scope="session")
-async def test_apply_changes_delete_aquarium_server_wins_conflict(
-    async_session: AsyncSession,
-):
-    """Test that DELETE with older client timestamp returns conflict."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user.id)
+            # Run ensure schedules
+            await _ensure_schedules_for_user(async_session, user.id)
 
-        # Client timestamp is older
-        client_time = aquarium.updated_at - timedelta(hours=1)
+            # Now fish should have schedules
+            result = await async_session.execute(stmt)
+            schedules = result.scalars().all()
+            assert len(schedules) == 2  # test-guppy has feeding_frequency=2
+        finally:
+            await cleanup_sync_test_data(async_session)
 
-        change = ChangeItem(
-            entity_type="aquarium",
-            entity_id=aquarium.id,
-            operation="delete",
-            data={},
-            client_updated_at=client_time,
-        )
-        request = SyncRequest(changes=[change], last_sync_at=None)
-
-        response = await process_sync(async_session, user.id, request)
-
-        assert len(response.conflicts) == 1
-        assert response.conflicts[0].resolution == "server_wins"
-
-        # Verify aquarium was NOT deleted
-        await async_session.refresh(aquarium)
-        assert aquarium.deleted_at is None
-    finally:
+    async def test_new_fish_gets_schedules_even_if_aquarium_has_existing(
+        self, async_session: AsyncSession
+    ):
+        """New fish in aquarium with existing schedules should still get its own schedules."""
         await cleanup_sync_test_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            aquarium = await create_test_aquarium(async_session, user.id)
 
+            # Create first fish with schedules
+            fish1 = await create_test_fish(async_session, aquarium.id, "test-guppy")
+            await create_test_schedule(async_session, aquarium.id, fish1.id, user.id, time(9, 0))
+            await create_test_schedule(async_session, aquarium.id, fish1.id, user.id, time(18, 0))
 
-# CREATE existing entity tests (treated as update)
+            # Create second fish WITHOUT schedules
+            species2 = await ensure_test_species(async_session, "test-betta")
+            fish2 = Fish(
+                aquarium_id=aquarium.id,
+                species_id=species2.id,
+                quantity=1,
+            )
+            async_session.add(fish2)
+            await async_session.commit()
+            await async_session.refresh(fish2)
 
+            # Verify fish2 has no schedules
+            stmt = select(FeedingSchedule).where(FeedingSchedule.fish_id == fish2.id)
+            result = await async_session.execute(stmt)
+            assert len(result.scalars().all()) == 0
 
-@pytest.mark.asyncio(loop_scope="session")
-async def test_apply_changes_create_existing_fish_client_wins(
-    async_session: AsyncSession,
-):
-    """Test that CREATE for existing entity is treated as update."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user.id)
-        fish = await create_test_fish(async_session, aquarium.id)
+            # Run ensure schedules — this is the key test!
+            # Old per-aquarium logic would skip because aquarium already has schedules.
+            # New per-fish logic should create schedules for fish2.
+            await _ensure_schedules_for_user(async_session, user.id)
 
-        # Client timestamp is newer
-        client_time = fish.updated_at + timedelta(hours=1)
+            # fish2 should now have schedules
+            result = await async_session.execute(stmt)
+            schedules = result.scalars().all()
+            assert len(schedules) == 2  # test-betta gets schedules based on species frequency
 
-        change = ChangeItem(
-            entity_type="fish",
-            entity_id=fish.id,
-            operation="create",
-            data={
-                "aquarium_id": str(aquarium.id),
-                "species_id": "test-guppy",
-                "quantity": 15,
-            },
-            client_updated_at=client_time,
-        )
-        request = SyncRequest(changes=[change], last_sync_at=None)
+            # fish1 should still have its original schedules (not duplicated)
+            stmt1 = select(FeedingSchedule).where(FeedingSchedule.fish_id == fish1.id)
+            result1 = await async_session.execute(stmt1)
+            assert len(result1.scalars().all()) == 2
+        finally:
+            await cleanup_sync_test_data(async_session)
 
-        response = await process_sync(async_session, user.id, request)
-
-        # No conflicts - client wins, treated as update
-        assert response.conflicts == []
-
-        await async_session.refresh(fish)
-        assert fish.quantity == 15
-    finally:
+    async def test_skips_fish_with_existing_schedules(
+        self, async_session: AsyncSession
+    ):
+        """Fish that already has schedules should not get duplicates."""
         await cleanup_sync_test_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            aquarium = await create_test_aquarium(async_session, user.id)
+            fish = await create_test_fish(async_session, aquarium.id)
 
+            # Create schedules manually
+            await create_test_schedule(async_session, aquarium.id, fish.id, user.id, time(9, 0))
+            await create_test_schedule(async_session, aquarium.id, fish.id, user.id, time(18, 0))
 
-@pytest.mark.asyncio(loop_scope="session")
-async def test_apply_changes_create_existing_fish_server_wins_conflict(
-    async_session: AsyncSession,
-):
-    """Test that CREATE for existing entity with older timestamp returns conflict."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user.id)
-        fish = await create_test_fish(async_session, aquarium.id)
-        original_quantity = fish.quantity
+            # Run ensure schedules
+            await _ensure_schedules_for_user(async_session, user.id)
 
-        # Client timestamp is older
-        client_time = fish.updated_at - timedelta(hours=1)
+            # Should still have only 2 schedules (no duplicates)
+            stmt = select(FeedingSchedule).where(FeedingSchedule.fish_id == fish.id)
+            result = await async_session.execute(stmt)
+            assert len(result.scalars().all()) == 2
+        finally:
+            await cleanup_sync_test_data(async_session)
 
-        change = ChangeItem(
-            entity_type="fish",
-            entity_id=fish.id,
-            operation="create",
-            data={
-                "aquarium_id": str(aquarium.id),
-                "species_id": "test-guppy",
-                "quantity": 15,
-            },
-            client_updated_at=client_time,
-        )
-        request = SyncRequest(changes=[change], last_sync_at=None)
-
-        response = await process_sync(async_session, user.id, request)
-
-        assert len(response.conflicts) == 1
-        assert response.conflicts[0].resolution == "server_wins"
-
-        await async_session.refresh(fish)
-        assert fish.quantity == original_quantity
-    finally:
+    async def test_no_fish_does_nothing(self, async_session: AsyncSession):
+        """Aquarium with no fish should not cause errors."""
         await cleanup_sync_test_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            aquarium = await create_test_aquarium(async_session, user.id)
+
+            # Should not raise
+            await _ensure_schedules_for_user(async_session, user.id)
+
+            # No schedules created
+            stmt = select(FeedingSchedule).where(FeedingSchedule.aquarium_id == aquarium.id)
+            result = await async_session.execute(stmt)
+            assert len(result.scalars().all()) == 0
+        finally:
+            await cleanup_sync_test_data(async_session)
 
 
-# Batch processing tests
+# ============================================================================
+# Fish soft-delete deactivates schedules tests
+# ============================================================================
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_apply_changes_batch_multiple_entity_types(
-    async_session: AsyncSession,
-):
-    """Test that changes across multiple entity types are processed correctly."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user.id)
-        await ensure_test_species(async_session)
+class TestFishDeleteDeactivatesSchedules:
+    """Tests for fish deletion cascading to schedule deactivation."""
 
-        new_fish_id = uuid.uuid4()
-        new_event_id = uuid.uuid4()
-        now = datetime.now(UTC)
+    async def test_soft_delete_fish_deactivates_its_schedules(
+        self, async_session: AsyncSession
+    ):
+        """When fish is soft-deleted, its schedules should be deactivated."""
+        await cleanup_sync_test_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            aquarium = await create_test_aquarium(async_session, user.id)
+            fish = await create_test_fish(async_session, aquarium.id)
 
-        changes = [
-            ChangeItem(
-                entity_type="aquarium",
-                entity_id=aquarium.id,
-                operation="update",
-                data={"name": "Batch Updated Aquarium"},
-                client_updated_at=aquarium.updated_at + timedelta(hours=1),
-            ),
-            ChangeItem(
+            # Create schedules for fish
+            schedule1 = await create_test_schedule(
+                async_session, aquarium.id, fish.id, user.id, time(9, 0)
+            )
+            schedule2 = await create_test_schedule(
+                async_session, aquarium.id, fish.id, user.id, time(18, 0)
+            )
+
+            # Verify schedules are active
+            assert schedule1.active is True
+            assert schedule2.active is True
+
+            # Soft-delete fish via sync
+            delete_change = ChangeItem(
                 entity_type="fish",
-                entity_id=new_fish_id,
+                entity_id=fish.id,
+                operation="delete",
+                data={},
+                client_updated_at=datetime.now(UTC) + timedelta(seconds=1),
+            )
+            request = SyncRequest(changes=[delete_change])
+            await process_sync(async_session, user.id, request)
+
+            # Verify fish is soft-deleted
+            await async_session.refresh(fish)
+            assert fish.deleted_at is not None
+
+            # Verify schedules are deactivated
+            await async_session.refresh(schedule1)
+            await async_session.refresh(schedule2)
+            assert schedule1.active is False
+            assert schedule2.active is False
+        finally:
+            await cleanup_sync_test_data(async_session)
+
+    async def test_delta_sync_returns_deactivated_schedules_as_deleted(
+        self, async_session: AsyncSession
+    ):
+        """Delta sync should return deactivated schedules in deleted.schedules."""
+        from app.services.sync import get_server_state
+
+        await cleanup_sync_test_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            aquarium = await create_test_aquarium(async_session, user.id)
+            fish = await create_test_fish(async_session, aquarium.id)
+
+            # Create schedule
+            schedule = await create_test_schedule(
+                async_session, aquarium.id, fish.id, user.id, time(9, 0)
+            )
+
+            # Record time before deactivation
+            before_deactivation = datetime.now(UTC)
+
+            # Deactivate schedule (simulating fish deletion)
+            schedule.active = False
+            schedule.updated_at = datetime.now(UTC) + timedelta(seconds=1)
+            await async_session.commit()
+
+            # Delta sync should return schedule in deleted.schedules
+            state = await get_server_state(async_session, user.id, before_deactivation)
+
+            assert schedule.id in state.deleted.schedules
+            assert len(state.schedules) == 0  # No active schedules returned
+        finally:
+            await cleanup_sync_test_data(async_session)
+
+    async def test_initial_sync_excludes_inactive_schedules(
+        self, async_session: AsyncSession
+    ):
+        """Initial sync should not return inactive schedules."""
+        from app.services.sync import get_server_state
+
+        await cleanup_sync_test_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            aquarium = await create_test_aquarium(async_session, user.id)
+            fish = await create_test_fish(async_session, aquarium.id)
+
+            # Create active schedule
+            active_schedule = await create_test_schedule(
+                async_session, aquarium.id, fish.id, user.id, time(9, 0)
+            )
+
+            # Create inactive schedule
+            inactive_schedule = FeedingSchedule(
+                aquarium_id=aquarium.id,
+                fish_id=fish.id,
+                time=time(18, 0),
+                interval_days=1,
+                anchor_date=date.today(),
+                food_type="flakes",
+                active=False,  # Inactive!
+                created_by_user_id=user.id,
+            )
+            async_session.add(inactive_schedule)
+            await async_session.commit()
+            await async_session.refresh(inactive_schedule)
+
+            # Initial sync (since=None)
+            state = await get_server_state(async_session, user.id, since=None)
+
+            # Should only return active schedule
+            schedule_ids = [s["id"] for s in state.schedules]
+            assert str(active_schedule.id) in schedule_ids
+            assert str(inactive_schedule.id) not in schedule_ids
+        finally:
+            await cleanup_sync_test_data(async_session)
+
+
+# ============================================================================
+# Server does NOT auto-generate schedules (offline-first architecture)
+# ============================================================================
+
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestServerDoesNotAutoGenerateSchedules:
+    """Tests verifying server is passive and does not generate schedules.
+
+    Per offline-first architecture:
+    - Client creates schedules locally
+    - Client sends schedules via sync
+    - Server only stores what client sends
+    - Server NEVER generates schedules automatically
+    """
+
+    async def test_sync_does_not_create_schedules_for_new_fish(
+        self, async_session: AsyncSession
+    ):
+        """When client creates fish via sync, server should NOT auto-generate schedules."""
+        await cleanup_sync_test_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            aquarium = await create_test_aquarium(async_session, user.id)
+            await ensure_test_species(async_session, "test-guppy")
+
+            # Create fish via sync (like mobile client would)
+            fish_id = uuid.uuid4()
+            fish_change = ChangeItem(
+                entity_type="fish",
+                entity_id=fish_id,
                 operation="create",
                 data={
                     "aquarium_id": str(aquarium.id),
                     "species_id": "test-guppy",
-                    "quantity": 3,
+                    "quantity": 1,
                 },
-                client_updated_at=now,
-            ),
-            ChangeItem(
-                entity_type="event",
-                entity_id=new_event_id,
+                client_updated_at=datetime.now(UTC),
+            )
+            request = SyncRequest(changes=[fish_change])
+            response = await process_sync(async_session, user.id, request)
+
+            # Verify fish was created
+            stmt = select(Fish).where(Fish.id == fish_id)
+            result = await async_session.execute(stmt)
+            fish = result.scalar_one_or_none()
+            assert fish is not None, "Fish should be created"
+
+            # Verify NO schedules were auto-generated
+            schedule_stmt = select(FeedingSchedule).where(FeedingSchedule.fish_id == fish_id)
+            result = await async_session.execute(schedule_stmt)
+            schedules = result.scalars().all()
+            assert len(schedules) == 0, "Server should NOT auto-generate schedules"
+
+            # Verify response also has no schedules for this fish
+            response_schedule_fish_ids = [s.get("fish_id") for s in response.server_state.schedules]
+            assert str(fish_id) not in response_schedule_fish_ids
+        finally:
+            await cleanup_sync_test_data(async_session)
+
+    async def test_sync_with_fish_does_not_trigger_schedule_generation(
+        self, async_session: AsyncSession
+    ):
+        """Multiple syncs with fish changes should never trigger schedule generation."""
+        await cleanup_sync_test_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            aquarium = await create_test_aquarium(async_session, user.id)
+            await ensure_test_species(async_session, "test-guppy")
+
+            # First sync: create fish
+            fish_id = uuid.uuid4()
+            create_change = ChangeItem(
+                entity_type="fish",
+                entity_id=fish_id,
                 operation="create",
                 data={
                     "aquarium_id": str(aquarium.id),
-                    "scheduled_at": now.isoformat(),
+                    "species_id": "test-guppy",
+                    "quantity": 1,
                 },
-                client_updated_at=now,
-            ),
-        ]
-        request = SyncRequest(changes=changes, last_sync_at=None)
+                client_updated_at=datetime.now(UTC),
+            )
+            await process_sync(async_session, user.id, SyncRequest(changes=[create_change]))
 
-        response = await process_sync(async_session, user.id, request)
+            # Second sync: update fish
+            update_change = ChangeItem(
+                entity_type="fish",
+                entity_id=fish_id,
+                operation="update",
+                data={"quantity": 5},
+                client_updated_at=datetime.now(UTC) + timedelta(seconds=1),
+            )
+            await process_sync(async_session, user.id, SyncRequest(changes=[update_change]))
 
-        assert response.conflicts == []
+            # Third sync: empty (just fetching state)
+            await process_sync(async_session, user.id, SyncRequest(changes=[]))
 
-        # Verify all changes applied
-        await async_session.refresh(aquarium)
-        assert aquarium.name == "Batch Updated Aquarium"
+            # After all syncs, still NO schedules should exist
+            schedule_stmt = select(FeedingSchedule).where(FeedingSchedule.fish_id == fish_id)
+            result = await async_session.execute(schedule_stmt)
+            schedules = result.scalars().all()
+            assert len(schedules) == 0, "Server should NEVER auto-generate schedules"
+        finally:
+            await cleanup_sync_test_data(async_session)
 
-        stmt = select(Fish).where(Fish.id == new_fish_id)
-        result = await async_session.execute(stmt)
-        fish = result.scalar_one_or_none()
-        assert fish is not None
-        assert fish.quantity == 3
-
-        stmt = select(FeedingEvent).where(FeedingEvent.id == new_event_id)
-        result = await async_session.execute(stmt)
-        event = result.scalar_one_or_none()
-        assert event is not None
-    finally:
+    async def test_client_created_schedules_are_stored(
+        self, async_session: AsyncSession
+    ):
+        """Schedules sent by client via sync should be stored correctly."""
         await cleanup_sync_test_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            aquarium = await create_test_aquarium(async_session, user.id)
+            fish = await create_test_fish(async_session, aquarium.id)
+
+            # Client creates schedule and sends via sync
+            schedule_id = uuid.uuid4()
+            schedule_change = ChangeItem(
+                entity_type="schedule",
+                entity_id=schedule_id,
+                operation="create",
+                data={
+                    "aquarium_id": str(aquarium.id),
+                    "fish_id": str(fish.id),
+                    "time": "09:00",
+                    "interval_days": 1,
+                    "anchor_date": date.today().isoformat(),
+                    "food_type": "flakes",
+                    "active": True,
+                },
+                client_updated_at=datetime.now(UTC),
+            )
+            request = SyncRequest(changes=[schedule_change])
+            await process_sync(async_session, user.id, request)
+
+            # Verify schedule was stored
+            stmt = select(FeedingSchedule).where(FeedingSchedule.id == schedule_id)
+            result = await async_session.execute(stmt)
+            schedule = result.scalar_one_or_none()
+            assert schedule is not None, "Client-created schedule should be stored"
+            assert schedule.fish_id == fish.id
+            assert schedule.time == time(9, 0)
+        finally:
+            await cleanup_sync_test_data(async_session)
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_apply_changes_batch_with_mixed_conflicts(
-    async_session: AsyncSession,
-):
-    """Test batch processing with some conflicts and some successes."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user.id)
-        fish = await create_test_fish(async_session, aquarium.id)
+class TestSyncedIds:
+    """Tests verifying synced_ids in sync response.
 
-        # First change: update fish with newer timestamp (should succeed)
-        # Second change: update aquarium with older timestamp (should conflict)
-        changes = [
-            ChangeItem(
+    The server must return entity IDs that were successfully accepted,
+    so the client can mark them as synced and stop resending.
+    """
+
+    async def test_synced_ids_returned_for_accepted_changes(
+        self, async_session: AsyncSession
+    ):
+        """All accepted changes (no conflict) should appear in synced_ids."""
+        await cleanup_sync_test_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            aquarium = await create_test_aquarium(async_session, user.id)
+            await ensure_test_species(async_session, "test-guppy")
+
+            fish_id = uuid.uuid4()
+            schedule_id = uuid.uuid4()
+
+            changes = [
+                ChangeItem(
+                    entity_type="fish",
+                    entity_id=fish_id,
+                    operation="create",
+                    data={
+                        "aquarium_id": str(aquarium.id),
+                        "species_id": "test-guppy",
+                        "quantity": 2,
+                    },
+                    client_updated_at=datetime.now(UTC),
+                ),
+                ChangeItem(
+                    entity_type="schedule",
+                    entity_id=schedule_id,
+                    operation="create",
+                    data={
+                        "aquarium_id": str(aquarium.id),
+                        "fish_id": str(fish_id),
+                        "time": "09:00",
+                    },
+                    client_updated_at=datetime.now(UTC),
+                ),
+            ]
+            response = await process_sync(
+                async_session, user.id, SyncRequest(changes=changes)
+            )
+
+            assert len(response.synced_ids) == 2
+            assert fish_id in response.synced_ids
+            assert schedule_id in response.synced_ids
+            assert len(response.conflicts) == 0
+        finally:
+            await cleanup_sync_test_data(async_session)
+
+    async def test_synced_ids_empty_when_no_changes(
+        self, async_session: AsyncSession
+    ):
+        """Empty changes list should return empty synced_ids."""
+        await cleanup_sync_test_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            response = await process_sync(
+                async_session, user.id, SyncRequest(changes=[])
+            )
+
+            assert response.synced_ids == []
+        finally:
+            await cleanup_sync_test_data(async_session)
+
+    async def test_synced_ids_excludes_conflicts(
+        self, async_session: AsyncSession
+    ):
+        """Conflicted changes should NOT appear in synced_ids."""
+        await cleanup_sync_test_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            aquarium = await create_test_aquarium(async_session, user.id)
+            fish = await create_test_fish(async_session, aquarium.id)
+
+            # Send update with old timestamp so server wins (= conflict)
+            conflicting_change = ChangeItem(
                 entity_type="fish",
                 entity_id=fish.id,
                 operation="update",
-                data={"quantity": 20},
-                client_updated_at=fish.updated_at + timedelta(hours=1),
-            ),
-            ChangeItem(
-                entity_type="aquarium",
-                entity_id=aquarium.id,
-                operation="update",
-                data={"name": "Should Not Update"},
-                client_updated_at=aquarium.updated_at - timedelta(hours=1),
-            ),
-        ]
-        request = SyncRequest(changes=changes, last_sync_at=None)
-
-        response = await process_sync(async_session, user.id, request)
-
-        # Should have 1 conflict (aquarium)
-        assert len(response.conflicts) == 1
-        assert response.conflicts[0].entity_type == "aquarium"
-
-        # Fish should be updated
-        await async_session.refresh(fish)
-        assert fish.quantity == 20
-
-        # Aquarium should NOT be updated
-        await async_session.refresh(aquarium)
-        assert aquarium.name == "Test Aquarium"  # Original name
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-# ============================================================================
-# Task 6.4: get_server_state with delta sync tests
-# ============================================================================
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_get_server_state_initial_sync_returns_all_active_records(
-    async_session: AsyncSession,
-):
-    """Test that initial sync (since=None) returns all active records."""
-    from app.services.sync import get_server_state
-
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user.id)
-        fish = await create_test_fish(async_session, aquarium.id)
-        event = await create_test_feeding_event(async_session, aquarium.id)
-
-        # Initial sync - no since parameter
-        server_state = await get_server_state(async_session, user.id, since=None)
-
-        # Should return all entities
-        assert len(server_state.aquariums) == 1
-        assert len(server_state.fish) == 1
-        assert len(server_state.events) == 1
-
-        # Verify aquarium data
-        assert server_state.aquariums[0]["id"] == str(aquarium.id)
-        assert server_state.aquariums[0]["name"] == aquarium.name
-
-        # Verify fish data
-        assert server_state.fish[0]["id"] == str(fish.id)
-
-        # Verify event data
-        assert server_state.events[0]["id"] == str(event.id)
-
-        # No deleted entities on initial sync
-        assert server_state.deleted.aquariums == []
-        assert server_state.deleted.fish == []
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_get_server_state_delta_sync_returns_only_updated_records(
-    async_session: AsyncSession,
-):
-    """Test that delta sync returns only records updated after since timestamp."""
-    from app.services.sync import get_server_state
-
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user.id)
-        fish = await create_test_fish(async_session, aquarium.id)
-
-        # Use the fish's updated_at as the since_time reference point
-        # Add a small offset to ensure new fish is "after" since_time
-        since_time = fish.updated_at + timedelta(microseconds=1)
-
-        # Create a new fish after since_time
-        new_fish = await create_test_fish(async_session, aquarium.id)
-
-        # Delta sync
-        server_state = await get_server_state(async_session, user.id, since=since_time)
-
-        # Should return only the new fish (created after since_time)
-        assert len(server_state.fish) >= 1
-        fish_ids = {f["id"] for f in server_state.fish}
-        assert str(new_fish.id) in fish_ids
-
-        # Aquarium was created before since_time, should not be included
-        assert len(server_state.aquariums) == 0
-
-        # No deleted entities
-        assert server_state.deleted.aquariums == []
-        assert server_state.deleted.fish == []
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_get_server_state_delta_sync_includes_deleted_entities(
-    async_session: AsyncSession,
-):
-    """Test that delta sync includes soft-deleted entities in deleted list."""
-    from app.services.sync import get_server_state
-
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user.id)
-        fish = await create_test_fish(async_session, aquarium.id)
-        fish_id = fish.id
-
-        # Record the time before deletion
-        since_time = datetime.now(UTC)
-
-        # Soft delete the fish
-        fish.deleted_at = datetime.now(UTC)
-        await async_session.commit()
-
-        # Delta sync
-        server_state = await get_server_state(async_session, user.id, since=since_time)
-
-        # Fish should be in deleted list, not in active list
-        assert len(server_state.fish) == 0
-        assert len(server_state.deleted.fish) == 1
-        assert server_state.deleted.fish[0] == fish_id
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_get_server_state_no_aquariums_returns_empty(
-    async_session: AsyncSession,
-):
-    """Test that user with no aquariums gets empty server state."""
-    from app.services.sync import get_server_state
-
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-
-        server_state = await get_server_state(async_session, user.id, since=None)
-
-        assert server_state.aquariums == []
-        assert server_state.fish == []
-        assert server_state.events == []
-        assert server_state.deleted.aquariums == []
-        assert server_state.deleted.fish == []
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_get_server_state_excludes_deleted_aquariums_on_initial_sync(
-    async_session: AsyncSession,
-):
-    """Test that initial sync excludes soft-deleted aquariums."""
-    from app.services.sync import get_server_state
-
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user.id)
-
-        # Soft delete the aquarium
-        aquarium.deleted_at = datetime.now(UTC)
-        await async_session.commit()
-
-        # Initial sync should not include deleted aquarium
-        server_state = await get_server_state(async_session, user.id, since=None)
-
-        assert len(server_state.aquariums) == 0
-        # Deleted list is empty on initial sync (no since parameter)
-        assert server_state.deleted.aquariums == []
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_get_server_state_excludes_deleted_fish_on_initial_sync(
-    async_session: AsyncSession,
-):
-    """Test that initial sync excludes soft-deleted fish."""
-    from app.services.sync import get_server_state
-
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user.id)
-        fish = await create_test_fish(async_session, aquarium.id)
-
-        # Soft delete the fish
-        fish.deleted_at = datetime.now(UTC)
-        await async_session.commit()
-
-        # Initial sync should not include deleted fish
-        server_state = await get_server_state(async_session, user.id, since=None)
-
-        assert len(server_state.fish) == 0
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_get_server_state_member_access_includes_shared_aquarium(
-    async_session: AsyncSession,
-):
-    """Test that members can see shared aquarium data."""
-    from app.services.sync import get_server_state
-
-    await cleanup_sync_test_data(async_session)
-    try:
-        owner = await create_test_user(async_session, "owner@example.com")
-        member_user = await create_test_user(async_session, "member@example.com")
-        aquarium = await create_test_aquarium(async_session, owner.id)
-        fish = await create_test_fish(async_session, aquarium.id)
-
-        # Add member_user as member
-        member = AquariumMember(
-            aquarium_id=aquarium.id,
-            user_id=member_user.id,
-            role="member",
-        )
-        async_session.add(member)
-        await async_session.commit()
-
-        # Member should see the shared aquarium data
-        server_state = await get_server_state(async_session, member_user.id, since=None)
-
-        assert len(server_state.aquariums) == 1
-        assert server_state.aquariums[0]["id"] == str(aquarium.id)
-        assert len(server_state.fish) == 1
-        assert server_state.fish[0]["id"] == str(fish.id)
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_get_server_state_delta_sync_deleted_aquarium(
-    async_session: AsyncSession,
-):
-    """Test that delta sync includes deleted aquarium in deleted list."""
-    from app.services.sync import get_server_state
-
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user.id)
-        aquarium_id = aquarium.id
-
-        # Record time before deletion
-        since_time = datetime.now(UTC)
-
-        # Soft delete the aquarium
-        aquarium.deleted_at = datetime.now(UTC)
-        await async_session.commit()
-
-        # Delta sync should include deleted aquarium
-        server_state = await get_server_state(async_session, user.id, since=since_time)
-
-        assert len(server_state.aquariums) == 0
-        assert len(server_state.deleted.aquariums) == 1
-        assert server_state.deleted.aquariums[0] == aquarium_id
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_get_server_state_multiple_aquariums(
-    async_session: AsyncSession,
-):
-    """Test that all user's aquariums are returned."""
-    from app.services.sync import get_server_state
-
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium1 = await create_test_aquarium(async_session, user.id, "Aquarium 1")
-        aquarium2 = await create_test_aquarium(async_session, user.id, "Aquarium 2")
-
-        server_state = await get_server_state(async_session, user.id, since=None)
-
-        assert len(server_state.aquariums) == 2
-        aquarium_ids = {aq["id"] for aq in server_state.aquariums}
-        assert str(aquarium1.id) in aquarium_ids
-        assert str(aquarium2.id) in aquarium_ids
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_get_server_state_delta_sync_events(
-    async_session: AsyncSession,
-):
-    """Test that delta sync returns only events updated after since."""
-    from app.services.sync import get_server_state
-
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user.id)
-        event1 = await create_test_feeding_event(async_session, aquarium.id)
-
-        # Use event1's updated_at as the since_time reference point
-        # Add a small offset to ensure new event is "after" since_time
-        since_time = event1.updated_at + timedelta(microseconds=1)
-
-        # Create second event after since_time
-        event2 = await create_test_feeding_event(async_session, aquarium.id)
-
-        # Delta sync
-        server_state = await get_server_state(async_session, user.id, since=since_time)
-
-        # Should return only the new event (created after since_time)
-        assert len(server_state.events) >= 1
-        event_ids = {e["id"] for e in server_state.events}
-        assert str(event2.id) in event_ids
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_process_sync_includes_server_state_with_entities(
-    async_session: AsyncSession,
-):
-    """Test that process_sync returns server_state with user's entities."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user.id)
-        fish = await create_test_fish(async_session, aquarium.id)
-        event = await create_test_feeding_event(async_session, aquarium.id)
-
-        request = SyncRequest(changes=[], last_sync_at=None)
-
-        response = await process_sync(async_session, user.id, request)
-
-        # Verify server_state contains entities
-        # Note: process_sync auto-generates feeding schedules/events for aquariums with fish
-        assert len(response.server_state.aquariums) == 1
-        assert len(response.server_state.fish) == 1
-        assert len(response.server_state.events) >= 1  # May include auto-generated events
-        assert response.server_state.aquariums[0]["id"] == str(aquarium.id)
-        assert response.server_state.fish[0]["id"] == str(fish.id)
-        # Verify our test event is included in the response
-        event_ids = [e["id"] for e in response.server_state.events]
-        assert str(event.id) in event_ids
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-# ============================================================================
-# Task 6.5: Concurrent feeding conflict detection tests
-# ============================================================================
-
-
-async def create_test_feeding_schedule(
-    session: AsyncSession,
-    aquarium_id: uuid.UUID,
-) -> FeedingSchedule:
-    """Helper to create a test feeding schedule."""
-    from app.models.feeding import FeedingSchedule
-
-    schedule = FeedingSchedule(
-        aquarium_id=aquarium_id,
-        times_per_day=2,
-        scheduled_times=["08:00", "18:00"],
-        food_type="flakes",
-    )
-    session.add(schedule)
-    await session.commit()
-    await session.refresh(schedule)
-    return schedule
-
-
-async def create_completed_feeding_event(
-    session: AsyncSession,
-    aquarium_id: uuid.UUID,
-    schedule_id: uuid.UUID,
-    completed_at: datetime,
-    completed_by: uuid.UUID,
-) -> FeedingEvent:
-    """Helper to create a completed feeding event."""
-    event = FeedingEvent(
-        aquarium_id=aquarium_id,
-        schedule_id=schedule_id,
-        scheduled_at=completed_at,
-        status="completed",
-        completed_at=completed_at,
-        completed_by=completed_by,
-    )
-    session.add(event)
-    await session.commit()
-    await session.refresh(event)
-    return event
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_concurrent_feeding_within_window_returns_conflict(
-    async_session: AsyncSession,
-):
-    """Test that two feeding events within 5min window return concurrent_feeding conflict."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        # Create two users (owner and member)
-        owner = await create_test_user(async_session, "owner@example.com")
-        member_user = await create_test_user(async_session, "member@example.com")
-        aquarium = await create_test_aquarium(async_session, owner.id)
-        schedule = await create_test_feeding_schedule(async_session, aquarium.id)
-
-        # Add member_user as member
-        member = AquariumMember(
-            aquarium_id=aquarium.id,
-            user_id=member_user.id,
-            role="member",
-        )
-        async_session.add(member)
-        await async_session.commit()
-
-        # Create a completed feeding event by owner (on server)
-        now = datetime.now(UTC)
-        server_event = await create_completed_feeding_event(
-            async_session,
-            aquarium.id,
-            schedule.id,
-            completed_at=now,
-            completed_by=owner.id,
-        )
-
-        # Member tries to sync a feeding event within 5min window
-        client_completed_at = now + timedelta(minutes=2)
-        new_event_id = uuid.uuid4()
-
-        change = ChangeItem(
-            entity_type="event",
-            entity_id=new_event_id,
-            operation="create",
-            data={
-                "aquarium_id": str(aquarium.id),
-                "schedule_id": str(schedule.id),
-                "scheduled_at": now.isoformat(),
-                "status": "completed",
-                "completed_at": client_completed_at.isoformat(),
-                "completed_by": str(member_user.id),
-            },
-            client_updated_at=client_completed_at,
-        )
-        request = SyncRequest(changes=[change], last_sync_at=None)
-
-        response = await process_sync(async_session, member_user.id, request)
-
-        # Should have concurrent_feeding conflict
-        assert len(response.conflicts) == 1
-        conflict = response.conflicts[0]
-        assert conflict.entity_type == "event"
-        assert conflict.entity_id == new_event_id
-        assert conflict.resolution == "concurrent_feeding"
-
-        # Server data should contain the existing event
-        assert conflict.server_data["id"] == str(server_event.id)
-        assert conflict.server_data["completed_by"] == str(owner.id)
-
-        # Client data should contain the client's event data
-        assert conflict.client_data["completed_by"] == str(member_user.id)
-
-        # Verify the new event was NOT created
-        stmt = select(FeedingEvent).where(FeedingEvent.id == new_event_id)
-        result = await async_session.execute(stmt)
-        assert result.scalar_one_or_none() is None
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_concurrent_feeding_outside_window_no_conflict(
-    async_session: AsyncSession,
-):
-    """Test that events outside 5min window are processed normally."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        owner = await create_test_user(async_session, "owner@example.com")
-        member_user = await create_test_user(async_session, "member@example.com")
-        aquarium = await create_test_aquarium(async_session, owner.id)
-        schedule = await create_test_feeding_schedule(async_session, aquarium.id)
-
-        # Add member_user as member
-        member = AquariumMember(
-            aquarium_id=aquarium.id,
-            user_id=member_user.id,
-            role="member",
-        )
-        async_session.add(member)
-        await async_session.commit()
-
-        # Create a completed feeding event by owner
-        now = datetime.now(UTC)
-        await create_completed_feeding_event(
-            async_session,
-            aquarium.id,
-            schedule.id,
-            completed_at=now,
-            completed_by=owner.id,
-        )
-
-        # Member syncs a feeding event OUTSIDE 5min window (10 minutes later)
-        client_completed_at = now + timedelta(minutes=10)
-        new_event_id = uuid.uuid4()
-
-        change = ChangeItem(
-            entity_type="event",
-            entity_id=new_event_id,
-            operation="create",
-            data={
-                "aquarium_id": str(aquarium.id),
-                "schedule_id": str(schedule.id),
-                "scheduled_at": client_completed_at.isoformat(),
-                "status": "completed",
-                "completed_at": client_completed_at.isoformat(),
-                "completed_by": str(member_user.id),
-            },
-            client_updated_at=client_completed_at,
-        )
-        request = SyncRequest(changes=[change], last_sync_at=None)
-
-        response = await process_sync(async_session, member_user.id, request)
-
-        # No concurrent_feeding conflict
-        assert len(response.conflicts) == 0
-
-        # Verify the new event was created
-        stmt = select(FeedingEvent).where(FeedingEvent.id == new_event_id)
-        result = await async_session.execute(stmt)
-        created_event = result.scalar_one_or_none()
-        assert created_event is not None
-        assert created_event.status == "completed"
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_concurrent_feeding_same_user_no_conflict(
-    async_session: AsyncSession,
-):
-    """Test that same user's events don't trigger concurrent_feeding conflict."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user.id)
-        schedule = await create_test_feeding_schedule(async_session, aquarium.id)
-
-        # Create a completed feeding event by user
-        now = datetime.now(UTC)
-        await create_completed_feeding_event(
-            async_session,
-            aquarium.id,
-            schedule.id,
-            completed_at=now,
-            completed_by=user.id,
-        )
-
-        # Same user syncs another feeding event within window
-        client_completed_at = now + timedelta(minutes=2)
-        new_event_id = uuid.uuid4()
-
-        change = ChangeItem(
-            entity_type="event",
-            entity_id=new_event_id,
-            operation="create",
-            data={
-                "aquarium_id": str(aquarium.id),
-                "schedule_id": str(schedule.id),
-                "scheduled_at": now.isoformat(),
-                "status": "completed",
-                "completed_at": client_completed_at.isoformat(),
-                "completed_by": str(user.id),  # Same user
-            },
-            client_updated_at=client_completed_at,
-        )
-        request = SyncRequest(changes=[change], last_sync_at=None)
-
-        response = await process_sync(async_session, user.id, request)
-
-        # No concurrent_feeding conflict (same user)
-        assert len(response.conflicts) == 0
-
-        # Event should be created
-        stmt = select(FeedingEvent).where(FeedingEvent.id == new_event_id)
-        result = await async_session.execute(stmt)
-        assert result.scalar_one_or_none() is not None
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_concurrent_feeding_no_schedule_no_conflict(
-    async_session: AsyncSession,
-):
-    """Test that ad-hoc feedings (no schedule_id) don't trigger concurrent_feeding."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        owner = await create_test_user(async_session, "owner@example.com")
-        member_user = await create_test_user(async_session, "member@example.com")
-        aquarium = await create_test_aquarium(async_session, owner.id)
-
-        # Add member_user as member
-        member = AquariumMember(
-            aquarium_id=aquarium.id,
-            user_id=member_user.id,
-            role="member",
-        )
-        async_session.add(member)
-        await async_session.commit()
-
-        # Create an ad-hoc completed feeding event (no schedule_id)
-        now = datetime.now(UTC)
-        adhoc_event = FeedingEvent(
-            aquarium_id=aquarium.id,
-            schedule_id=None,  # Ad-hoc feeding
-            scheduled_at=now,
-            status="completed",
-            completed_at=now,
-            completed_by=owner.id,
-        )
-        async_session.add(adhoc_event)
-        await async_session.commit()
-
-        # Member syncs another ad-hoc feeding within window
-        client_completed_at = now + timedelta(minutes=2)
-        new_event_id = uuid.uuid4()
-
-        change = ChangeItem(
-            entity_type="event",
-            entity_id=new_event_id,
-            operation="create",
-            data={
-                "aquarium_id": str(aquarium.id),
-                # No schedule_id - ad-hoc feeding
-                "scheduled_at": now.isoformat(),
-                "status": "completed",
-                "completed_at": client_completed_at.isoformat(),
-                "completed_by": str(member_user.id),
-            },
-            client_updated_at=client_completed_at,
-        )
-        request = SyncRequest(changes=[change], last_sync_at=None)
-
-        response = await process_sync(async_session, member_user.id, request)
-
-        # No concurrent_feeding conflict for ad-hoc feedings
-        assert len(response.conflicts) == 0
-
-        # Event should be created
-        stmt = select(FeedingEvent).where(FeedingEvent.id == new_event_id)
-        result = await async_session.execute(stmt)
-        assert result.scalar_one_or_none() is not None
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_concurrent_feeding_update_operation(
-    async_session: AsyncSession,
-):
-    """Test that UPDATE to completed status triggers concurrent_feeding detection."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        owner = await create_test_user(async_session, "owner@example.com")
-        member_user = await create_test_user(async_session, "member@example.com")
-        aquarium = await create_test_aquarium(async_session, owner.id)
-        schedule = await create_test_feeding_schedule(async_session, aquarium.id)
-
-        # Add member_user as member
-        member = AquariumMember(
-            aquarium_id=aquarium.id,
-            user_id=member_user.id,
-            role="member",
-        )
-        async_session.add(member)
-        await async_session.commit()
-
-        now = datetime.now(UTC)
-
-        # Create a pending event that member will try to complete
-        pending_event = FeedingEvent(
-            aquarium_id=aquarium.id,
-            schedule_id=schedule.id,
-            scheduled_at=now,
-            status="pending",
-        )
-        async_session.add(pending_event)
-        await async_session.commit()
-        await async_session.refresh(pending_event)
-
-        # Owner completes a feeding (creates conflict)
-        owner_event = await create_completed_feeding_event(
-            async_session,
-            aquarium.id,
-            schedule.id,
-            completed_at=now + timedelta(minutes=1),
-            completed_by=owner.id,
-        )
-
-        # Member tries to UPDATE the pending event to completed within window
-        client_completed_at = now + timedelta(minutes=2)
-
-        change = ChangeItem(
-            entity_type="event",
-            entity_id=pending_event.id,
-            operation="update",
-            data={
-                "status": "completed",
-                "completed_at": client_completed_at.isoformat(),
-                "completed_by": str(member_user.id),
-            },
-            client_updated_at=pending_event.updated_at + timedelta(hours=1),
-        )
-        request = SyncRequest(changes=[change], last_sync_at=None)
-
-        response = await process_sync(async_session, member_user.id, request)
-
-        # Should have concurrent_feeding conflict
-        assert len(response.conflicts) == 1
-        conflict = response.conflicts[0]
-        assert conflict.resolution == "concurrent_feeding"
-        assert conflict.server_data["id"] == str(owner_event.id)
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_concurrent_feeding_different_schedules_no_conflict(
-    async_session: AsyncSession,
-):
-    """Test that events for different schedules don't trigger concurrent_feeding."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        owner = await create_test_user(async_session, "owner@example.com")
-        member_user = await create_test_user(async_session, "member@example.com")
-        aquarium = await create_test_aquarium(async_session, owner.id)
-        schedule1 = await create_test_feeding_schedule(async_session, aquarium.id)
-        schedule2 = await create_test_feeding_schedule(async_session, aquarium.id)
-
-        # Add member_user as member
-        member = AquariumMember(
-            aquarium_id=aquarium.id,
-            user_id=member_user.id,
-            role="member",
-        )
-        async_session.add(member)
-        await async_session.commit()
-
-        now = datetime.now(UTC)
-
-        # Owner completes feeding for schedule1
-        await create_completed_feeding_event(
-            async_session,
-            aquarium.id,
-            schedule1.id,  # Different schedule
-            completed_at=now,
-            completed_by=owner.id,
-        )
-
-        # Member syncs feeding for schedule2 within window
-        client_completed_at = now + timedelta(minutes=2)
-        new_event_id = uuid.uuid4()
-
-        change = ChangeItem(
-            entity_type="event",
-            entity_id=new_event_id,
-            operation="create",
-            data={
-                "aquarium_id": str(aquarium.id),
-                "schedule_id": str(schedule2.id),  # Different schedule
-                "scheduled_at": now.isoformat(),
-                "status": "completed",
-                "completed_at": client_completed_at.isoformat(),
-                "completed_by": str(member_user.id),
-            },
-            client_updated_at=client_completed_at,
-        )
-        request = SyncRequest(changes=[change], last_sync_at=None)
-
-        response = await process_sync(async_session, member_user.id, request)
-
-        # No conflict - different schedules
-        assert len(response.conflicts) == 0
-
-        # Event should be created
-        stmt = select(FeedingEvent).where(FeedingEvent.id == new_event_id)
-        result = await async_session.execute(stmt)
-        assert result.scalar_one_or_none() is not None
-    finally:
-        await cleanup_sync_test_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_concurrent_feeding_pending_event_no_conflict(
-    async_session: AsyncSession,
-):
-    """Test that pending events (not completed) don't trigger concurrent_feeding."""
-    await cleanup_sync_test_data(async_session)
-    try:
-        owner = await create_test_user(async_session, "owner@example.com")
-        member_user = await create_test_user(async_session, "member@example.com")
-        aquarium = await create_test_aquarium(async_session, owner.id)
-        schedule = await create_test_feeding_schedule(async_session, aquarium.id)
-
-        # Add member_user as member
-        member = AquariumMember(
-            aquarium_id=aquarium.id,
-            user_id=member_user.id,
-            role="member",
-        )
-        async_session.add(member)
-        await async_session.commit()
-
-        now = datetime.now(UTC)
-
-        # Create a PENDING event (not completed)
-        pending_event = FeedingEvent(
-            aquarium_id=aquarium.id,
-            schedule_id=schedule.id,
-            scheduled_at=now,
-            status="pending",  # Not completed
-        )
-        async_session.add(pending_event)
-        await async_session.commit()
-
-        # Member syncs a completed feeding event within window
-        client_completed_at = now + timedelta(minutes=2)
-        new_event_id = uuid.uuid4()
-
-        change = ChangeItem(
-            entity_type="event",
-            entity_id=new_event_id,
-            operation="create",
-            data={
-                "aquarium_id": str(aquarium.id),
-                "schedule_id": str(schedule.id),
-                "scheduled_at": now.isoformat(),
-                "status": "completed",
-                "completed_at": client_completed_at.isoformat(),
-                "completed_by": str(member_user.id),
-            },
-            client_updated_at=client_completed_at,
-        )
-        request = SyncRequest(changes=[change], last_sync_at=None)
-
-        response = await process_sync(async_session, member_user.id, request)
-
-        # No conflict - existing event was pending, not completed
-        assert len(response.conflicts) == 0
-
-        # Event should be created
-        stmt = select(FeedingEvent).where(FeedingEvent.id == new_event_id)
-        result = await async_session.execute(stmt)
-        assert result.scalar_one_or_none() is not None
-    finally:
-        await cleanup_sync_test_data(async_session)
+                data={"quantity": 99},
+                client_updated_at=datetime(2020, 1, 1, tzinfo=UTC),
+            )
+            # Send a new schedule that will succeed
+            schedule_id = uuid.uuid4()
+            accepted_change = ChangeItem(
+                entity_type="schedule",
+                entity_id=schedule_id,
+                operation="create",
+                data={
+                    "aquarium_id": str(aquarium.id),
+                    "fish_id": str(fish.id),
+                    "time": "10:00",
+                },
+                client_updated_at=datetime.now(UTC),
+            )
+            response = await process_sync(
+                async_session,
+                user.id,
+                SyncRequest(changes=[conflicting_change, accepted_change]),
+            )
+
+            # Only the accepted change should be in synced_ids
+            assert schedule_id in response.synced_ids
+            assert fish.id not in response.synced_ids
+            assert len(response.conflicts) == 1
+            assert response.conflicts[0].entity_id == fish.id
+        finally:
+            await cleanup_sync_test_data(async_session)

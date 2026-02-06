@@ -13,11 +13,11 @@ async def register_and_login(
 ) -> dict:
     """Helper to register and login a user, returns tokens."""
     await client.post(
-        "/auth/register",
+        "/api/v1/auth/register",
         json={"email": email, "password": "SecurePass123"},
     )
     response = await client.post(
-        "/auth/login",
+        "/api/v1/auth/login",
         json={"email": email, "password": "SecurePass123"},
     )
     return response.json()
@@ -39,7 +39,7 @@ class TestListFamilyMembers:
 
         # Create aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Family Tank"},
             headers=auth_headers(tokens),
         )
@@ -47,7 +47,7 @@ class TestListFamilyMembers:
 
         # List family
         response = await client.get(
-            f"/aquariums/{aquarium_id}/family",
+            f"/api/v1/aquariums/{aquarium_id}/family",
             headers=auth_headers(tokens),
         )
 
@@ -60,7 +60,7 @@ class TestListFamilyMembers:
     async def test_list_family_without_auth_returns_401(self, client: AsyncClient):
         """Test that listing family without auth returns 401."""
         random_id = str(uuid.uuid4())
-        response = await client.get(f"/aquariums/{random_id}/family")
+        response = await client.get(f"/api/v1/aquariums/{random_id}/family")
         assert response.status_code == 401
 
     async def test_list_family_nonexistent_aquarium_returns_404(
@@ -72,7 +72,7 @@ class TestListFamilyMembers:
         random_id = str(uuid.uuid4())
 
         response = await client.get(
-            f"/aquariums/{random_id}/family",
+            f"/api/v1/aquariums/{random_id}/family",
             headers=auth_headers(tokens),
         )
 
@@ -88,7 +88,7 @@ class TestListFamilyMembers:
 
         # User 1 creates aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Private Tank"},
             headers=auth_headers(tokens1),
         )
@@ -96,7 +96,7 @@ class TestListFamilyMembers:
 
         # User 2 tries to list family
         response = await client.get(
-            f"/aquariums/{aquarium_id}/family",
+            f"/api/v1/aquariums/{aquarium_id}/family",
             headers=auth_headers(tokens2),
         )
 
@@ -112,7 +112,7 @@ class TestListFamilyMembers:
 
         # Create aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Shared Tank"},
             headers=auth_headers(tokens1),
         )
@@ -120,21 +120,21 @@ class TestListFamilyMembers:
 
         # Create invite
         invite_response = await client.post(
-            f"/aquariums/{aquarium_id}/family/invite",
+            f"/api/v1/aquariums/{aquarium_id}/family/invite",
             headers=auth_headers(tokens1),
         )
         invite_code = invite_response.json()["invite_code"]
 
         # Member accepts invite
         await client.post(
-            "/family/accept",
+            "/api/v1/family/accept",
             json={"invite_code": invite_code},
             headers=auth_headers(tokens2),
         )
 
         # Member lists family
         response = await client.get(
-            f"/aquariums/{aquarium_id}/family",
+            f"/api/v1/aquariums/{aquarium_id}/family",
             headers=auth_headers(tokens2),
         )
 
@@ -154,7 +154,7 @@ class TestCreateInvite:
 
         # Create aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Invite Tank"},
             headers=auth_headers(tokens),
         )
@@ -162,7 +162,7 @@ class TestCreateInvite:
 
         # Create invite
         response = await client.post(
-            f"/aquariums/{aquarium_id}/family/invite",
+            f"/api/v1/aquariums/{aquarium_id}/family/invite",
             headers=auth_headers(tokens),
         )
 
@@ -176,7 +176,7 @@ class TestCreateInvite:
     async def test_create_invite_without_auth_returns_401(self, client: AsyncClient):
         """Test that creating invite without auth returns 401."""
         random_id = str(uuid.uuid4())
-        response = await client.post(f"/aquariums/{random_id}/family/invite")
+        response = await client.post(f"/api/v1/aquariums/{random_id}/family/invite")
         assert response.status_code == 401
 
     async def test_member_cannot_create_invite(self, client: AsyncClient):
@@ -189,7 +189,7 @@ class TestCreateInvite:
 
         # Create aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Shared Tank"},
             headers=auth_headers(tokens1),
         )
@@ -197,20 +197,20 @@ class TestCreateInvite:
 
         # Create and accept invite for member
         invite_response = await client.post(
-            f"/aquariums/{aquarium_id}/family/invite",
+            f"/api/v1/aquariums/{aquarium_id}/family/invite",
             headers=auth_headers(tokens1),
         )
         invite_code = invite_response.json()["invite_code"]
 
         await client.post(
-            "/family/accept",
+            "/api/v1/family/accept",
             json={"invite_code": invite_code},
             headers=auth_headers(tokens2),
         )
 
         # Member tries to create invite
         response = await client.post(
-            f"/aquariums/{aquarium_id}/family/invite",
+            f"/api/v1/aquariums/{aquarium_id}/family/invite",
             headers=auth_headers(tokens2),
         )
 
@@ -228,7 +228,7 @@ class TestCreateInvite:
 
         # Create aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Free Tank"},
             headers=auth_headers(tokens1),
         )
@@ -236,20 +236,20 @@ class TestCreateInvite:
 
         # Create and accept first invite (now at limit: owner + 1 member = 2)
         invite_response = await client.post(
-            f"/aquariums/{aquarium_id}/family/invite",
+            f"/api/v1/aquariums/{aquarium_id}/family/invite",
             headers=auth_headers(tokens1),
         )
         invite_code = invite_response.json()["invite_code"]
 
         await client.post(
-            "/family/accept",
+            "/api/v1/family/accept",
             json={"invite_code": invite_code},
             headers=auth_headers(tokens2),
         )
 
         # Try to create another invite - should fail
         response = await client.post(
-            f"/aquariums/{aquarium_id}/family/invite",
+            f"/api/v1/aquariums/{aquarium_id}/family/invite",
             headers=auth_headers(tokens1),
         )
 
@@ -284,7 +284,7 @@ class TestCreateInvite:
 
         # Create aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Premium Tank"},
             headers=auth_headers(tokens1),
         )
@@ -292,13 +292,13 @@ class TestCreateInvite:
 
         # Create and accept first invite
         invite_response = await client.post(
-            f"/aquariums/{aquarium_id}/family/invite",
+            f"/api/v1/aquariums/{aquarium_id}/family/invite",
             headers=auth_headers(tokens1),
         )
         assert invite_response.status_code == 201
         invite_code = invite_response.json()["invite_code"]
         accept1 = await client.post(
-            "/family/accept",
+            "/api/v1/family/accept",
             json={"invite_code": invite_code},
             headers=auth_headers(tokens2),
         )
@@ -306,14 +306,14 @@ class TestCreateInvite:
 
         # Create and accept second invite (would exceed free limit)
         invite_response2 = await client.post(
-            f"/aquariums/{aquarium_id}/family/invite",
+            f"/api/v1/aquariums/{aquarium_id}/family/invite",
             headers=auth_headers(tokens1),
         )
         assert invite_response2.status_code == 201
 
         invite_code2 = invite_response2.json()["invite_code"]
         accept2 = await client.post(
-            "/family/accept",
+            "/api/v1/family/accept",
             json={"invite_code": invite_code2},
             headers=auth_headers(tokens3),
         )
@@ -321,7 +321,7 @@ class TestCreateInvite:
 
         # Verify 3 members now
         response = await client.get(
-            f"/aquariums/{aquarium_id}/family",
+            f"/api/v1/aquariums/{aquarium_id}/family",
             headers=auth_headers(tokens1),
         )
         assert len(response.json()["members"]) == 3
@@ -341,7 +341,7 @@ class TestAcceptInvite:
 
         # Create aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Accept Tank"},
             headers=auth_headers(tokens1),
         )
@@ -349,14 +349,14 @@ class TestAcceptInvite:
 
         # Create invite
         invite_response = await client.post(
-            f"/aquariums/{aquarium_id}/family/invite",
+            f"/api/v1/aquariums/{aquarium_id}/family/invite",
             headers=auth_headers(tokens1),
         )
         invite_code = invite_response.json()["invite_code"]
 
         # Accept invite
         response = await client.post(
-            "/family/accept",
+            "/api/v1/family/accept",
             json={"invite_code": invite_code},
             headers=auth_headers(tokens2),
         )
@@ -369,7 +369,7 @@ class TestAcceptInvite:
     async def test_accept_invite_without_auth_returns_401(self, client: AsyncClient):
         """Test that accepting invite without auth returns 401."""
         response = await client.post(
-            "/family/accept",
+            "/api/v1/family/accept",
             json={"invite_code": "testcode"},
         )
         assert response.status_code == 401
@@ -380,7 +380,7 @@ class TestAcceptInvite:
         tokens = await register_and_login(client, email)
 
         response = await client.post(
-            "/family/accept",
+            "/api/v1/family/accept",
             json={"invite_code": "nonexist"},
             headers=auth_headers(tokens),
         )
@@ -413,7 +413,7 @@ class TestAcceptInvite:
 
         # Create aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Already Member Tank"},
             headers=auth_headers(tokens1),
         )
@@ -421,14 +421,14 @@ class TestAcceptInvite:
 
         # Create and accept first invite
         invite_response1 = await client.post(
-            f"/aquariums/{aquarium_id}/family/invite",
+            f"/api/v1/aquariums/{aquarium_id}/family/invite",
             headers=auth_headers(tokens1),
         )
         assert invite_response1.status_code == 201
         invite_code1 = invite_response1.json()["invite_code"]
 
         accept1 = await client.post(
-            "/family/accept",
+            "/api/v1/family/accept",
             json={"invite_code": invite_code1},
             headers=auth_headers(tokens2),
         )
@@ -436,7 +436,7 @@ class TestAcceptInvite:
 
         # Create second invite
         invite_response2 = await client.post(
-            f"/aquariums/{aquarium_id}/family/invite",
+            f"/api/v1/aquariums/{aquarium_id}/family/invite",
             headers=auth_headers(tokens1),
         )
         assert invite_response2.status_code == 201
@@ -444,7 +444,7 @@ class TestAcceptInvite:
 
         # Try to accept again - should fail because already a member
         response = await client.post(
-            "/family/accept",
+            "/api/v1/family/accept",
             json={"invite_code": invite_code2},
             headers=auth_headers(tokens2),
         )
@@ -462,7 +462,7 @@ class TestAcceptInvite:
 
         # Create aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Visible Tank"},
             headers=auth_headers(tokens1),
         )
@@ -470,27 +470,27 @@ class TestAcceptInvite:
 
         # Before invite, member cannot see aquarium
         response = await client.get(
-            f"/aquariums/{aquarium_id}",
+            f"/api/v1/aquariums/{aquarium_id}",
             headers=auth_headers(tokens2),
         )
         assert response.status_code == 403
 
         # Create and accept invite
         invite_response = await client.post(
-            f"/aquariums/{aquarium_id}/family/invite",
+            f"/api/v1/aquariums/{aquarium_id}/family/invite",
             headers=auth_headers(tokens1),
         )
         invite_code = invite_response.json()["invite_code"]
 
         await client.post(
-            "/family/accept",
+            "/api/v1/family/accept",
             json={"invite_code": invite_code},
             headers=auth_headers(tokens2),
         )
 
         # After invite, member can see aquarium
         response = await client.get(
-            f"/aquariums/{aquarium_id}",
+            f"/api/v1/aquariums/{aquarium_id}",
             headers=auth_headers(tokens2),
         )
         assert response.status_code == 200
@@ -505,32 +505,32 @@ class TestAcceptInvite:
 
         # Create aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Listed Tank"},
             headers=auth_headers(tokens1),
         )
         aquarium_id = create_response.json()["id"]
 
         # Before invite, member doesn't see aquarium in list
-        response = await client.get("/aquariums", headers=auth_headers(tokens2))
+        response = await client.get("/api/v1/aquariums", headers=auth_headers(tokens2))
         aquarium_ids = [a["id"] for a in response.json()]
         assert aquarium_id not in aquarium_ids
 
         # Create and accept invite
         invite_response = await client.post(
-            f"/aquariums/{aquarium_id}/family/invite",
+            f"/api/v1/aquariums/{aquarium_id}/family/invite",
             headers=auth_headers(tokens1),
         )
         invite_code = invite_response.json()["invite_code"]
 
         await client.post(
-            "/family/accept",
+            "/api/v1/family/accept",
             json={"invite_code": invite_code},
             headers=auth_headers(tokens2),
         )
 
         # After invite, member sees aquarium in list
-        response = await client.get("/aquariums", headers=auth_headers(tokens2))
+        response = await client.get("/api/v1/aquariums", headers=auth_headers(tokens2))
         aquarium_ids = [a["id"] for a in response.json()]
         assert aquarium_id in aquarium_ids
 
@@ -549,7 +549,7 @@ class TestRemoveMember:
 
         # Create aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Remove Tank"},
             headers=auth_headers(tokens1),
         )
@@ -557,19 +557,19 @@ class TestRemoveMember:
 
         # Create and accept invite
         invite_response = await client.post(
-            f"/aquariums/{aquarium_id}/family/invite",
+            f"/api/v1/aquariums/{aquarium_id}/family/invite",
             headers=auth_headers(tokens1),
         )
         invite_code = invite_response.json()["invite_code"]
 
         accept_response = await client.post(
-            "/family/accept",
+            "/api/v1/family/accept",
             json={"invite_code": invite_code},
             headers=auth_headers(tokens2),
         )
         # Get member's user_id from family list
         family_response = await client.get(
-            f"/aquariums/{aquarium_id}/family",
+            f"/api/v1/aquariums/{aquarium_id}/family",
             headers=auth_headers(tokens1),
         )
         members = family_response.json()["members"]
@@ -577,7 +577,7 @@ class TestRemoveMember:
 
         # Remove member
         response = await client.delete(
-            f"/aquariums/{aquarium_id}/family/{member_user_id}",
+            f"/api/v1/aquariums/{aquarium_id}/family/{member_user_id}",
             headers=auth_headers(tokens1),
         )
 
@@ -589,7 +589,7 @@ class TestRemoveMember:
         random_user_id = str(uuid.uuid4())
 
         response = await client.delete(
-            f"/aquariums/{random_aq_id}/family/{random_user_id}"
+            f"/api/v1/aquariums/{random_aq_id}/family/{random_user_id}"
         )
         assert response.status_code == 401
 
@@ -605,7 +605,7 @@ class TestRemoveMember:
 
         # Create aquarium (as premium to allow 3 members)
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "No Remove Tank"},
             headers=auth_headers(tokens1),
         )
@@ -613,19 +613,19 @@ class TestRemoveMember:
 
         # Add first member
         invite_response = await client.post(
-            f"/aquariums/{aquarium_id}/family/invite",
+            f"/api/v1/aquariums/{aquarium_id}/family/invite",
             headers=auth_headers(tokens1),
         )
         invite_code = invite_response.json()["invite_code"]
         await client.post(
-            "/family/accept",
+            "/api/v1/family/accept",
             json={"invite_code": invite_code},
             headers=auth_headers(tokens2),
         )
 
         # Get member2's user_id
         family_response = await client.get(
-            f"/aquariums/{aquarium_id}/family",
+            f"/api/v1/aquariums/{aquarium_id}/family",
             headers=auth_headers(tokens1),
         )
         members = family_response.json()["members"]
@@ -633,7 +633,7 @@ class TestRemoveMember:
 
         # Member1 tries to remove themselves (not owner) - should fail
         response = await client.delete(
-            f"/aquariums/{aquarium_id}/family/{member1_user_id}",
+            f"/api/v1/aquariums/{aquarium_id}/family/{member1_user_id}",
             headers=auth_headers(tokens2),
         )
 
@@ -646,7 +646,7 @@ class TestRemoveMember:
 
         # Create aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Self Remove Tank"},
             headers=auth_headers(tokens),
         )
@@ -654,14 +654,14 @@ class TestRemoveMember:
 
         # Get owner's user_id
         family_response = await client.get(
-            f"/aquariums/{aquarium_id}/family",
+            f"/api/v1/aquariums/{aquarium_id}/family",
             headers=auth_headers(tokens),
         )
         owner_user_id = family_response.json()["members"][0]["user_id"]
 
         # Owner tries to remove themselves
         response = await client.delete(
-            f"/aquariums/{aquarium_id}/family/{owner_user_id}",
+            f"/api/v1/aquariums/{aquarium_id}/family/{owner_user_id}",
             headers=auth_headers(tokens),
         )
 
@@ -677,7 +677,7 @@ class TestRemoveMember:
 
         # Create aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Access Tank"},
             headers=auth_headers(tokens1),
         )
@@ -685,14 +685,14 @@ class TestRemoveMember:
 
         # Add member
         invite_response = await client.post(
-            f"/aquariums/{aquarium_id}/family/invite",
+            f"/api/v1/aquariums/{aquarium_id}/family/invite",
             headers=auth_headers(tokens1),
         )
         assert invite_response.status_code == 201
         invite_code = invite_response.json()["invite_code"]
 
         accept_response = await client.post(
-            "/family/accept",
+            "/api/v1/family/accept",
             json={"invite_code": invite_code},
             headers=auth_headers(tokens2),
         )
@@ -700,7 +700,7 @@ class TestRemoveMember:
 
         # Get member's user_id
         family_response = await client.get(
-            f"/aquariums/{aquarium_id}/family",
+            f"/api/v1/aquariums/{aquarium_id}/family",
             headers=auth_headers(tokens1),
         )
         assert family_response.status_code == 200
@@ -710,21 +710,21 @@ class TestRemoveMember:
 
         # Verify member has access
         response = await client.get(
-            f"/aquariums/{aquarium_id}",
+            f"/api/v1/aquariums/{aquarium_id}",
             headers=auth_headers(tokens2),
         )
         assert response.status_code == 200
 
         # Remove member
         remove_response = await client.delete(
-            f"/aquariums/{aquarium_id}/family/{member_user_id}",
+            f"/api/v1/aquariums/{aquarium_id}/family/{member_user_id}",
             headers=auth_headers(tokens1),
         )
         assert remove_response.status_code == 204
 
         # Verify member no longer has access
         response = await client.get(
-            f"/aquariums/{aquarium_id}",
+            f"/api/v1/aquariums/{aquarium_id}",
             headers=auth_headers(tokens2),
         )
         assert response.status_code == 403
@@ -736,7 +736,7 @@ class TestRemoveMember:
 
         # Create aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "404 Tank"},
             headers=auth_headers(tokens),
         )
@@ -745,7 +745,7 @@ class TestRemoveMember:
         # Try to remove non-existent user
         random_user_id = str(uuid.uuid4())
         response = await client.delete(
-            f"/aquariums/{aquarium_id}/family/{random_user_id}",
+            f"/api/v1/aquariums/{aquarium_id}/family/{random_user_id}",
             headers=auth_headers(tokens),
         )
 
@@ -766,7 +766,7 @@ class TestMemberCannotDeleteAquarium:
 
         # Create aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "No Delete Tank"},
             headers=auth_headers(tokens1),
         )
@@ -774,19 +774,19 @@ class TestMemberCannotDeleteAquarium:
 
         # Add member
         invite_response = await client.post(
-            f"/aquariums/{aquarium_id}/family/invite",
+            f"/api/v1/aquariums/{aquarium_id}/family/invite",
             headers=auth_headers(tokens1),
         )
         invite_code = invite_response.json()["invite_code"]
         await client.post(
-            "/family/accept",
+            "/api/v1/family/accept",
             json={"invite_code": invite_code},
             headers=auth_headers(tokens2),
         )
 
         # Member tries to delete aquarium
         response = await client.delete(
-            f"/aquariums/{aquarium_id}",
+            f"/api/v1/aquariums/{aquarium_id}",
             headers=auth_headers(tokens2),
         )
 

@@ -9,7 +9,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.aquarium import Aquarium, AquariumMember
-from app.models.feeding import FeedingEvent, FeedingSchedule
+from app.models.feeding import FeedingLog, FeedingSchedule
+from app.models.fish import Fish
+from app.models.species import Species
 from app.models.user import User
 
 
@@ -18,11 +20,13 @@ async def cleanup_notification_data(session: AsyncSession) -> None:
     await session.execute(text("DELETE FROM notification_logs"))
     await session.execute(text("DELETE FROM push_tokens"))
     await session.execute(text("DELETE FROM notification_preferences"))
-    await session.execute(text("DELETE FROM feeding_events"))
+    await session.execute(text("DELETE FROM feeding_logs"))
     await session.execute(text("DELETE FROM feeding_schedules"))
+    await session.execute(text("DELETE FROM fish"))
     await session.execute(text("DELETE FROM aquarium_members"))
     await session.execute(text("DELETE FROM aquariums"))
     await session.execute(text("DELETE FROM users"))
+    await session.execute(text("DELETE FROM species"))
     await session.commit()
 
 
@@ -84,28 +88,84 @@ async def add_family_member(
     return member
 
 
-async def create_feeding_event(
+async def create_test_species(
+    session: AsyncSession,
+    species_id: str | None = None,
+) -> Species:
+    """Helper to create a test species."""
+    sid = species_id or f"species-{uuid.uuid4().hex[:8]}"
+    species = Species(
+        id=sid,
+        common_name="Test Fish",
+        scientific_name="Testus fishicus",
+        food_types=["flakes"],
+        feeding_frequency=2,
+        care_level="beginner",
+        water_type="freshwater",
+    )
+    session.add(species)
+    await session.commit()
+    await session.refresh(species)
+    return species
+
+
+async def create_test_fish(
+    session: AsyncSession,
+    aquarium: Aquarium,
+    species: Species,
+) -> Fish:
+    """Helper to create a test fish."""
+    fish = Fish(
+        aquarium_id=aquarium.id,
+        species_id=species.id,
+    )
+    session.add(fish)
+    await session.commit()
+    await session.refresh(fish)
+    return fish
+
+
+async def create_test_schedule(
+    session: AsyncSession,
+    aquarium: Aquarium,
+    fish: Fish,
+) -> FeedingSchedule:
+    """Helper to create a feeding schedule."""
+    schedule = FeedingSchedule(
+        aquarium_id=aquarium.id,
+        fish_id=fish.id,
+        food_type="flakes",
+    )
+    session.add(schedule)
+    await session.commit()
+    await session.refresh(schedule)
+    return schedule
+
+
+async def create_feeding_log(
     session: AsyncSession,
     aquarium: Aquarium,
     schedule: FeedingSchedule,
-    scheduled_at: datetime,
-    status: str = "pending",
-    completed_by: uuid.UUID | None = None,
-    completed_at: datetime | None = None,
-) -> FeedingEvent:
-    """Helper to create a feeding event."""
-    event = FeedingEvent(
+    fish: Fish,
+    acted_by_user_id: uuid.UUID,
+    acted_at: datetime,
+    action: str = "fed",
+) -> FeedingLog:
+    """Helper to create a feeding log."""
+    log = FeedingLog(
         aquarium_id=aquarium.id,
         schedule_id=schedule.id,
-        scheduled_at=scheduled_at,
-        status=status,
-        completed_by=completed_by,
-        completed_at=completed_at,
+        fish_id=fish.id,
+        scheduled_for=acted_at.replace(tzinfo=None),
+        action=action,
+        acted_at=acted_at,
+        acted_by_user_id=acted_by_user_id,
+        device_id=uuid.uuid4(),
     )
-    session.add(event)
+    session.add(log)
     await session.commit()
-    await session.refresh(event)
-    return event
+    await session.refresh(log)
+    return log
 
 
 # _build_summary_message tests
@@ -172,46 +232,41 @@ def test_build_summary_message_no_events():
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_get_user_weekly_stats_with_events(async_session: AsyncSession):
-    """Test getting weekly stats for user with events."""
+    """Test getting weekly stats for user with feeding logs."""
     await cleanup_notification_data(async_session)
     try:
         from app.jobs.notification_jobs import _get_user_weekly_stats
 
         user = await create_test_user(async_session)
         aquarium = await create_test_aquarium(async_session, user)
-
-        schedule = FeedingSchedule(
-            aquarium_id=aquarium.id,
-            times_per_day=2,
-            scheduled_times=["08:00", "20:00"],
-            food_type="flakes",
-        )
-        async_session.add(schedule)
-        await async_session.commit()
-        await async_session.refresh(schedule)
+        species = await create_test_species(async_session)
+        fish = await create_test_fish(async_session, aquarium, species)
+        schedule = await create_test_schedule(async_session, aquarium, fish)
 
         now = datetime.now(UTC)
         week_start = now - timedelta(days=7)
 
-        # Create 5 completed and 2 missed events in the past week
+        # Create 5 fed and 2 skipped logs in the past week
         for i in range(5):
-            await create_feeding_event(
+            await create_feeding_log(
                 async_session,
                 aquarium,
                 schedule,
-                scheduled_at=week_start + timedelta(days=i, hours=8),
-                status="completed",
-                completed_by=user.id,
-                completed_at=week_start + timedelta(days=i, hours=8, minutes=5),
+                fish,
+                acted_by_user_id=user.id,
+                acted_at=week_start + timedelta(days=i, hours=8),
+                action="fed",
             )
 
         for i in range(2):
-            await create_feeding_event(
+            await create_feeding_log(
                 async_session,
                 aquarium,
                 schedule,
-                scheduled_at=week_start + timedelta(days=i, hours=20),
-                status="missed",
+                fish,
+                acted_by_user_id=user.id,
+                acted_at=week_start + timedelta(days=i, hours=20),
+                action="skipped",
             )
 
         stats = await _get_user_weekly_stats(async_session, user.id, week_start, now)
@@ -257,32 +312,26 @@ async def test_find_inactive_users_finds_inactive(async_session: AsyncSession):
         # Create active user (completed feeding recently)
         active_user = await create_test_user(async_session, "active@example.com")
         active_aquarium = await create_test_aquarium(async_session, active_user)
+        species = await create_test_species(async_session)
+        fish = await create_test_fish(async_session, active_aquarium, species)
+        schedule = await create_test_schedule(async_session, active_aquarium, fish)
 
-        schedule = FeedingSchedule(
-            aquarium_id=active_aquarium.id,
-            times_per_day=1,
-            scheduled_times=["08:00"],
-            food_type="flakes",
-        )
-        async_session.add(schedule)
-        await async_session.commit()
-        await async_session.refresh(schedule)
-
-        # Create recent feeding for active user
         now = datetime.now(UTC)
-        await create_feeding_event(
+
+        # Create recent feeding log for active user
+        await create_feeding_log(
             async_session,
             active_aquarium,
             schedule,
-            scheduled_at=now - timedelta(hours=1),
-            status="completed",
-            completed_by=active_user.id,
-            completed_at=now - timedelta(hours=1),
+            fish,
+            acted_by_user_id=active_user.id,
+            acted_at=now - timedelta(hours=1),
+            action="fed",
         )
 
         # Create inactive user (no recent feedings)
         inactive_user = await create_test_user(async_session, "inactive@example.com")
-        inactive_aquarium = await create_test_aquarium(async_session, inactive_user)
+        await create_test_aquarium(async_session, inactive_user)
 
         # Cutoff is 3 days ago
         cutoff = now - timedelta(days=3)
@@ -304,28 +353,21 @@ async def test_find_inactive_users_no_inactive(async_session: AsyncSession):
 
         user = await create_test_user(async_session)
         aquarium = await create_test_aquarium(async_session, user)
-
-        schedule = FeedingSchedule(
-            aquarium_id=aquarium.id,
-            times_per_day=1,
-            scheduled_times=["08:00"],
-            food_type="flakes",
-        )
-        async_session.add(schedule)
-        await async_session.commit()
-        await async_session.refresh(schedule)
+        species = await create_test_species(async_session)
+        fish = await create_test_fish(async_session, aquarium, species)
+        schedule = await create_test_schedule(async_session, aquarium, fish)
 
         now = datetime.now(UTC)
 
         # Create recent feeding
-        await create_feeding_event(
+        await create_feeding_log(
             async_session,
             aquarium,
             schedule,
-            scheduled_at=now - timedelta(hours=1),
-            status="completed",
-            completed_by=user.id,
-            completed_at=now - timedelta(hours=1),
+            fish,
+            acted_by_user_id=user.id,
+            acted_at=now - timedelta(hours=1),
+            action="fed",
         )
 
         cutoff = now - timedelta(days=3)
@@ -348,30 +390,23 @@ async def test_weekly_summary_job_sends_to_active_users(async_session: AsyncSess
 
         user = await create_test_user(async_session)
         aquarium = await create_test_aquarium(async_session, user)
-
-        schedule = FeedingSchedule(
-            aquarium_id=aquarium.id,
-            times_per_day=2,
-            scheduled_times=["08:00", "20:00"],
-            food_type="flakes",
-        )
-        async_session.add(schedule)
-        await async_session.commit()
-        await async_session.refresh(schedule)
+        species = await create_test_species(async_session)
+        fish = await create_test_fish(async_session, aquarium, species)
+        schedule = await create_test_schedule(async_session, aquarium, fish)
 
         now = datetime.now(UTC)
         week_start = now - timedelta(days=7)
 
-        # Create some feeding events
+        # Create some feeding logs
         for i in range(3):
-            await create_feeding_event(
+            await create_feeding_log(
                 async_session,
                 aquarium,
                 schedule,
-                scheduled_at=week_start + timedelta(days=i, hours=8),
-                status="completed",
-                completed_by=user.id,
-                completed_at=week_start + timedelta(days=i, hours=8, minutes=5),
+                fish,
+                acted_by_user_id=user.id,
+                acted_at=week_start + timedelta(days=i, hours=8),
+                action="fed",
             )
 
         class MockSessionContext:
@@ -409,15 +444,15 @@ async def test_weekly_summary_job_sends_to_active_users(async_session: AsyncSess
 async def test_weekly_summary_job_skips_users_without_events(
     async_session: AsyncSession,
 ):
-    """Test weekly summary job skips users with no events in the week."""
+    """Test weekly summary job skips users with no logs in the week."""
     await cleanup_notification_data(async_session)
     try:
         from app.jobs.notification_jobs import weekly_summary_job
 
         user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user)
+        await create_test_aquarium(async_session, user)
 
-        # No feeding events for this user
+        # No feeding logs for this user
 
         class MockSessionContext:
             async def __aenter__(self):
@@ -459,7 +494,7 @@ async def test_re_engagement_job_sends_to_inactive_users(async_session: AsyncSes
 
         # Create inactive user
         user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user)
+        await create_test_aquarium(async_session, user)
 
         class MockSessionContext:
             async def __aenter__(self):
@@ -502,28 +537,21 @@ async def test_re_engagement_job_skips_active_users(async_session: AsyncSession)
 
         user = await create_test_user(async_session)
         aquarium = await create_test_aquarium(async_session, user)
-
-        schedule = FeedingSchedule(
-            aquarium_id=aquarium.id,
-            times_per_day=1,
-            scheduled_times=["08:00"],
-            food_type="flakes",
-        )
-        async_session.add(schedule)
-        await async_session.commit()
-        await async_session.refresh(schedule)
+        species = await create_test_species(async_session)
+        fish = await create_test_fish(async_session, aquarium, species)
+        schedule = await create_test_schedule(async_session, aquarium, fish)
 
         now = datetime.now(UTC)
 
-        # Create recent feeding (user is active)
-        await create_feeding_event(
+        # Create recent feeding log (user is active)
+        await create_feeding_log(
             async_session,
             aquarium,
             schedule,
-            scheduled_at=now - timedelta(hours=1),
-            status="completed",
-            completed_by=user.id,
-            completed_at=now - timedelta(hours=1),
+            fish,
+            acted_by_user_id=user.id,
+            acted_at=now - timedelta(hours=1),
+            action="fed",
         )
 
         class MockSessionContext:
@@ -579,27 +607,21 @@ async def test_family_feeding_trigger_sends_to_members(async_session: AsyncSessi
         await add_family_member(async_session, aquarium, member1)
         await add_family_member(async_session, aquarium, member2)
 
-        schedule = FeedingSchedule(
-            aquarium_id=aquarium.id,
-            times_per_day=2,
-            scheduled_times=["08:00", "20:00"],
-            food_type="flakes",
-        )
-        async_session.add(schedule)
-        await async_session.commit()
-        await async_session.refresh(schedule)
+        species = await create_test_species(async_session)
+        fish = await create_test_fish(async_session, aquarium, species)
+        schedule = await create_test_schedule(async_session, aquarium, fish)
 
         now = datetime.now(UTC)
 
-        # Create feeding event completed by owner
-        event = await create_feeding_event(
+        # Create feeding log by owner
+        log = await create_feeding_log(
             async_session,
             aquarium,
             schedule,
-            scheduled_at=now,
-            status="completed",
-            completed_by=owner.id,
-            completed_at=now,
+            fish,
+            acted_by_user_id=owner.id,
+            acted_at=now,
+            action="fed",
         )
 
         with patch(
@@ -609,7 +631,7 @@ async def test_family_feeding_trigger_sends_to_members(async_session: AsyncSessi
             mock_service.send_push = AsyncMock(return_value=True)
             mock_service_class.return_value = mock_service
 
-            count = await family_feeding_trigger(async_session, event.id, owner.id)
+            count = await family_feeding_trigger(async_session, log.id, owner.id)
 
         # Should send to 2 members (not the owner)
         assert count == 2
@@ -633,27 +655,20 @@ async def test_family_feeding_trigger_no_other_members(async_session: AsyncSessi
 
         owner = await create_test_user(async_session, nickname="Solo Owner")
         aquarium = await create_test_aquarium(async_session, owner)
-
-        schedule = FeedingSchedule(
-            aquarium_id=aquarium.id,
-            times_per_day=1,
-            scheduled_times=["08:00"],
-            food_type="flakes",
-        )
-        async_session.add(schedule)
-        await async_session.commit()
-        await async_session.refresh(schedule)
+        species = await create_test_species(async_session)
+        fish = await create_test_fish(async_session, aquarium, species)
+        schedule = await create_test_schedule(async_session, aquarium, fish)
 
         now = datetime.now(UTC)
 
-        event = await create_feeding_event(
+        log = await create_feeding_log(
             async_session,
             aquarium,
             schedule,
-            scheduled_at=now,
-            status="completed",
-            completed_by=owner.id,
-            completed_at=now,
+            fish,
+            acted_by_user_id=owner.id,
+            acted_at=now,
+            action="fed",
         )
 
         with patch(
@@ -663,7 +678,7 @@ async def test_family_feeding_trigger_no_other_members(async_session: AsyncSessi
             mock_service.send_push = AsyncMock(return_value=True)
             mock_service_class.return_value = mock_service
 
-            count = await family_feeding_trigger(async_session, event.id, owner.id)
+            count = await family_feeding_trigger(async_session, log.id, owner.id)
 
         # No notifications (only owner, no other members)
         assert count == 0
@@ -674,15 +689,15 @@ async def test_family_feeding_trigger_no_other_members(async_session: AsyncSessi
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_family_feeding_trigger_event_not_found(async_session: AsyncSession):
-    """Test family feeding trigger with non-existent event."""
+    """Test family feeding trigger with non-existent feeding log."""
     await cleanup_notification_data(async_session)
     try:
         from app.jobs.notification_jobs import family_feeding_trigger
 
         user = await create_test_user(async_session)
-        fake_event_id = uuid.uuid4()
+        fake_log_id = uuid.uuid4()
 
-        count = await family_feeding_trigger(async_session, fake_event_id, user.id)
+        count = await family_feeding_trigger(async_session, fake_log_id, user.id)
 
         assert count == 0
     finally:
@@ -704,26 +719,20 @@ async def test_family_feeding_trigger_uses_user_nickname(async_session: AsyncSes
         member = await create_test_user(async_session, "member@example.com")
         await add_family_member(async_session, aquarium, member)
 
-        schedule = FeedingSchedule(
-            aquarium_id=aquarium.id,
-            times_per_day=1,
-            scheduled_times=["08:00"],
-            food_type="flakes",
-        )
-        async_session.add(schedule)
-        await async_session.commit()
-        await async_session.refresh(schedule)
+        species = await create_test_species(async_session)
+        fish = await create_test_fish(async_session, aquarium, species)
+        schedule = await create_test_schedule(async_session, aquarium, fish)
 
         now = datetime.now(UTC)
 
-        event = await create_feeding_event(
+        log = await create_feeding_log(
             async_session,
             aquarium,
             schedule,
-            scheduled_at=now,
-            status="completed",
-            completed_by=owner.id,
-            completed_at=now,
+            fish,
+            acted_by_user_id=owner.id,
+            acted_at=now,
+            action="fed",
         )
 
         with patch(
@@ -733,7 +742,7 @@ async def test_family_feeding_trigger_uses_user_nickname(async_session: AsyncSes
             mock_service.send_push = AsyncMock(return_value=True)
             mock_service_class.return_value = mock_service
 
-            await family_feeding_trigger(async_session, event.id, owner.id)
+            await family_feeding_trigger(async_session, log.id, owner.id)
 
         call_kwargs = mock_service.send_push.call_args.kwargs
         assert "FishDaddy" in call_kwargs["body"]
@@ -755,26 +764,20 @@ async def test_family_feeding_trigger_handles_no_nickname(async_session: AsyncSe
         member = await create_test_user(async_session, "member@example.com")
         await add_family_member(async_session, aquarium, member)
 
-        schedule = FeedingSchedule(
-            aquarium_id=aquarium.id,
-            times_per_day=1,
-            scheduled_times=["08:00"],
-            food_type="flakes",
-        )
-        async_session.add(schedule)
-        await async_session.commit()
-        await async_session.refresh(schedule)
+        species = await create_test_species(async_session)
+        fish = await create_test_fish(async_session, aquarium, species)
+        schedule = await create_test_schedule(async_session, aquarium, fish)
 
         now = datetime.now(UTC)
 
-        event = await create_feeding_event(
+        log = await create_feeding_log(
             async_session,
             aquarium,
             schedule,
-            scheduled_at=now,
-            status="completed",
-            completed_by=owner.id,
-            completed_at=now,
+            fish,
+            acted_by_user_id=owner.id,
+            acted_at=now,
+            action="fed",
         )
 
         with patch(
@@ -784,7 +787,7 @@ async def test_family_feeding_trigger_handles_no_nickname(async_session: AsyncSe
             mock_service.send_push = AsyncMock(return_value=True)
             mock_service_class.return_value = mock_service
 
-            await family_feeding_trigger(async_session, event.id, owner.id)
+            await family_feeding_trigger(async_session, log.id, owner.id)
 
         call_kwargs = mock_service.send_push.call_args.kwargs
         # Should use "Someone" when no nickname
@@ -805,33 +808,28 @@ async def test_weekly_summary_job_handles_notification_errors(
     try:
         from app.jobs.notification_jobs import weekly_summary_job
 
-        # Create two users with events
+        # Create two users with feeding logs
         user1 = await create_test_user(async_session, "user1@example.com")
         user2 = await create_test_user(async_session, "user2@example.com")
 
         aquarium1 = await create_test_aquarium(async_session, user1)
         aquarium2 = await create_test_aquarium(async_session, user2)
 
-        for aq in [aquarium1, aquarium2]:
-            schedule = FeedingSchedule(
-                aquarium_id=aq.id,
-                times_per_day=1,
-                scheduled_times=["08:00"],
-                food_type="flakes",
-            )
-            async_session.add(schedule)
-            await async_session.commit()
-            await async_session.refresh(schedule)
+        species = await create_test_species(async_session)
+
+        for aq, user in [(aquarium1, user1), (aquarium2, user2)]:
+            fish = await create_test_fish(async_session, aq, species)
+            schedule = await create_test_schedule(async_session, aq, fish)
 
             now = datetime.now(UTC)
-            await create_feeding_event(
+            await create_feeding_log(
                 async_session,
                 aq,
                 schedule,
-                scheduled_at=now - timedelta(days=1),
-                status="completed",
-                completed_by=aq.owner_id,
-                completed_at=now - timedelta(days=1),
+                fish,
+                acted_by_user_id=user.id,
+                acted_at=now - timedelta(days=1),
+                action="fed",
             )
 
         class MockSessionContext:
@@ -888,25 +886,19 @@ async def test_family_feeding_trigger_handles_notification_errors(
         await add_family_member(async_session, aquarium, member1)
         await add_family_member(async_session, aquarium, member2)
 
-        schedule = FeedingSchedule(
-            aquarium_id=aquarium.id,
-            times_per_day=1,
-            scheduled_times=["08:00"],
-            food_type="flakes",
-        )
-        async_session.add(schedule)
-        await async_session.commit()
-        await async_session.refresh(schedule)
+        species = await create_test_species(async_session)
+        fish = await create_test_fish(async_session, aquarium, species)
+        schedule = await create_test_schedule(async_session, aquarium, fish)
 
         now = datetime.now(UTC)
-        event = await create_feeding_event(
+        log = await create_feeding_log(
             async_session,
             aquarium,
             schedule,
-            scheduled_at=now,
-            status="completed",
-            completed_by=owner.id,
-            completed_at=now,
+            fish,
+            acted_by_user_id=owner.id,
+            acted_at=now,
+            action="fed",
         )
 
         call_count = 0
@@ -925,7 +917,7 @@ async def test_family_feeding_trigger_handles_notification_errors(
             mock_service.send_push = mock_send_push
             mock_service_class.return_value = mock_service
 
-            count = await family_feeding_trigger(async_session, event.id, owner.id)
+            count = await family_feeding_trigger(async_session, log.id, owner.id)
 
         # Should have succeeded for one member despite error for first
         assert count == 1

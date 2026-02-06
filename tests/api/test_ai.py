@@ -125,7 +125,7 @@ async def test_scan_with_base64_image(
             image_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 
             response = await client.post(
-                "/ai/scan",
+                "/api/v1/ai/scan",
                 json={"image_base64": image_base64},
                 headers=get_auth_headers(user.id),
             )
@@ -151,7 +151,7 @@ async def test_scan_no_image_provided(
         user = await create_test_user(async_session)
 
         response = await client.post(
-            "/ai/scan",
+            "/api/v1/ai/scan",
             json={},
             headers=get_auth_headers(user.id),
         )
@@ -165,7 +165,7 @@ async def test_scan_no_image_provided(
 @pytest.mark.asyncio(loop_scope="session")
 async def test_scan_unauthorized(client: AsyncClient):
     """Test scanning without authentication."""
-    response = await client.post("/ai/scan", json={"image_base64": "test"})
+    response = await client.post("/api/v1/ai/scan", json={"image_base64": "test"})
     assert response.status_code == 401
 
 
@@ -182,7 +182,7 @@ async def test_scan_limit_exceeded(
         image_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 
         response = await client.post(
-            "/ai/scan",
+            "/api/v1/ai/scan",
             json={"image_base64": image_base64},
             headers=get_auth_headers(user.id),
         )
@@ -210,7 +210,7 @@ async def test_get_scans_remaining_free_user(
         )
 
         response = await client.get(
-            "/ai/scans/remaining",
+            "/api/v1/ai/scans/remaining",
             headers=get_auth_headers(user.id),
         )
 
@@ -237,7 +237,7 @@ async def test_get_scans_remaining_premium_user(
         )
 
         response = await client.get(
-            "/ai/scans/remaining",
+            "/api/v1/ai/scans/remaining",
             headers=get_auth_headers(user.id),
         )
 
@@ -252,7 +252,7 @@ async def test_get_scans_remaining_premium_user(
 @pytest.mark.asyncio(loop_scope="session")
 async def test_get_scans_remaining_unauthorized(client: AsyncClient):
     """Test getting remaining scans without authentication."""
-    response = await client.get("/ai/scans/remaining")
+    response = await client.get("/api/v1/ai/scans/remaining")
     assert response.status_code == 401
 
 
@@ -277,7 +277,7 @@ async def test_confirm_species_success(
         )
 
         response = await client.post(
-            f"/ai/scans/{scan.id}/confirm",
+            f"/api/v1/ai/scans/{scan.id}/confirm",
             json={"species_id": "betta"},
             headers=get_auth_headers(user.id),
         )
@@ -299,7 +299,7 @@ async def test_confirm_species_scan_not_found(
         await create_test_species(async_session, "goldfish", "Goldfish")
 
         response = await client.post(
-            f"/ai/scans/{uuid.uuid4()}/confirm",
+            f"/api/v1/ai/scans/{uuid.uuid4()}/confirm",
             json={"species_id": "goldfish"},
             headers=get_auth_headers(user.id),
         )
@@ -323,7 +323,7 @@ async def test_confirm_species_access_denied(
         scan = await create_test_scan(async_session, user1.id)
 
         response = await client.post(
-            f"/ai/scans/{scan.id}/confirm",
+            f"/api/v1/ai/scans/{scan.id}/confirm",
             json={"species_id": "goldfish"},
             headers=get_auth_headers(user2.id),
         )
@@ -345,7 +345,7 @@ async def test_confirm_species_species_not_found(
         scan = await create_test_scan(async_session, user.id)
 
         response = await client.post(
-            f"/ai/scans/{scan.id}/confirm",
+            f"/api/v1/ai/scans/{scan.id}/confirm",
             json={"species_id": "nonexistent"},
             headers=get_auth_headers(user.id),
         )
@@ -382,7 +382,7 @@ async def test_get_scan_history_success(
         )
 
         response = await client.get(
-            "/ai/scans/history",
+            "/api/v1/ai/scans/history",
             headers=get_auth_headers(user.id),
         )
 
@@ -406,7 +406,7 @@ async def test_get_scan_history_with_pagination(
             await create_test_scan(async_session, user.id, image_hash=f"hash{i}")
 
         response = await client.get(
-            "/ai/scans/history?limit=2&offset=1",
+            "/api/v1/ai/scans/history?limit=2&offset=1",
             headers=get_auth_headers(user.id),
         )
 
@@ -428,7 +428,7 @@ async def test_get_scan_history_empty(
         user = await create_test_user(async_session)
 
         response = await client.get(
-            "/ai/scans/history",
+            "/api/v1/ai/scans/history",
             headers=get_auth_headers(user.id),
         )
 
@@ -459,7 +459,7 @@ async def test_get_scan_by_id_success(
         )
 
         response = await client.get(
-            f"/ai/scans/{scan.id}",
+            f"/api/v1/ai/scans/{scan.id}",
             headers=get_auth_headers(user.id),
         )
 
@@ -483,7 +483,7 @@ async def test_get_scan_by_id_not_found(
         user = await create_test_user(async_session)
 
         response = await client.get(
-            f"/ai/scans/{uuid.uuid4()}",
+            f"/api/v1/ai/scans/{uuid.uuid4()}",
             headers=get_auth_headers(user.id),
         )
 
@@ -505,7 +505,7 @@ async def test_get_scan_by_id_access_denied(
         scan = await create_test_scan(async_session, user1.id)
 
         response = await client.get(
-            f"/ai/scans/{scan.id}",
+            f"/api/v1/ai/scans/{scan.id}",
             headers=get_auth_headers(user2.id),
         )
 

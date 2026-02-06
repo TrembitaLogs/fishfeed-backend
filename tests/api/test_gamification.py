@@ -9,11 +9,11 @@ from httpx import AsyncClient
 async def register_and_login(client: AsyncClient, email: str) -> dict:
     """Helper to register a user and return tokens."""
     await client.post(
-        "/auth/register",
+        "/api/v1/auth/register",
         json={"email": email, "password": "SecurePass123"},
     )
     response = await client.post(
-        "/auth/login",
+        "/api/v1/auth/login",
         json={"email": email, "password": "SecurePass123"},
     )
     return response.json()
@@ -24,7 +24,7 @@ async def create_aquarium_with_fish(
 ) -> dict:
     """Helper to create an aquarium with fish."""
     response = await client.post(
-        "/aquariums",
+        "/api/v1/aquariums",
         json={"name": name, "volume_liters": 100},
         headers={"Authorization": f"Bearer {access_token}"},
     )
@@ -41,7 +41,7 @@ class TestGetStats:
         access_token = tokens["access_token"]
 
         response = await client.get(
-            "/users/me/stats",
+            "/api/v1/users/me/stats",
             headers={"Authorization": f"Bearer {access_token}"},
         )
 
@@ -58,7 +58,7 @@ class TestGetStats:
 
     async def test_get_stats_requires_auth(self, client: AsyncClient):
         """Test that stats endpoint requires authentication."""
-        response = await client.get("/users/me/stats")
+        response = await client.get("/api/v1/users/me/stats")
         assert response.status_code == 401
 
     async def test_get_stats_returns_freeze_available(self, client: AsyncClient):
@@ -67,7 +67,7 @@ class TestGetStats:
         access_token = tokens["access_token"]
 
         response = await client.get(
-            "/users/me/stats",
+            "/api/v1/users/me/stats",
             headers={"Authorization": f"Bearer {access_token}"},
         )
 
@@ -89,7 +89,7 @@ class TestGetAchievements:
         access_token = tokens["access_token"]
 
         response = await client.get(
-            "/users/me/achievements",
+            "/api/v1/users/me/achievements",
             headers={"Authorization": f"Bearer {access_token}"},
         )
 
@@ -100,7 +100,7 @@ class TestGetAchievements:
 
     async def test_get_achievements_requires_auth(self, client: AsyncClient):
         """Test that achievements endpoint requires authentication."""
-        response = await client.get("/users/me/achievements")
+        response = await client.get("/api/v1/users/me/achievements")
         assert response.status_code == 401
 
     async def test_get_achievements_response_format(self, client: AsyncClient):
@@ -112,7 +112,7 @@ class TestGetAchievements:
         await create_aquarium_with_fish(client, access_token)
 
         response = await client.get(
-            "/users/me/achievements",
+            "/api/v1/users/me/achievements",
             headers={"Authorization": f"Bearer {access_token}"},
         )
 
@@ -140,7 +140,7 @@ class TestUseStreakFreeze:
 
         # New users start with 0 freeze days
         response = await client.post(
-            "/users/me/streak/freeze",
+            "/api/v1/users/me/streak/freeze",
             headers={"Authorization": f"Bearer {access_token}"},
         )
 
@@ -149,7 +149,7 @@ class TestUseStreakFreeze:
 
     async def test_use_freeze_requires_auth(self, client: AsyncClient):
         """Test that freeze endpoint requires authentication."""
-        response = await client.post("/users/me/streak/freeze")
+        response = await client.post("/api/v1/users/me/streak/freeze")
         assert response.status_code == 401
 
 
@@ -166,7 +166,7 @@ class TestShareAchievement:
 
         fake_id = uuid4()
         response = await client.post(
-            f"/achievements/{fake_id}/share",
+            f"/api/v1/achievements/{fake_id}/share",
             headers={"Authorization": f"Bearer {access_token}"},
         )
 
@@ -176,7 +176,7 @@ class TestShareAchievement:
     async def test_share_achievement_requires_auth(self, client: AsyncClient):
         """Test that share endpoint requires authentication."""
         fake_id = uuid4()
-        response = await client.post(f"/achievements/{fake_id}/share")
+        response = await client.post(f"/api/v1/achievements/{fake_id}/share")
         assert response.status_code == 401
 
     async def test_share_achievement_returns_403_for_other_user(
@@ -192,7 +192,7 @@ class TestShareAchievement:
 
         # Get achievements for first user
         response1 = await client.get(
-            "/users/me/achievements",
+            "/api/v1/users/me/achievements",
             headers={"Authorization": f"Bearer {access_token1}"},
         )
         achievements = response1.json()
@@ -208,7 +208,7 @@ class TestShareAchievement:
 
         # Try to share first user's achievement as second user
         response = await client.post(
-            f"/achievements/{achievement_id}/share",
+            f"/api/v1/achievements/{achievement_id}/share",
             headers={"Authorization": f"Bearer {access_token2}"},
         )
 
@@ -225,7 +225,7 @@ class TestShareAchievement:
 
         # Get achievements
         response = await client.get(
-            "/users/me/achievements",
+            "/api/v1/users/me/achievements",
             headers={"Authorization": f"Bearer {access_token}"},
         )
         achievements = response.json()
@@ -237,7 +237,7 @@ class TestShareAchievement:
 
         # Share the achievement
         share_response = await client.post(
-            f"/achievements/{achievement_id}/share",
+            f"/api/v1/achievements/{achievement_id}/share",
             headers={"Authorization": f"Bearer {access_token}"},
         )
 

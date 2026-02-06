@@ -1,30 +1,30 @@
-"""Integration tests for feeding service."""
+"""Integration tests for feeding service (Schedule + FeedingLog architecture)."""
 
 import uuid
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
+from datetime import time as dt_time
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.aquarium import Aquarium, AquariumMember
-from app.models.feeding import FeedingEvent
 from app.models.species import Species
 from app.models.user import User
-from app.schemas.feeding import ScheduleUpdate
+from app.schemas.feeding import FeedingAction, FeedingLogCreate, ScheduleCreate, ScheduleUpdate
 from app.schemas.fish import FishCreate
 from app.services.aquarium import AquariumAccessDeniedError
 from app.services.feeding import (
-    DEFAULT_TIMES,
-    EventAlreadyCompletedError,
-    EventNotFoundError,
+    FeedingError,
+    FeedingLogConflictError,
     ScheduleNotFoundError,
-    create_daily_events,
+    _compute_even_times,
+    create_feeding_log,
+    create_schedule,
+    delete_schedule,
     generate_schedule,
-    get_schedule,
-    get_today_events,
-    mark_as_fed,
-    mark_as_missed,
+    get_feeding_logs,
+    get_schedules,
     update_schedule,
 )
 from app.services.fish import add_fish
@@ -32,7 +32,7 @@ from app.services.fish import add_fish
 
 async def cleanup_feeding_data(session: AsyncSession) -> None:
     """Helper to cleanup feeding-related data."""
-    await session.execute(text("DELETE FROM feeding_events"))
+    await session.execute(text("DELETE FROM feeding_logs"))
     await session.execute(text("DELETE FROM feeding_schedules"))
     await session.execute(text("DELETE FROM fish"))
     await session.execute(text("DELETE FROM aquarium_members"))
@@ -45,11 +45,13 @@ async def cleanup_feeding_data(session: AsyncSession) -> None:
 async def create_test_user(
     session: AsyncSession,
     email: str | None = None,
+    nickname: str | None = None,
 ) -> User:
     """Helper to create a test user."""
     user = User(
         email=email or f"test-{uuid.uuid4()}@example.com",
         password_hash="hashed_password",
+        nickname=nickname or "TestUser",
     )
     session.add(user)
     await session.commit()
@@ -63,8 +65,9 @@ async def create_test_species(
     common_name: str = "Guppy",
     feeding_frequency: int = 2,
     food_types: list[str] | None = None,
+    portion_hint: str | None = None,
 ) -> Species:
-    """Helper to create a test species with configurable feeding frequency."""
+    """Helper to create a test species."""
     species = Species(
         id=species_id,
         common_name=common_name,
@@ -73,6 +76,7 @@ async def create_test_species(
         feeding_frequency=feeding_frequency,
         care_level="beginner",
         water_type="freshwater",
+        portion_hint=portion_hint,
     )
     session.add(species)
     await session.commit()
@@ -104,841 +108,836 @@ async def create_test_aquarium(
     return aquarium
 
 
+# ──────────────────────────────────────────────
+# _compute_even_times unit tests
+# ──────────────────────────────────────────────
+
+
+class TestComputeEvenTimes:
+    """Tests for the _compute_even_times helper function."""
+
+    def test_frequency_1_returns_predefined(self):
+        assert _compute_even_times(1) == ["09:00"]
+
+    def test_frequency_2_returns_predefined(self):
+        assert _compute_even_times(2) == ["09:00", "18:00"]
+
+    def test_frequency_3_returns_predefined(self):
+        assert _compute_even_times(3) == ["08:00", "13:00", "18:00"]
+
+    def test_frequency_4_distributes_evenly(self):
+        times = _compute_even_times(4)
+        assert len(times) == 4
+        assert times[0] == "07:00"
+        assert times[-1] == "21:00"
+
+    def test_frequency_10_distributes_evenly(self):
+        times = _compute_even_times(10)
+        assert len(times) == 10
+        assert times[0] == "07:00"
+        assert times[-1] == "21:00"
+
+
+# ──────────────────────────────────────────────
 # generate_schedule tests
+# ──────────────────────────────────────────────
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_generate_schedule_with_one_fish_twice_daily(async_session: AsyncSession):
-    """Test generate_schedule with 1 fish (twice_daily) creates 2 scheduled_times."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        species = await create_test_species(
-            async_session, "guppy", "Guppy", feeding_frequency=2
-        )
-        aquarium = await create_test_aquarium(async_session, user)
+class TestGenerateSchedule:
+    """Tests for generate_schedule — per-fish schedule generation."""
 
-        await add_fish(
-            async_session,
-            aquarium.id,
-            user.id,
-            FishCreate(species_id=species.id),
-        )
-
-        schedule = await generate_schedule(async_session, aquarium.id, user.id)
-
-        assert schedule is not None
-        assert schedule.times_per_day == 2
-        assert schedule.scheduled_times == ["08:00", "20:00"]
-    finally:
+    async def test_one_fish_twice_daily_creates_two_schedules(self, async_session: AsyncSession):
+        """One fish with frequency=2 should produce 2 FeedingSchedule rows."""
         await cleanup_feeding_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            species = await create_test_species(async_session, "guppy", "Guppy", feeding_frequency=2)
+            aquarium = await create_test_aquarium(async_session, user)
+            await add_fish(async_session, aquarium.id, user.id, FishCreate(species_id=species.id))
+
+            schedules = await generate_schedule(async_session, aquarium.id, user.id)
+
+            assert len(schedules) == 2
+            times = sorted(s.time for s in schedules)
+            assert times == [dt_time(9, 0), dt_time(18, 0)]
+        finally:
+            await cleanup_feeding_data(async_session)
+
+    async def test_two_fish_creates_per_fish_schedules(self, async_session: AsyncSession):
+        """Two fish with different frequencies produce independent schedules."""
+        await cleanup_feeding_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            sp1 = await create_test_species(async_session, "guppy", "Guppy", feeding_frequency=1)
+            sp2 = await create_test_species(async_session, "betta", "Betta", feeding_frequency=3)
+            aquarium = await create_test_aquarium(async_session, user)
+            fish1 = await add_fish(async_session, aquarium.id, user.id, FishCreate(species_id=sp1.id))
+            fish2 = await add_fish(async_session, aquarium.id, user.id, FishCreate(species_id=sp2.id))
+
+            schedules = await generate_schedule(async_session, aquarium.id, user.id)
+
+            # 1 + 3 = 4 schedules total
+            assert len(schedules) == 4
+            fish1_schedules = [s for s in schedules if s.fish_id == fish1.id]
+            fish2_schedules = [s for s in schedules if s.fish_id == fish2.id]
+            assert len(fish1_schedules) == 1
+            assert len(fish2_schedules) == 3
+        finally:
+            await cleanup_feeding_data(async_session)
+
+    async def test_no_fish_returns_empty(self, async_session: AsyncSession):
+        """Aquarium with no fish should produce zero schedules."""
+        await cleanup_feeding_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            aquarium = await create_test_aquarium(async_session, user)
+
+            schedules = await generate_schedule(async_session, aquarium.id, user.id)
+
+            assert schedules == []
+        finally:
+            await cleanup_feeding_data(async_session)
+
+    async def test_food_type_aggregated_from_species(self, async_session: AsyncSession):
+        """Schedule food_type should come from species food_types, sorted and joined."""
+        await cleanup_feeding_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            species = await create_test_species(
+                async_session,
+                "guppy",
+                "Guppy",
+                feeding_frequency=1,
+                food_types=["pellets", "flakes"],
+            )
+            aquarium = await create_test_aquarium(async_session, user)
+            await add_fish(async_session, aquarium.id, user.id, FishCreate(species_id=species.id))
+
+            schedules = await generate_schedule(async_session, aquarium.id, user.id)
+
+            assert len(schedules) == 1
+            assert schedules[0].food_type == "flakes, pellets"
+        finally:
+            await cleanup_feeding_data(async_session)
+
+    async def test_portion_hint_from_species(self, async_session: AsyncSession):
+        """Schedule should carry portion_hint from species."""
+        await cleanup_feeding_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            species = await create_test_species(
+                async_session,
+                "guppy",
+                "Guppy",
+                feeding_frequency=1,
+                portion_hint="A pinch",
+            )
+            aquarium = await create_test_aquarium(async_session, user)
+            await add_fish(async_session, aquarium.id, user.id, FishCreate(species_id=species.id))
+
+            schedules = await generate_schedule(async_session, aquarium.id, user.id)
+
+            assert schedules[0].portion_hint == "A pinch"
+        finally:
+            await cleanup_feeding_data(async_session)
+
+    async def test_raises_403_for_non_member(self, async_session: AsyncSession):
+        await cleanup_feeding_data(async_session)
+        try:
+            owner = await create_test_user(async_session, "owner@example.com")
+            other = await create_test_user(async_session, "other@example.com")
+            aquarium = await create_test_aquarium(async_session, owner)
+
+            with pytest.raises(AquariumAccessDeniedError) as exc_info:
+                await generate_schedule(async_session, aquarium.id, other.id)
+            assert exc_info.value.status_code == 403
+        finally:
+            await cleanup_feeding_data(async_session)
+
+    async def test_idempotent_skips_existing_schedules(self, async_session: AsyncSession):
+        """Calling generate_schedule twice should not create duplicate schedules."""
+        await cleanup_feeding_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            species = await create_test_species(async_session, "guppy", "Guppy", feeding_frequency=2)
+            aquarium = await create_test_aquarium(async_session, user)
+            await add_fish(async_session, aquarium.id, user.id, FishCreate(species_id=species.id))
+
+            # First call creates schedules
+            schedules1 = await generate_schedule(async_session, aquarium.id, user.id)
+            assert len(schedules1) == 2
+
+            # Second call should skip existing and return empty
+            schedules2 = await generate_schedule(async_session, aquarium.id, user.id)
+            assert len(schedules2) == 0
+
+            # Total schedules in DB should still be 2
+            all_schedules = await get_schedules(async_session, aquarium.id, user.id)
+            assert len(all_schedules) == 2
+        finally:
+            await cleanup_feeding_data(async_session)
+
+    async def test_idempotent_creates_only_for_new_fish(self, async_session: AsyncSession):
+        """Adding new fish and calling generate_schedule creates schedules only for new fish."""
+        await cleanup_feeding_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            sp1 = await create_test_species(async_session, "guppy", "Guppy", feeding_frequency=2)
+            sp2 = await create_test_species(async_session, "betta", "Betta", feeding_frequency=1)
+            aquarium = await create_test_aquarium(async_session, user)
+
+            # Add first fish and generate schedules
+            fish1 = await add_fish(async_session, aquarium.id, user.id, FishCreate(species_id=sp1.id))
+            schedules1 = await generate_schedule(async_session, aquarium.id, user.id)
+            assert len(schedules1) == 2  # guppy has frequency=2
+
+            # Add second fish and generate again
+            fish2 = await add_fish(async_session, aquarium.id, user.id, FishCreate(species_id=sp2.id))
+            schedules2 = await generate_schedule(async_session, aquarium.id, user.id)
+            assert len(schedules2) == 1  # only betta's schedule (frequency=1)
+
+            # Verify schedules2 belongs to fish2
+            assert all(s.fish_id == fish2.id for s in schedules2)
+
+            # Total should be 3
+            all_schedules = await get_schedules(async_session, aquarium.id, user.id)
+            assert len(all_schedules) == 3
+        finally:
+            await cleanup_feeding_data(async_session)
+
+
+# ──────────────────────────────────────────────
+# get_schedules tests
+# ──────────────────────────────────────────────
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_generate_schedule_selects_max_frequency(async_session: AsyncSession):
-    """Test generate_schedule with different frequency fish selects max."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        species1 = await create_test_species(
-            async_session, "guppy", "Guppy", feeding_frequency=1
-        )
-        species2 = await create_test_species(
-            async_session, "betta", "Betta", feeding_frequency=3
-        )
-        species3 = await create_test_species(
-            async_session, "goldfish", "Goldfish", feeding_frequency=2
-        )
-        aquarium = await create_test_aquarium(async_session, user)
+class TestGetSchedules:
+    """Tests for get_schedules — list schedules with optional active filter."""
 
-        # Add fish with different feeding frequencies
-        await add_fish(
-            async_session, aquarium.id, user.id, FishCreate(species_id=species1.id)
-        )
-        await add_fish(
-            async_session, aquarium.id, user.id, FishCreate(species_id=species2.id)
-        )
-        await add_fish(
-            async_session, aquarium.id, user.id, FishCreate(species_id=species3.id)
-        )
-
-        schedule = await generate_schedule(async_session, aquarium.id, user.id)
-
-        # Should select max frequency (3)
-        assert schedule.times_per_day == 3
-        assert schedule.scheduled_times == ["08:00", "14:00", "20:00"]
-    finally:
+    async def test_returns_all_schedules(self, async_session: AsyncSession):
         await cleanup_feeding_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            species = await create_test_species(async_session, "guppy", "Guppy", feeding_frequency=2)
+            aquarium = await create_test_aquarium(async_session, user)
+            await add_fish(async_session, aquarium.id, user.id, FishCreate(species_id=species.id))
+            await generate_schedule(async_session, aquarium.id, user.id)
+
+            schedules = await get_schedules(async_session, aquarium.id, user.id)
+            assert len(schedules) == 2
+        finally:
+            await cleanup_feeding_data(async_session)
+
+    async def test_active_filter_true(self, async_session: AsyncSession):
+        await cleanup_feeding_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            species = await create_test_species(async_session, "guppy", "Guppy", feeding_frequency=2)
+            aquarium = await create_test_aquarium(async_session, user)
+            fish = await add_fish(async_session, aquarium.id, user.id, FishCreate(species_id=species.id))
+            generated = await generate_schedule(async_session, aquarium.id, user.id)
+
+            # Deactivate one
+            await update_schedule(
+                async_session,
+                aquarium.id,
+                generated[0].id,
+                user.id,
+                ScheduleUpdate(active=False),
+            )
+
+            active = await get_schedules(async_session, aquarium.id, user.id, active=True)
+            assert len(active) == 1
+
+            all_schedules = await get_schedules(async_session, aquarium.id, user.id)
+            assert len(all_schedules) == 2
+        finally:
+            await cleanup_feeding_data(async_session)
+
+    async def test_empty_aquarium_returns_empty(self, async_session: AsyncSession):
+        await cleanup_feeding_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            aquarium = await create_test_aquarium(async_session, user)
+
+            schedules = await get_schedules(async_session, aquarium.id, user.id)
+            assert schedules == []
+        finally:
+            await cleanup_feeding_data(async_session)
+
+    async def test_raises_403_for_non_member(self, async_session: AsyncSession):
+        await cleanup_feeding_data(async_session)
+        try:
+            owner = await create_test_user(async_session, "owner@example.com")
+            other = await create_test_user(async_session, "other@example.com")
+            aquarium = await create_test_aquarium(async_session, owner)
+
+            with pytest.raises(AquariumAccessDeniedError):
+                await get_schedules(async_session, aquarium.id, other.id)
+        finally:
+            await cleanup_feeding_data(async_session)
+
+
+# ──────────────────────────────────────────────
+# create_schedule tests
+# ──────────────────────────────────────────────
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_generate_schedule_without_fish_returns_default(
-    async_session: AsyncSession,
-):
-    """Test generate_schedule without fish returns default schedule."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user)
+class TestCreateSchedule:
+    """Tests for create_schedule — single schedule creation with validation."""
 
-        schedule = await generate_schedule(async_session, aquarium.id, user.id)
-
-        # Default is 2x per day
-        assert schedule.times_per_day == 2
-        assert schedule.scheduled_times == ["08:00", "20:00"]
-        assert schedule.food_type == "flakes"
-    finally:
+    async def test_creates_schedule_successfully(self, async_session: AsyncSession):
         await cleanup_feeding_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            species = await create_test_species(async_session)
+            aquarium = await create_test_aquarium(async_session, user)
+            fish = await add_fish(async_session, aquarium.id, user.id, FishCreate(species_id=species.id))
 
+            data = ScheduleCreate(
+                fish_id=fish.id,
+                time="10:30",
+                interval_days=1,
+                anchor_date=date.today(),
+                food_type="flakes",
+            )
+            schedule = await create_schedule(async_session, aquarium.id, user.id, data)
 
-@pytest.mark.asyncio(loop_scope="session")
-async def test_generate_schedule_aggregates_food_types(async_session: AsyncSession):
-    """Test generate_schedule aggregates food_types from all species."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        species1 = await create_test_species(
-            async_session,
-            "guppy",
-            "Guppy",
-            feeding_frequency=2,
-            food_types=["flakes", "pellets"],
-        )
-        species2 = await create_test_species(
-            async_session,
-            "betta",
-            "Betta",
-            feeding_frequency=2,
-            food_types=["bloodworms", "pellets"],
-        )
-        aquarium = await create_test_aquarium(async_session, user)
+            assert schedule.fish_id == fish.id
+            assert schedule.time == dt_time(10, 30)
+            assert schedule.interval_days == 1
+            assert schedule.active is True
+            assert schedule.created_by_user_id == user.id
+        finally:
+            await cleanup_feeding_data(async_session)
 
-        await add_fish(
-            async_session, aquarium.id, user.id, FishCreate(species_id=species1.id)
-        )
-        await add_fish(
-            async_session, aquarium.id, user.id, FishCreate(species_id=species2.id)
-        )
-
-        schedule = await generate_schedule(async_session, aquarium.id, user.id)
-
-        # Food types should be aggregated and sorted
-        assert "bloodworms" in schedule.food_type
-        assert "flakes" in schedule.food_type
-        assert "pellets" in schedule.food_type
-    finally:
+    async def test_rejects_fish_not_in_aquarium(self, async_session: AsyncSession):
         await cleanup_feeding_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            species = await create_test_species(async_session)
+            aq1 = await create_test_aquarium(async_session, user, "AQ1")
+            aq2 = await create_test_aquarium(async_session, user, "AQ2")
+            fish = await add_fish(async_session, aq1.id, user.id, FishCreate(species_id=species.id))
 
+            data = ScheduleCreate(
+                fish_id=fish.id,
+                time="09:00",
+                interval_days=1,
+                anchor_date=date.today(),
+                food_type="flakes",
+            )
+            with pytest.raises(FeedingError) as exc_info:
+                await create_schedule(async_session, aq2.id, user.id, data)
+            assert exc_info.value.status_code == 400
+        finally:
+            await cleanup_feeding_data(async_session)
 
-@pytest.mark.asyncio(loop_scope="session")
-async def test_generate_schedule_updates_existing_schedule(
-    async_session: AsyncSession,
-):
-    """Test generate_schedule updates existing schedule instead of creating new."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        species1 = await create_test_species(
-            async_session, "guppy", "Guppy", feeding_frequency=1
-        )
-        aquarium = await create_test_aquarium(async_session, user)
-
-        await add_fish(
-            async_session, aquarium.id, user.id, FishCreate(species_id=species1.id)
-        )
-
-        # Generate initial schedule
-        schedule1 = await generate_schedule(async_session, aquarium.id, user.id)
-        schedule_id = schedule1.id
-        assert schedule1.times_per_day == 1
-
-        # Add fish with higher frequency
-        species2 = await create_test_species(
-            async_session, "betta", "Betta", feeding_frequency=3
-        )
-        await add_fish(
-            async_session, aquarium.id, user.id, FishCreate(species_id=species2.id)
-        )
-
-        # Regenerate schedule
-        schedule2 = await generate_schedule(async_session, aquarium.id, user.id)
-
-        # Should be same schedule ID, updated
-        assert schedule2.id == schedule_id
-        assert schedule2.times_per_day == 3
-    finally:
+    async def test_rejects_anchor_date_too_far_in_future(self, async_session: AsyncSession):
         await cleanup_feeding_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            species = await create_test_species(async_session)
+            aquarium = await create_test_aquarium(async_session, user)
+            fish = await add_fish(async_session, aquarium.id, user.id, FishCreate(species_id=species.id))
 
+            data = ScheduleCreate(
+                fish_id=fish.id,
+                time="09:00",
+                interval_days=1,
+                anchor_date=date.today() + timedelta(days=8),
+                food_type="flakes",
+            )
+            with pytest.raises(FeedingError) as exc_info:
+                await create_schedule(async_session, aquarium.id, user.id, data)
+            assert exc_info.value.status_code == 400
+            assert "7 days" in exc_info.value.message
+        finally:
+            await cleanup_feeding_data(async_session)
 
-@pytest.mark.asyncio(loop_scope="session")
-async def test_generate_schedule_creates_today_events(async_session: AsyncSession):
-    """Test generate_schedule creates feeding events for today."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        species = await create_test_species(
-            async_session, "guppy", "Guppy", feeding_frequency=2
-        )
-        aquarium = await create_test_aquarium(async_session, user)
-
-        await add_fish(
-            async_session, aquarium.id, user.id, FishCreate(species_id=species.id)
-        )
-
-        await generate_schedule(async_session, aquarium.id, user.id)
-
-        # Check events were created for today
-        events = await get_today_events(async_session, aquarium.id, user.id)
-
-        assert len(events) == 2
-        assert all(e.status == "pending" for e in events)
-    finally:
+    async def test_raises_403_for_non_member(self, async_session: AsyncSession):
         await cleanup_feeding_data(async_session)
+        try:
+            owner = await create_test_user(async_session, "owner@example.com")
+            other = await create_test_user(async_session, "other@example.com")
+            species = await create_test_species(async_session)
+            aquarium = await create_test_aquarium(async_session, owner)
+            fish = await add_fish(async_session, aquarium.id, owner.id, FishCreate(species_id=species.id))
+
+            data = ScheduleCreate(
+                fish_id=fish.id,
+                time="09:00",
+                interval_days=1,
+                anchor_date=date.today(),
+                food_type="flakes",
+            )
+            with pytest.raises(AquariumAccessDeniedError):
+                await create_schedule(async_session, aquarium.id, other.id, data)
+        finally:
+            await cleanup_feeding_data(async_session)
 
 
-@pytest.mark.asyncio(loop_scope="session")
-async def test_generate_schedule_raises_403_for_non_member(
-    async_session: AsyncSession,
-):
-    """Test generate_schedule raises 403 for user without access."""
-    await cleanup_feeding_data(async_session)
-    try:
-        owner = await create_test_user(async_session, "owner@example.com")
-        other_user = await create_test_user(async_session, "other@example.com")
-        aquarium = await create_test_aquarium(async_session, owner)
-
-        with pytest.raises(AquariumAccessDeniedError) as exc_info:
-            await generate_schedule(async_session, aquarium.id, other_user.id)
-
-        assert exc_info.value.status_code == 403
-    finally:
-        await cleanup_feeding_data(async_session)
-
-
-# scheduled_times generation tests
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_scheduled_times_for_once_daily(async_session: AsyncSession):
-    """Test scheduled_times generated correctly for 1 time per day."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        species = await create_test_species(
-            async_session, "guppy", "Guppy", feeding_frequency=1
-        )
-        aquarium = await create_test_aquarium(async_session, user)
-
-        await add_fish(
-            async_session, aquarium.id, user.id, FishCreate(species_id=species.id)
-        )
-
-        schedule = await generate_schedule(async_session, aquarium.id, user.id)
-
-        assert schedule.scheduled_times == DEFAULT_TIMES[1]
-        assert schedule.scheduled_times == ["08:00"]
-    finally:
-        await cleanup_feeding_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_scheduled_times_for_twice_daily(async_session: AsyncSession):
-    """Test scheduled_times generated correctly for 2 times per day."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        species = await create_test_species(
-            async_session, "guppy", "Guppy", feeding_frequency=2
-        )
-        aquarium = await create_test_aquarium(async_session, user)
-
-        await add_fish(
-            async_session, aquarium.id, user.id, FishCreate(species_id=species.id)
-        )
-
-        schedule = await generate_schedule(async_session, aquarium.id, user.id)
-
-        assert schedule.scheduled_times == DEFAULT_TIMES[2]
-        assert schedule.scheduled_times == ["08:00", "20:00"]
-    finally:
-        await cleanup_feeding_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_scheduled_times_for_three_times_daily(async_session: AsyncSession):
-    """Test scheduled_times generated correctly for 3 times per day."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        species = await create_test_species(
-            async_session, "guppy", "Guppy", feeding_frequency=3
-        )
-        aquarium = await create_test_aquarium(async_session, user)
-
-        await add_fish(
-            async_session, aquarium.id, user.id, FishCreate(species_id=species.id)
-        )
-
-        schedule = await generate_schedule(async_session, aquarium.id, user.id)
-
-        assert schedule.scheduled_times == DEFAULT_TIMES[3]
-        assert schedule.scheduled_times == ["08:00", "14:00", "20:00"]
-    finally:
-        await cleanup_feeding_data(async_session)
-
-
-# get_schedule tests
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_get_schedule_returns_schedule(async_session: AsyncSession):
-    """Test get_schedule returns existing schedule."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user)
-
-        # Create schedule
-        created_schedule = await generate_schedule(async_session, aquarium.id, user.id)
-
-        schedule = await get_schedule(async_session, aquarium.id, user.id)
-
-        assert schedule is not None
-        assert schedule.id == created_schedule.id
-    finally:
-        await cleanup_feeding_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_get_schedule_returns_none_if_not_exists(async_session: AsyncSession):
-    """Test get_schedule returns None if no schedule exists."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user)
-
-        schedule = await get_schedule(async_session, aquarium.id, user.id)
-
-        assert schedule is None
-    finally:
-        await cleanup_feeding_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_get_schedule_raises_403_for_non_member(async_session: AsyncSession):
-    """Test get_schedule raises 403 for user without access."""
-    await cleanup_feeding_data(async_session)
-    try:
-        owner = await create_test_user(async_session, "owner@example.com")
-        other_user = await create_test_user(async_session, "other@example.com")
-        aquarium = await create_test_aquarium(async_session, owner)
-
-        with pytest.raises(AquariumAccessDeniedError) as exc_info:
-            await get_schedule(async_session, aquarium.id, other_user.id)
-
-        assert exc_info.value.status_code == 403
-    finally:
-        await cleanup_feeding_data(async_session)
-
-
+# ──────────────────────────────────────────────
 # update_schedule tests
+# ──────────────────────────────────────────────
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_update_schedule_updates_times(async_session: AsyncSession):
-    """Test update_schedule updates scheduled_times."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user)
+class TestUpdateSchedule:
+    """Tests for update_schedule — partial update by schedule ID."""
 
-        # Create initial schedule
-        await generate_schedule(async_session, aquarium.id, user.id)
-
-        # Update schedule
-        update_data = ScheduleUpdate(
-            times_per_day=3,
-            scheduled_times=[time(9, 0), time(15, 0), time(21, 0)],
-        )
-        updated = await update_schedule(
-            async_session, aquarium.id, user.id, update_data
-        )
-
-        assert updated.times_per_day == 3
-        assert updated.scheduled_times == ["09:00", "15:00", "21:00"]
-    finally:
+    async def test_updates_time_and_food_type(self, async_session: AsyncSession):
         await cleanup_feeding_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            species = await create_test_species(async_session)
+            aquarium = await create_test_aquarium(async_session, user)
+            fish = await add_fish(async_session, aquarium.id, user.id, FishCreate(species_id=species.id))
+
+            data = ScheduleCreate(
+                fish_id=fish.id,
+                time="09:00",
+                interval_days=1,
+                anchor_date=date.today(),
+                food_type="flakes",
+            )
+            schedule = await create_schedule(async_session, aquarium.id, user.id, data)
+
+            updated = await update_schedule(
+                async_session,
+                aquarium.id,
+                schedule.id,
+                user.id,
+                ScheduleUpdate(time="14:00", food_type="pellets"),
+            )
+
+            assert updated.time == dt_time(14, 0)
+            assert updated.food_type == "pellets"
+        finally:
+            await cleanup_feeding_data(async_session)
+
+    async def test_deactivates_schedule(self, async_session: AsyncSession):
+        await cleanup_feeding_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            species = await create_test_species(async_session)
+            aquarium = await create_test_aquarium(async_session, user)
+            fish = await add_fish(async_session, aquarium.id, user.id, FishCreate(species_id=species.id))
+
+            data = ScheduleCreate(
+                fish_id=fish.id,
+                time="09:00",
+                interval_days=1,
+                anchor_date=date.today(),
+                food_type="flakes",
+            )
+            schedule = await create_schedule(async_session, aquarium.id, user.id, data)
+
+            updated = await update_schedule(
+                async_session,
+                aquarium.id,
+                schedule.id,
+                user.id,
+                ScheduleUpdate(active=False),
+            )
+            assert updated.active is False
+        finally:
+            await cleanup_feeding_data(async_session)
+
+    async def test_raises_404_for_nonexistent(self, async_session: AsyncSession):
+        await cleanup_feeding_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            aquarium = await create_test_aquarium(async_session, user)
+
+            with pytest.raises(ScheduleNotFoundError) as exc_info:
+                await update_schedule(
+                    async_session,
+                    aquarium.id,
+                    uuid.uuid4(),
+                    user.id,
+                    ScheduleUpdate(food_type="pellets"),
+                )
+            assert exc_info.value.status_code == 404
+        finally:
+            await cleanup_feeding_data(async_session)
+
+    async def test_rejects_anchor_date_too_far(self, async_session: AsyncSession):
+        await cleanup_feeding_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            species = await create_test_species(async_session)
+            aquarium = await create_test_aquarium(async_session, user)
+            fish = await add_fish(async_session, aquarium.id, user.id, FishCreate(species_id=species.id))
+
+            data = ScheduleCreate(
+                fish_id=fish.id,
+                time="09:00",
+                interval_days=1,
+                anchor_date=date.today(),
+                food_type="flakes",
+            )
+            schedule = await create_schedule(async_session, aquarium.id, user.id, data)
+
+            with pytest.raises(FeedingError) as exc_info:
+                await update_schedule(
+                    async_session,
+                    aquarium.id,
+                    schedule.id,
+                    user.id,
+                    ScheduleUpdate(anchor_date=date.today() + timedelta(days=8)),
+                )
+            assert exc_info.value.status_code == 400
+        finally:
+            await cleanup_feeding_data(async_session)
+
+
+# ──────────────────────────────────────────────
+# delete_schedule tests
+# ──────────────────────────────────────────────
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_update_schedule_raises_404_if_not_exists(async_session: AsyncSession):
-    """Test update_schedule raises 404 if no schedule exists."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user)
+class TestDeleteSchedule:
+    """Tests for delete_schedule — hard delete by ID."""
 
-        update_data = ScheduleUpdate(times_per_day=1, scheduled_times=[time(10, 0)])
-
-        with pytest.raises(ScheduleNotFoundError) as exc_info:
-            await update_schedule(async_session, aquarium.id, user.id, update_data)
-
-        assert exc_info.value.status_code == 404
-    finally:
+    async def test_deletes_successfully(self, async_session: AsyncSession):
         await cleanup_feeding_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            species = await create_test_species(async_session)
+            aquarium = await create_test_aquarium(async_session, user)
+            fish = await add_fish(async_session, aquarium.id, user.id, FishCreate(species_id=species.id))
+
+            data = ScheduleCreate(
+                fish_id=fish.id,
+                time="09:00",
+                interval_days=1,
+                anchor_date=date.today(),
+                food_type="flakes",
+            )
+            schedule = await create_schedule(async_session, aquarium.id, user.id, data)
+
+            await delete_schedule(async_session, aquarium.id, schedule.id, user.id)
+
+            remaining = await get_schedules(async_session, aquarium.id, user.id)
+            assert len(remaining) == 0
+        finally:
+            await cleanup_feeding_data(async_session)
+
+    async def test_raises_404_for_nonexistent(self, async_session: AsyncSession):
+        await cleanup_feeding_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            aquarium = await create_test_aquarium(async_session, user)
+
+            with pytest.raises(ScheduleNotFoundError):
+                await delete_schedule(async_session, aquarium.id, uuid.uuid4(), user.id)
+        finally:
+            await cleanup_feeding_data(async_session)
+
+    async def test_raises_403_for_non_member(self, async_session: AsyncSession):
+        await cleanup_feeding_data(async_session)
+        try:
+            owner = await create_test_user(async_session, "owner@example.com")
+            other = await create_test_user(async_session, "other@example.com")
+            species = await create_test_species(async_session)
+            aquarium = await create_test_aquarium(async_session, owner)
+            fish = await add_fish(async_session, aquarium.id, owner.id, FishCreate(species_id=species.id))
+
+            data = ScheduleCreate(
+                fish_id=fish.id,
+                time="09:00",
+                interval_days=1,
+                anchor_date=date.today(),
+                food_type="flakes",
+            )
+            schedule = await create_schedule(async_session, aquarium.id, owner.id, data)
+
+            with pytest.raises(AquariumAccessDeniedError):
+                await delete_schedule(async_session, aquarium.id, schedule.id, other.id)
+        finally:
+            await cleanup_feeding_data(async_session)
+
+
+# ──────────────────────────────────────────────
+# get_feeding_logs tests
+# ──────────────────────────────────────────────
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_update_schedule_regenerates_events(async_session: AsyncSession):
-    """Test update_schedule regenerates today's events."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user)
+class TestGetFeedingLogs:
+    """Tests for get_feeding_logs — list logs with date range and fish filter."""
 
-        # Create initial schedule (2 events)
-        await generate_schedule(async_session, aquarium.id, user.id)
-        initial_events = await get_today_events(async_session, aquarium.id, user.id)
-        assert len(initial_events) == 2
+    async def _setup(self, session: AsyncSession):
+        """Create standard test data and return (user, aquarium, fish, schedule)."""
+        user = await create_test_user(session)
+        species = await create_test_species(session)
+        aquarium = await create_test_aquarium(session, user)
+        fish = await add_fish(session, aquarium.id, user.id, FishCreate(species_id=species.id))
+        generated = await generate_schedule(session, aquarium.id, user.id)
+        return user, aquarium, fish, generated[0]
 
-        # Update to 3 times per day
-        update_data = ScheduleUpdate(
-            times_per_day=3,
-            scheduled_times=[time(9, 0), time(15, 0), time(21, 0)],
-        )
-        await update_schedule(async_session, aquarium.id, user.id, update_data)
-
-        # Should have 3 events now
-        updated_events = await get_today_events(async_session, aquarium.id, user.id)
-        assert len(updated_events) == 3
-    finally:
+    async def test_returns_logs_in_date_range(self, async_session: AsyncSession):
         await cleanup_feeding_data(async_session)
+        try:
+            user, aquarium, fish, schedule = await self._setup(async_session)
+            device_id = uuid.uuid4()
+
+            # Create a log for today
+            now = datetime.now()
+            log_data = FeedingLogCreate(
+                schedule_id=schedule.id,
+                fish_id=fish.id,
+                scheduled_for=now,
+                action=FeedingAction.fed,
+                device_id=device_id,
+            )
+            await create_feeding_log(async_session, aquarium.id, user.id, log_data)
+
+            from_dt = datetime.combine(date.today(), dt_time.min)
+            to_dt = datetime.combine(date.today(), dt_time.max)
+            logs = await get_feeding_logs(async_session, aquarium.id, user.id, from_dt, to_dt)
+
+            assert len(logs) == 1
+            assert logs[0].action == "fed"
+        finally:
+            await cleanup_feeding_data(async_session)
+
+    async def test_fish_id_filter(self, async_session: AsyncSession):
+        await cleanup_feeding_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            sp1 = await create_test_species(async_session, "guppy", "Guppy", feeding_frequency=1)
+            sp2 = await create_test_species(async_session, "betta", "Betta", feeding_frequency=1)
+            aquarium = await create_test_aquarium(async_session, user)
+            fish1 = await add_fish(async_session, aquarium.id, user.id, FishCreate(species_id=sp1.id))
+            fish2 = await add_fish(async_session, aquarium.id, user.id, FishCreate(species_id=sp2.id))
+
+            schedules = await generate_schedule(async_session, aquarium.id, user.id)
+            device_id = uuid.uuid4()
+            now = datetime.now()
+
+            # Create logs for both fish
+            for s in schedules:
+                log_data = FeedingLogCreate(
+                    schedule_id=s.id,
+                    fish_id=s.fish_id,
+                    scheduled_for=now,
+                    action=FeedingAction.fed,
+                    device_id=device_id,
+                )
+                await create_feeding_log(async_session, aquarium.id, user.id, log_data)
+
+            from_dt = datetime.combine(date.today(), dt_time.min)
+            to_dt = datetime.combine(date.today(), dt_time.max)
+
+            logs_fish1 = await get_feeding_logs(
+                async_session,
+                aquarium.id,
+                user.id,
+                from_dt,
+                to_dt,
+                fish_id=fish1.id,
+            )
+            assert len(logs_fish1) == 1
+            assert logs_fish1[0].fish_id == fish1.id
+        finally:
+            await cleanup_feeding_data(async_session)
+
+    async def test_raises_403_for_non_member(self, async_session: AsyncSession):
+        await cleanup_feeding_data(async_session)
+        try:
+            owner = await create_test_user(async_session, "owner@example.com")
+            other = await create_test_user(async_session, "other@example.com")
+            aquarium = await create_test_aquarium(async_session, owner)
+
+            from_dt = datetime.combine(date.today(), dt_time.min)
+            to_dt = datetime.combine(date.today(), dt_time.max)
+
+            with pytest.raises(AquariumAccessDeniedError):
+                await get_feeding_logs(async_session, aquarium.id, other.id, from_dt, to_dt)
+        finally:
+            await cleanup_feeding_data(async_session)
 
 
-# get_today_events tests
+# ──────────────────────────────────────────────
+# create_feeding_log tests
+# ──────────────────────────────────────────────
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_get_today_events_returns_only_today(async_session: AsyncSession):
-    """Test get_today_events returns only today's events."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user)
+class TestCreateFeedingLog:
+    """Tests for create_feeding_log — with duplicate detection (409)."""
 
-        # Create schedule
-        schedule = await generate_schedule(async_session, aquarium.id, user.id)
+    async def _setup(self, session: AsyncSession):
+        user = await create_test_user(session)
+        species = await create_test_species(session)
+        aquarium = await create_test_aquarium(session, user)
+        fish = await add_fish(session, aquarium.id, user.id, FishCreate(species_id=species.id))
+        generated = await generate_schedule(session, aquarium.id, user.id)
+        return user, aquarium, fish, generated[0]
 
-        # Manually add event for yesterday
-        yesterday = datetime.now(UTC) - timedelta(days=1)
-        yesterday_event = FeedingEvent(
-            aquarium_id=aquarium.id,
-            schedule_id=schedule.id,
-            scheduled_at=yesterday,
-            status="completed",
-        )
-        async_session.add(yesterday_event)
-        await async_session.commit()
-
-        events = await get_today_events(async_session, aquarium.id, user.id)
-
-        # Should not include yesterday's event
-        for event in events:
-            assert event.scheduled_at.date() == datetime.now(UTC).date()
-    finally:
+    async def test_creates_fed_log(self, async_session: AsyncSession):
         await cleanup_feeding_data(async_session)
+        try:
+            user, aquarium, fish, schedule = await self._setup(async_session)
+            device_id = uuid.uuid4()
+            now = datetime.now()
 
+            log = await create_feeding_log(
+                async_session,
+                aquarium.id,
+                user.id,
+                FeedingLogCreate(
+                    schedule_id=schedule.id,
+                    fish_id=fish.id,
+                    scheduled_for=now,
+                    action=FeedingAction.fed,
+                    device_id=device_id,
+                ),
+            )
 
-@pytest.mark.asyncio(loop_scope="session")
-async def test_get_today_events_sorted_by_scheduled_at(async_session: AsyncSession):
-    """Test get_today_events returns events sorted by scheduled_at."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        species = await create_test_species(
-            async_session, "guppy", "Guppy", feeding_frequency=3
-        )
-        aquarium = await create_test_aquarium(async_session, user)
+            assert log.action == "fed"
+            assert log.acted_by_user_id == user.id
+            assert log.aquarium_id == aquarium.id
+            assert log.schedule_id == schedule.id
+        finally:
+            await cleanup_feeding_data(async_session)
 
-        await add_fish(
-            async_session, aquarium.id, user.id, FishCreate(species_id=species.id)
-        )
-
-        # Generate schedule with 3 times
-        await generate_schedule(async_session, aquarium.id, user.id)
-
-        events = await get_today_events(async_session, aquarium.id, user.id)
-
-        assert len(events) == 3
-        # Verify sorted order
-        for i in range(len(events) - 1):
-            assert events[i].scheduled_at <= events[i + 1].scheduled_at
-    finally:
+    async def test_creates_skipped_log(self, async_session: AsyncSession):
         await cleanup_feeding_data(async_session)
+        try:
+            user, aquarium, fish, schedule = await self._setup(async_session)
 
+            log = await create_feeding_log(
+                async_session,
+                aquarium.id,
+                user.id,
+                FeedingLogCreate(
+                    schedule_id=schedule.id,
+                    fish_id=fish.id,
+                    scheduled_for=datetime.now(),
+                    action=FeedingAction.skipped,
+                    device_id=uuid.uuid4(),
+                ),
+            )
+            assert log.action == "skipped"
+        finally:
+            await cleanup_feeding_data(async_session)
 
-@pytest.mark.asyncio(loop_scope="session")
-async def test_get_today_events_raises_403_for_non_member(async_session: AsyncSession):
-    """Test get_today_events raises 403 for user without access."""
-    await cleanup_feeding_data(async_session)
-    try:
-        owner = await create_test_user(async_session, "owner@example.com")
-        other_user = await create_test_user(async_session, "other@example.com")
-        aquarium = await create_test_aquarium(async_session, owner)
-
-        with pytest.raises(AquariumAccessDeniedError) as exc_info:
-            await get_today_events(async_session, aquarium.id, other_user.id)
-
-        assert exc_info.value.status_code == 403
-    finally:
+    async def test_duplicate_raises_409_conflict(self, async_session: AsyncSession):
+        """UNIQUE(schedule_id, scheduled_for) constraint triggers 409."""
         await cleanup_feeding_data(async_session)
+        try:
+            user, aquarium, fish, schedule = await self._setup(async_session)
+            device_id = uuid.uuid4()
+            scheduled_for = datetime(2025, 6, 15, 9, 0)
 
+            log_data = FeedingLogCreate(
+                schedule_id=schedule.id,
+                fish_id=fish.id,
+                scheduled_for=scheduled_for,
+                action=FeedingAction.fed,
+                device_id=device_id,
+            )
 
-# mark_as_fed tests
+            # First create succeeds
+            await create_feeding_log(async_session, aquarium.id, user.id, log_data)
 
+            # Second create with same schedule_id + scheduled_for raises conflict
+            with pytest.raises(FeedingLogConflictError) as exc_info:
+                await create_feeding_log(async_session, aquarium.id, user.id, log_data)
 
-@pytest.mark.asyncio(loop_scope="session")
-async def test_mark_as_fed_updates_status_and_completed_by(
-    async_session: AsyncSession,
-):
-    """Test mark_as_fed updates status and completed_by."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user)
+            assert exc_info.value.status_code == 409
+            assert exc_info.value.existing_log is not None
+        finally:
+            await cleanup_feeding_data(async_session)
 
-        # Create schedule and events
-        await generate_schedule(async_session, aquarium.id, user.id)
-        events = await get_today_events(async_session, aquarium.id, user.id)
-        event_id = events[0].id
-
-        # Mark as fed
-        updated_event = await mark_as_fed(async_session, event_id, user.id)
-
-        assert updated_event.status == "completed"
-        assert updated_event.completed_by == user.id
-        assert updated_event.completed_at is not None
-    finally:
+    async def test_log_with_notes(self, async_session: AsyncSession):
         await cleanup_feeding_data(async_session)
+        try:
+            user, aquarium, fish, schedule = await self._setup(async_session)
 
+            log = await create_feeding_log(
+                async_session,
+                aquarium.id,
+                user.id,
+                FeedingLogCreate(
+                    schedule_id=schedule.id,
+                    fish_id=fish.id,
+                    scheduled_for=datetime.now(),
+                    action=FeedingAction.fed,
+                    device_id=uuid.uuid4(),
+                    notes="Extra portion today",
+                ),
+            )
+            assert log.notes == "Extra portion today"
+        finally:
+            await cleanup_feeding_data(async_session)
 
-@pytest.mark.asyncio(loop_scope="session")
-async def test_mark_as_fed_raises_404_for_nonexistent(async_session: AsyncSession):
-    """Test mark_as_fed raises 404 for non-existent event."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        random_id = uuid.uuid4()
-
-        with pytest.raises(EventNotFoundError) as exc_info:
-            await mark_as_fed(async_session, random_id, user.id)
-
-        assert exc_info.value.status_code == 404
-    finally:
+    async def test_member_can_create_log(self, async_session: AsyncSession):
+        """Aquarium member (not just owner) should be able to create logs."""
         await cleanup_feeding_data(async_session)
+        try:
+            owner = await create_test_user(async_session, "owner@example.com")
+            member_user = await create_test_user(async_session, "member@example.com")
+            species = await create_test_species(async_session)
+            aquarium = await create_test_aquarium(async_session, owner)
 
+            # Add member
+            member = AquariumMember(
+                aquarium_id=aquarium.id,
+                user_id=member_user.id,
+                role="member",
+            )
+            async_session.add(member)
+            await async_session.commit()
 
-@pytest.mark.asyncio(loop_scope="session")
-async def test_mark_as_fed_raises_error_for_already_completed(
-    async_session: AsyncSession,
-):
-    """Test mark_as_fed raises error for already completed event."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user)
+            fish = await add_fish(async_session, aquarium.id, owner.id, FishCreate(species_id=species.id))
+            generated = await generate_schedule(async_session, aquarium.id, owner.id)
 
-        # Create schedule and events
-        await generate_schedule(async_session, aquarium.id, user.id)
-        events = await get_today_events(async_session, aquarium.id, user.id)
-        event_id = events[0].id
+            log = await create_feeding_log(
+                async_session,
+                aquarium.id,
+                member_user.id,
+                FeedingLogCreate(
+                    schedule_id=generated[0].id,
+                    fish_id=fish.id,
+                    scheduled_for=datetime.now(),
+                    action=FeedingAction.fed,
+                    device_id=uuid.uuid4(),
+                ),
+            )
+            assert log.acted_by_user_id == member_user.id
+        finally:
+            await cleanup_feeding_data(async_session)
 
-        # Mark as fed first time
-        await mark_as_fed(async_session, event_id, user.id)
-
-        # Try to mark again
-        with pytest.raises(EventAlreadyCompletedError) as exc_info:
-            await mark_as_fed(async_session, event_id, user.id)
-
-        assert exc_info.value.status_code == 400
-    finally:
+    async def test_raises_403_for_non_member(self, async_session: AsyncSession):
         await cleanup_feeding_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_mark_as_fed_raises_403_for_non_member(async_session: AsyncSession):
-    """Test mark_as_fed raises 403 for user without access."""
-    await cleanup_feeding_data(async_session)
-    try:
-        owner = await create_test_user(async_session, "owner@example.com")
-        other_user = await create_test_user(async_session, "other@example.com")
-        aquarium = await create_test_aquarium(async_session, owner)
-
-        # Create schedule and events
-        await generate_schedule(async_session, aquarium.id, owner.id)
-        events = await get_today_events(async_session, aquarium.id, owner.id)
-        event_id = events[0].id
-
-        with pytest.raises(AquariumAccessDeniedError) as exc_info:
-            await mark_as_fed(async_session, event_id, other_user.id)
-
-        assert exc_info.value.status_code == 403
-    finally:
-        await cleanup_feeding_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_mark_as_fed_allows_member_access(async_session: AsyncSession):
-    """Test mark_as_fed allows members to mark events."""
-    await cleanup_feeding_data(async_session)
-    try:
-        owner = await create_test_user(async_session, "owner@example.com")
-        member_user = await create_test_user(async_session, "member@example.com")
-        aquarium = await create_test_aquarium(async_session, owner)
-
-        # Add member
-        member = AquariumMember(
-            aquarium_id=aquarium.id,
-            user_id=member_user.id,
-            role="member",
-        )
-        async_session.add(member)
-        await async_session.commit()
-
-        # Create schedule and events
-        await generate_schedule(async_session, aquarium.id, owner.id)
-        events = await get_today_events(async_session, aquarium.id, owner.id)
-        event_id = events[0].id
-
-        # Member should be able to mark as fed
-        updated_event = await mark_as_fed(async_session, event_id, member_user.id)
-
-        assert updated_event.status == "completed"
-        assert updated_event.completed_by == member_user.id
-    finally:
-        await cleanup_feeding_data(async_session)
-
-
-# mark_as_missed tests
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_mark_as_missed_updates_status(async_session: AsyncSession):
-    """Test mark_as_missed updates status to missed."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user)
-
-        # Create schedule and events
-        await generate_schedule(async_session, aquarium.id, user.id)
-        events = await get_today_events(async_session, aquarium.id, user.id)
-        event_id = events[0].id
-
-        # Mark as missed
-        updated_event = await mark_as_missed(async_session, event_id)
-
-        assert updated_event.status == "missed"
-    finally:
-        await cleanup_feeding_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_mark_as_missed_raises_404_for_nonexistent(async_session: AsyncSession):
-    """Test mark_as_missed raises 404 for non-existent event."""
-    await cleanup_feeding_data(async_session)
-    try:
-        random_id = uuid.uuid4()
-
-        with pytest.raises(EventNotFoundError) as exc_info:
-            await mark_as_missed(async_session, random_id)
-
-        assert exc_info.value.status_code == 404
-    finally:
-        await cleanup_feeding_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_mark_as_missed_does_not_change_completed_event(
-    async_session: AsyncSession,
-):
-    """Test mark_as_missed does not change already completed event."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user)
-
-        # Create schedule and events
-        await generate_schedule(async_session, aquarium.id, user.id)
-        events = await get_today_events(async_session, aquarium.id, user.id)
-        event_id = events[0].id
-
-        # First mark as fed
-        await mark_as_fed(async_session, event_id, user.id)
-
-        # Try to mark as missed
-        event = await mark_as_missed(async_session, event_id)
-
-        # Status should still be completed
-        assert event.status == "completed"
-    finally:
-        await cleanup_feeding_data(async_session)
-
-
-# create_daily_events tests
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_create_daily_events_creates_events_for_all_schedules(
-    async_session: AsyncSession,
-):
-    """Test create_daily_events creates events for all active schedules."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user1 = await create_test_user(async_session, "user1@example.com")
-        user2 = await create_test_user(async_session, "user2@example.com")
-        aquarium1 = await create_test_aquarium(async_session, user1, "Aquarium 1")
-        aquarium2 = await create_test_aquarium(async_session, user2, "Aquarium 2")
-
-        # Create schedules for both aquariums
-        await generate_schedule(async_session, aquarium1.id, user1.id)
-        await generate_schedule(async_session, aquarium2.id, user2.id)
-
-        # Clear today's events that were auto-created
-        await async_session.execute(text("DELETE FROM feeding_events"))
-        await async_session.commit()
-
-        # Create events for today
-        tomorrow = date.today() + timedelta(days=1)
-        count = await create_daily_events(async_session, tomorrow)
-
-        # Each schedule has 2 times per day (default)
-        assert count == 4
-    finally:
-        await cleanup_feeding_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_create_daily_events_does_not_create_duplicates(
-    async_session: AsyncSession,
-):
-    """Test create_daily_events doesn't create duplicate events."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user)
-
-        # Create schedule (creates today's events in UTC)
-        await generate_schedule(async_session, aquarium.id, user.id)
-
-        today = datetime.now(UTC).date()
-
-        # Try to create events again for today
-        count = await create_daily_events(async_session, today)
-
-        # Should not create duplicates
-        assert count == 0
-
-        # Verify still only 2 events exist
-        events = await get_today_events(async_session, aquarium.id, user.id)
-        assert len(events) == 2
-    finally:
-        await cleanup_feeding_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_create_daily_events_for_future_date(async_session: AsyncSession):
-    """Test create_daily_events can create events for future dates."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user)
-
-        # Create schedule
-        schedule = await generate_schedule(async_session, aquarium.id, user.id)
-
-        # Create events for tomorrow
-        tomorrow = date.today() + timedelta(days=1)
-        count = await create_daily_events(async_session, tomorrow)
-
-        assert count == 2  # Default schedule has 2 times per day
-
-        # Verify events exist for tomorrow
-        tomorrow_start = datetime.combine(tomorrow, time.min, tzinfo=UTC)
-        tomorrow_end = datetime.combine(tomorrow, time.max, tzinfo=UTC)
-
-        stmt = (
-            select(FeedingEvent)
-            .where(FeedingEvent.schedule_id == schedule.id)
-            .where(FeedingEvent.scheduled_at >= tomorrow_start)
-            .where(FeedingEvent.scheduled_at <= tomorrow_end)
-        )
-        result = await async_session.execute(stmt)
-        events = list(result.scalars().all())
-
-        assert len(events) == 2
-    finally:
-        await cleanup_feeding_data(async_session)
-
-
-# Edge case tests
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_regenerate_events_preserves_completed_events(
-    async_session: AsyncSession,
-):
-    """Test that regenerating events preserves completed/missed events."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        aquarium = await create_test_aquarium(async_session, user)
-
-        # Create schedule
-        await generate_schedule(async_session, aquarium.id, user.id)
-        events = await get_today_events(async_session, aquarium.id, user.id)
-
-        # Mark first event as fed
-        await mark_as_fed(async_session, events[0].id, user.id)
-        completed_event_id = events[0].id
-
-        # Update schedule (triggers regeneration)
-        update_data = ScheduleUpdate(food_type="pellets")
-        await update_schedule(async_session, aquarium.id, user.id, update_data)
-
-        # Completed event should still exist
-        stmt = select(FeedingEvent).where(FeedingEvent.id == completed_event_id)
-        result = await async_session.execute(stmt)
-        event = result.scalar_one_or_none()
-
-        assert event is not None
-        assert event.status == "completed"
-    finally:
-        await cleanup_feeding_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_generate_schedule_clamps_frequency_to_valid_range(
-    async_session: AsyncSession,
-):
-    """Test generate_schedule clamps frequency to 1-3 range."""
-    await cleanup_feeding_data(async_session)
-    try:
-        user = await create_test_user(async_session)
-        # Create species with frequency > 3
-        species = await create_test_species(
-            async_session, "extreme", "Extreme Fish", feeding_frequency=10
-        )
-        aquarium = await create_test_aquarium(async_session, user)
-
-        await add_fish(
-            async_session, aquarium.id, user.id, FishCreate(species_id=species.id)
-        )
-
-        schedule = await generate_schedule(async_session, aquarium.id, user.id)
-
-        # Should be clamped to 3
-        assert schedule.times_per_day == 3
-        assert schedule.scheduled_times == ["08:00", "14:00", "20:00"]
-    finally:
-        await cleanup_feeding_data(async_session)
+        try:
+            owner = await create_test_user(async_session, "owner@example.com")
+            other = await create_test_user(async_session, "other@example.com")
+            species = await create_test_species(async_session)
+            aquarium = await create_test_aquarium(async_session, owner)
+            fish = await add_fish(async_session, aquarium.id, owner.id, FishCreate(species_id=species.id))
+            generated = await generate_schedule(async_session, aquarium.id, owner.id)
+
+            with pytest.raises(AquariumAccessDeniedError):
+                await create_feeding_log(
+                    async_session,
+                    aquarium.id,
+                    other.id,
+                    FeedingLogCreate(
+                        schedule_id=generated[0].id,
+                        fish_id=fish.id,
+                        scheduled_for=datetime.now(),
+                        action=FeedingAction.fed,
+                        device_id=uuid.uuid4(),
+                    ),
+                )
+        finally:
+            await cleanup_feeding_data(async_session)

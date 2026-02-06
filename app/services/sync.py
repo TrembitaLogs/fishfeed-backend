@@ -1,17 +1,18 @@
 """Sync service with business logic for offline-first data synchronization."""
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.aquarium import Aquarium, AquariumMember
-from app.models.feeding import FeedingEvent, FeedingSchedule
+from app.models.feeding import FeedingLog, FeedingSchedule
 from app.models.fish import Fish
 from app.models.gamification import Achievement, Streak, UserProgress
+from app.models.user import User
 from app.schemas.sync import (
     ChangeItem,
     ConflictItem,
@@ -24,9 +25,6 @@ from app.schemas.sync import (
 from app.services import feeding as feeding_service
 
 logger = logging.getLogger(__name__)
-
-# Time window for concurrent feeding detection (5 minutes)
-CONCURRENT_FEEDING_WINDOW = timedelta(minutes=5)
 
 
 class SyncError(Exception):
@@ -108,7 +106,16 @@ async def _validate_entity_ownership(
     if not changes:
         return
 
+    # Collect aquarium IDs being created in this batch so that fish/schedule
+    # creates referencing a new aquarium from the same batch pass validation.
+    pending_aquarium_ids = {
+        change.entity_id
+        for change in changes
+        if change.entity_type == "aquarium" and change.operation == "create"
+    }
+
     user_aquarium_ids = await _get_user_aquarium_ids(db, user_id)
+    user_aquarium_ids |= pending_aquarium_ids
 
     for change in changes:
         if change.entity_type == "aquarium":
@@ -143,7 +150,7 @@ async def _validate_entity_ownership(
                 if aquarium_id not in user_aquarium_ids:
                     raise SyncAccessDeniedError("fish", change.entity_id)
 
-        elif change.entity_type == "event":
+        elif change.entity_type == "feeding_log":
             if change.operation == "create":
                 # For create, check aquarium_id in data
                 aquarium_id = change.data.get("aquarium_id")
@@ -157,14 +164,14 @@ async def _validate_entity_ownership(
                     raise SyncAccessDeniedError("aquarium", aquarium_uuid)
             else:
                 # For update/delete, check existing event ownership
-                stmt = select(FeedingEvent.aquarium_id).where(FeedingEvent.id == change.entity_id)
+                stmt = select(FeedingLog.aquarium_id).where(FeedingLog.id == change.entity_id)
                 result = await db.execute(stmt)
                 aquarium_id = result.scalar_one_or_none()
                 if aquarium_id is None:
                     # Entity doesn't exist - will be handled by apply_changes
                     continue
                 if aquarium_id not in user_aquarium_ids:
-                    raise SyncAccessDeniedError("event", change.entity_id)
+                    raise SyncAccessDeniedError("feeding_log", change.entity_id)
 
         elif change.entity_type == "schedule":
             if change.operation == "create":
@@ -240,7 +247,7 @@ def resolve_conflict(
 
 
 def _entity_to_dict(
-    entity: Aquarium | Fish | FeedingEvent | FeedingSchedule | Streak | Achievement | UserProgress,
+    entity: Aquarium | Fish | FeedingLog | FeedingSchedule | Streak | Achievement | UserProgress,
 ) -> dict[str, Any]:
     """Convert entity to dictionary for conflict reporting.
 
@@ -273,31 +280,32 @@ def _entity_to_dict(
             "updated_at": entity.updated_at.isoformat() if entity.updated_at else None,
             "deleted_at": entity.deleted_at.isoformat() if entity.deleted_at else None,
         }
-    elif isinstance(entity, FeedingEvent):
+    elif isinstance(entity, FeedingLog):
         result = {
             "id": str(entity.id),
+            "schedule_id": str(entity.schedule_id),
+            "fish_id": str(entity.fish_id),
             "aquarium_id": str(entity.aquarium_id),
-            "schedule_id": str(entity.schedule_id) if entity.schedule_id else None,
-            "fish_id": str(entity.fish_id) if entity.fish_id else None,
-            "species_id": entity.species_id,
-            "scheduled_at": (entity.scheduled_at.isoformat() if entity.scheduled_at else None),
-            "status": entity.status,
-            "completed_at": (entity.completed_at.isoformat() if entity.completed_at else None),
-            "completed_by": str(entity.completed_by) if entity.completed_by else None,
-            "concurrent_with": (str(entity.concurrent_with) if entity.concurrent_with else None),
-            "client_created_at": (entity.client_created_at.isoformat() if entity.client_created_at else None),
+            "scheduled_for": entity.scheduled_for.isoformat() if entity.scheduled_for else None,
+            "action": entity.action,
+            "acted_at": entity.acted_at.isoformat() if entity.acted_at else None,
+            "acted_by_user_id": str(entity.acted_by_user_id),
+            "device_id": str(entity.device_id),
+            "notes": entity.notes,
             "created_at": entity.created_at.isoformat() if entity.created_at else None,
-            "updated_at": entity.updated_at.isoformat() if entity.updated_at else None,
-            "deleted_at": entity.deleted_at.isoformat() if entity.deleted_at else None,
         }
     elif isinstance(entity, FeedingSchedule):
         result = {
             "id": str(entity.id),
             "aquarium_id": str(entity.aquarium_id),
-            "times_per_day": entity.times_per_day,
-            "scheduled_times": entity.scheduled_times,
+            "fish_id": str(entity.fish_id),
+            "time": entity.time.strftime("%H:%M") if entity.time else None,
+            "interval_days": entity.interval_days,
+            "anchor_date": entity.anchor_date.isoformat() if entity.anchor_date else None,
             "food_type": entity.food_type,
             "portion_hint": entity.portion_hint,
+            "active": entity.active,
+            "created_by_user_id": str(entity.created_by_user_id) if entity.created_by_user_id else None,
             "created_at": entity.created_at.isoformat() if entity.created_at else None,
             "updated_at": entity.updated_at.isoformat() if entity.updated_at else None,
         }
@@ -335,59 +343,6 @@ def _entity_to_dict(
     return result
 
 
-async def _detect_concurrent_feeding(
-    db: AsyncSession,
-    aquarium_id: UUID,
-    schedule_id: UUID | None,
-    completed_at: datetime,
-    completed_by: UUID,
-    exclude_event_id: UUID | None = None,
-) -> FeedingEvent | None:
-    """Detect if there's a concurrent feeding event within the time window.
-
-    Concurrent feeding occurs when two different users complete feeding events
-    for the same aquarium and schedule within a short time window.
-
-    Args:
-        db: Database session.
-        aquarium_id: Aquarium ID to check.
-        schedule_id: Schedule ID to match (if None, matches events without schedule).
-        completed_at: Completion timestamp of the new event.
-        completed_by: User ID who completed the new event.
-        exclude_event_id: Event ID to exclude from search (the event being created/updated).
-
-    Returns:
-        Existing concurrent FeedingEvent if found, None otherwise.
-    """
-    if schedule_id is None:
-        # For ad-hoc feedings (no schedule), skip concurrent detection
-        return None
-
-    # Calculate time window boundaries
-    window_start = completed_at - CONCURRENT_FEEDING_WINDOW
-    window_end = completed_at + CONCURRENT_FEEDING_WINDOW
-
-    # Build query for concurrent events
-    stmt = select(FeedingEvent).where(
-        and_(
-            FeedingEvent.aquarium_id == aquarium_id,
-            FeedingEvent.schedule_id == schedule_id,
-            FeedingEvent.status == "completed",
-            FeedingEvent.completed_at.is_not(None),
-            FeedingEvent.completed_at >= window_start,
-            FeedingEvent.completed_at <= window_end,
-            FeedingEvent.completed_by != completed_by,  # Different user
-        )
-    )
-
-    # Exclude the current event if updating
-    if exclude_event_id:
-        stmt = stmt.where(FeedingEvent.id != exclude_event_id)
-
-    result = await db.execute(stmt)
-    return result.scalar_one_or_none()
-
-
 def _group_changes_by_entity_type(
     changes: list[ChangeItem],
 ) -> dict[EntityType, list[ChangeItem]]:
@@ -402,7 +357,7 @@ def _group_changes_by_entity_type(
     grouped: dict[EntityType, list[ChangeItem]] = {
         "aquarium": [],
         "fish": [],
-        "event": [],
+        "feeding_log": [],
         "schedule": [],
         "streak": [],
         "achievement": [],
@@ -639,34 +594,42 @@ async def _apply_fish_change(
         # Client wins - soft delete
         now = datetime.now(UTC)
         existing.deleted_at = now
-        logger.debug(f"Soft deleted fish {change.entity_id}")
 
-        # Cascade soft delete: also soft delete feeding events for this fish
-        cascade_stmt = (
-            select(FeedingEvent)
-            .where(FeedingEvent.fish_id == change.entity_id)
-            .where(FeedingEvent.deleted_at.is_(None))
+        # Deactivate all schedules for this fish
+        deactivate_stmt = (
+            update(FeedingSchedule)
+            .where(FeedingSchedule.fish_id == change.entity_id)
+            .values(active=False)
         )
-        events_result = await db.execute(cascade_stmt)
-        events_to_delete = events_result.scalars().all()
-        for event in events_to_delete:
-            event.deleted_at = now
-        if events_to_delete:
-            logger.debug(f"Cascade soft deleted {len(events_to_delete)} feeding events for fish {change.entity_id}")
+        await db.execute(deactivate_stmt)
+        logger.debug(f"Soft deleted fish {change.entity_id} and deactivated its schedules")
 
     return None
 
 
-async def _apply_event_change(
+async def _get_user_nickname(db: AsyncSession, user_id: UUID) -> str | None:
+    """Get user nickname by ID for conflict reporting."""
+    stmt = select(User.nickname, User.email).where(User.id == user_id)
+    result = await db.execute(stmt)
+    row = result.one_or_none()
+    if row is None:
+        return None
+    return str(row.nickname or row.email)
+
+
+async def _apply_feeding_log_change(
     db: AsyncSession,
     user_id: UUID,
     change: ChangeItem,
 ) -> ConflictItem | None:
-    """Apply a single feeding event change.
+    """Apply a single feeding log change using first-write-wins.
 
-    Includes special handling for concurrent feeding detection: when two users
-    complete the same scheduled feeding within a 5-minute window, returns a
-    concurrent_feeding conflict instead of applying last-write-wins.
+    FeedingLog is an immutable fact record. Duplicates are detected via
+    UNIQUE(schedule_id, scheduled_for) constraint. The first log to reach
+    the server wins; subsequent attempts return a conflict.
+
+    Only CREATE is supported. UPDATE and DELETE are ignored since logs
+    are immutable records of feeding actions.
 
     Args:
         db: Database session.
@@ -674,234 +637,164 @@ async def _apply_event_change(
         change: Change item to apply.
 
     Returns:
-        ConflictItem if conflict detected, None otherwise.
+        ConflictItem if duplicate detected, None otherwise.
     """
-    stmt = select(FeedingEvent).where(FeedingEvent.id == change.entity_id)
-    result = await db.execute(stmt)
-    existing = result.scalar_one_or_none()
-
     if change.operation == "create":
+        # Check if log with same ID already exists
+        stmt = select(FeedingLog).where(FeedingLog.id == change.entity_id)
+        result = await db.execute(stmt)
+        existing = result.scalar_one_or_none()
+
         if existing is not None:
-            # Entity exists, treat as update with conflict check
-            winner = resolve_conflict(existing.updated_at, change.client_updated_at)
-            if winner == "server":
-                logger.debug(f"CREATE conflict for event {change.entity_id}: server wins")
+            # First-write-wins: existing log stays, return conflict
+            logger.debug(f"CREATE conflict for feeding_log {change.entity_id}: already exists")
+            server_data = _entity_to_dict(existing)
+            server_data["acted_by_user_name"] = await _get_user_nickname(db, existing.acted_by_user_id)
+            return ConflictItem(
+                entity_type="feeding_log",
+                entity_id=change.entity_id,
+                client_data=change.data,
+                server_data=server_data,
+                client_updated_at=change.client_updated_at,
+                server_updated_at=existing.created_at,
+                resolution="server_wins",
+            )
+
+        # Parse required fields
+        aquarium_id = change.data.get("aquarium_id")
+        if aquarium_id:
+            aquarium_id = UUID(str(aquarium_id))
+
+        schedule_id = change.data.get("schedule_id")
+        if schedule_id:
+            schedule_id = UUID(str(schedule_id))
+
+        fish_id = change.data.get("fish_id")
+        if fish_id:
+            fish_id = UUID(str(fish_id))
+
+        scheduled_for_str = change.data.get("scheduled_for")
+        if isinstance(scheduled_for_str, str):
+            scheduled_for = datetime.fromisoformat(scheduled_for_str.replace("Z", "+00:00")).replace(tzinfo=None)
+        else:
+            scheduled_for = scheduled_for_str or datetime.now(UTC).replace(tzinfo=None)
+        if hasattr(scheduled_for, "tzinfo") and scheduled_for.tzinfo is not None:
+            scheduled_for = scheduled_for.replace(tzinfo=None)
+
+        acted_at_str = change.data.get("acted_at")
+        if acted_at_str and isinstance(acted_at_str, str):
+            acted_at = datetime.fromisoformat(acted_at_str.replace("Z", "+00:00"))
+        elif acted_at_str:
+            acted_at = acted_at_str
+        else:
+            acted_at = datetime.now(UTC)
+
+        acted_by_user_id = change.data.get("acted_by_user_id")
+        if acted_by_user_id:
+            acted_by_user_id = UUID(str(acted_by_user_id))
+        else:
+            acted_by_user_id = user_id
+
+        device_id = change.data.get("device_id")
+        if device_id:
+            device_id = UUID(str(device_id))
+        else:
+            device_id = uuid4()
+
+        action = change.data.get("action", "fed")
+        notes = change.data.get("notes")
+
+        # Check for UNIQUE(schedule_id, scheduled_for) conflict before insert
+        if schedule_id and scheduled_for:
+            dup_stmt = select(FeedingLog).where(
+                and_(
+                    FeedingLog.schedule_id == schedule_id,
+                    FeedingLog.scheduled_for == scheduled_for,
+                )
+            )
+            dup_result = await db.execute(dup_stmt)
+            existing_dup = dup_result.scalar_one_or_none()
+
+            if existing_dup is not None:
+                # First-write-wins: existing log stays
+                logger.info(
+                    f"Duplicate feeding_log for schedule {schedule_id} "
+                    f"at {scheduled_for}: existing {existing_dup.id} wins"
+                )
+                dup_server_data = _entity_to_dict(existing_dup)
+                dup_server_data["acted_by_user_name"] = await _get_user_nickname(db, existing_dup.acted_by_user_id)
                 return ConflictItem(
-                    entity_type="event",
+                    entity_type="feeding_log",
                     entity_id=change.entity_id,
                     client_data=change.data,
-                    server_data=_entity_to_dict(existing),
+                    server_data=dup_server_data,
                     client_updated_at=change.client_updated_at,
-                    server_updated_at=existing.updated_at,
+                    server_updated_at=existing_dup.created_at,
                     resolution="server_wins",
                 )
-            # Client wins - update existing
-            if "status" in change.data:
-                existing.status = change.data["status"]
-            if "completed_at" in change.data:
-                completed_at = change.data["completed_at"]
-                if isinstance(completed_at, str):
-                    existing.completed_at = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
-                else:
-                    existing.completed_at = completed_at
-            if "completed_by" in change.data:
-                existing.completed_by = UUID(str(change.data["completed_by"])) if change.data["completed_by"] else None
-            logger.debug(f"CREATE->UPDATE event {change.entity_id}: client wins")
-        else:
-            # Create new event
-            aquarium_id = change.data.get("aquarium_id")
-            if aquarium_id:
-                aquarium_id = UUID(str(aquarium_id))
 
-            scheduled_at_str = change.data.get("scheduled_at")
-            if isinstance(scheduled_at_str, str):
-                scheduled_at = datetime.fromisoformat(scheduled_at_str.replace("Z", "+00:00"))
-            else:
-                scheduled_at = scheduled_at_str or datetime.now(UTC)
+        log = FeedingLog(
+            id=change.entity_id,
+            schedule_id=schedule_id,
+            fish_id=fish_id,
+            aquarium_id=aquarium_id,
+            scheduled_for=scheduled_for,
+            action=action,
+            acted_at=acted_at,
+            acted_by_user_id=acted_by_user_id,
+            device_id=device_id,
+            notes=notes,
+        )
+        db.add(log)
+        logger.debug(f"Created feeding_log {change.entity_id}")
 
-            # Parse schedule_id for concurrent feeding detection
-            schedule_id: UUID | None = None
-            if "schedule_id" in change.data and change.data["schedule_id"]:
-                schedule_id = UUID(str(change.data["schedule_id"]))
-
-            # Parse fish_id (UUID) and species_id (string)
-            fish_id: UUID | None = None
-            species_id: str | None = None
-            if "fish_id" in change.data and change.data["fish_id"]:
-                fish_id_value = str(change.data["fish_id"])
-                try:
-                    fish_id = UUID(fish_id_value)
-                except (ValueError, TypeError):
-                    # fish_id is not a valid UUID - treat as species_id
-                    species_id = fish_id_value
-            # Also check for explicit species_id field
-            if "species_id" in change.data and change.data["species_id"]:
-                species_id = str(change.data["species_id"])
-
-            # Parse completed_at and completed_by for concurrent feeding detection
-            event_completed_at: datetime | None = None
-            event_completed_by: UUID | None = None
-            status = change.data.get("status", "pending")
-
-            if "completed_at" in change.data and change.data["completed_at"]:
-                ca = change.data["completed_at"]
-                if isinstance(ca, str):
-                    event_completed_at = datetime.fromisoformat(ca.replace("Z", "+00:00"))
-                else:
-                    event_completed_at = ca
-
-            if "completed_by" in change.data and change.data["completed_by"]:
-                event_completed_by = UUID(str(change.data["completed_by"]))
-
-            # Check for concurrent feeding before creating
-            if (
-                status == "completed"
-                and aquarium_id is not None
-                and schedule_id is not None
-                and event_completed_at is not None
-                and event_completed_by is not None
-            ):
-                concurrent_event = await _detect_concurrent_feeding(
-                    db=db,
-                    aquarium_id=aquarium_id,
-                    schedule_id=schedule_id,
-                    completed_at=event_completed_at,
-                    completed_by=event_completed_by,
-                    exclude_event_id=None,
-                )
-                if concurrent_event is not None:
-                    logger.info(
-                        f"Concurrent feeding detected for event {change.entity_id}: "
-                        f"conflicts with {concurrent_event.id}"
-                    )
-                    return ConflictItem(
-                        entity_type="event",
-                        entity_id=change.entity_id,
-                        client_data=change.data,
-                        server_data=_entity_to_dict(concurrent_event),
-                        client_updated_at=change.client_updated_at,
-                        server_updated_at=concurrent_event.updated_at,
-                        resolution="concurrent_feeding",
-                    )
-
-            event = FeedingEvent(
-                id=change.entity_id,
-                aquarium_id=aquarium_id,
-                scheduled_at=scheduled_at,
-                status=status,
-                client_created_at=change.client_updated_at,
-                schedule_id=schedule_id,
-                fish_id=fish_id,
-                species_id=species_id,
-                completed_at=event_completed_at,
-                completed_by=event_completed_by,
-            )
-
-            db.add(event)
-            logger.debug(f"Created event {change.entity_id}")
-
-    elif change.operation == "update":
-        if existing is None:
-            logger.debug(f"UPDATE skipped for non-existent event {change.entity_id}")
-            return None
-
-        winner = resolve_conflict(existing.updated_at, change.client_updated_at)
-        if winner == "server":
-            logger.debug(f"UPDATE conflict for event {change.entity_id}: server wins")
-            return ConflictItem(
-                entity_type="event",
-                entity_id=change.entity_id,
-                client_data=change.data,
-                server_data=_entity_to_dict(existing),
-                client_updated_at=change.client_updated_at,
-                server_updated_at=existing.updated_at,
-                resolution="server_wins",
-            )
-
-        # Parse update values (use existing values as fallback)
-        new_status = change.data.get("status", existing.status)
-
-        new_completed_at = existing.completed_at
-        if "completed_at" in change.data and change.data["completed_at"]:
-            ca = change.data["completed_at"]
-            if isinstance(ca, str):
-                new_completed_at = datetime.fromisoformat(ca.replace("Z", "+00:00"))
-            else:
-                new_completed_at = ca
-
-        new_completed_by = existing.completed_by
-        if "completed_by" in change.data:
-            new_completed_by = UUID(str(change.data["completed_by"])) if change.data["completed_by"] else None
-
-        # Check for concurrent feeding if updating to completed status
-        if (
-            new_status == "completed"
-            and existing.schedule_id is not None
-            and new_completed_at is not None
-            and new_completed_by is not None
-        ):
-            concurrent_event = await _detect_concurrent_feeding(
-                db=db,
-                aquarium_id=existing.aquarium_id,
-                schedule_id=existing.schedule_id,
-                completed_at=new_completed_at,
-                completed_by=new_completed_by,
-                exclude_event_id=existing.id,
-            )
-            if concurrent_event is not None:
-                logger.info(
-                    f"Concurrent feeding detected for event {change.entity_id}: conflicts with {concurrent_event.id}"
-                )
-                return ConflictItem(
-                    entity_type="event",
-                    entity_id=change.entity_id,
-                    client_data=change.data,
-                    server_data=_entity_to_dict(concurrent_event),
-                    client_updated_at=change.client_updated_at,
-                    server_updated_at=concurrent_event.updated_at,
-                    resolution="concurrent_feeding",
-                )
-
-        # Client wins - apply update
-        existing.status = new_status
-        existing.completed_at = new_completed_at
-        existing.completed_by = new_completed_by
-
-        if "scheduled_at" in change.data:
-            scheduled_at = change.data["scheduled_at"]
-            if isinstance(scheduled_at, str):
-                existing.scheduled_at = datetime.fromisoformat(scheduled_at.replace("Z", "+00:00"))
-            else:
-                existing.scheduled_at = scheduled_at
-        logger.debug(f"Updated event {change.entity_id}")
-
-    elif change.operation == "delete":
-        if existing is None:
-            logger.debug(f"DELETE skipped for non-existent event {change.entity_id}")
-            return None
-
-        if existing.deleted_at is not None:
-            logger.debug(f"DELETE skipped for already deleted event {change.entity_id}")
-            return None
-
-        winner = resolve_conflict(existing.updated_at, change.client_updated_at)
-        if winner == "server":
-            logger.debug(f"DELETE conflict for event {change.entity_id}: server wins")
-            return ConflictItem(
-                entity_type="event",
-                entity_id=change.entity_id,
-                client_data=change.data,
-                server_data=_entity_to_dict(existing),
-                client_updated_at=change.client_updated_at,
-                server_updated_at=existing.updated_at,
-                resolution="server_wins",
-            )
-
-        # Client wins - soft delete
-        existing.deleted_at = datetime.now(UTC)
-        logger.debug(f"Soft deleted event {change.entity_id}")
+    elif change.operation in ("update", "delete"):
+        # FeedingLog records are immutable - ignore update/delete
+        logger.debug(f"{change.operation.upper()} ignored for immutable feeding_log {change.entity_id}")
 
     return None
+
+
+def _apply_schedule_fields(
+    schedule: FeedingSchedule,
+    data: dict[str, Any],
+    user_id: UUID,
+) -> None:
+    """Apply updatable fields from change data to a FeedingSchedule.
+
+    Args:
+        schedule: Existing schedule entity to update.
+        data: Dictionary of field values from client.
+        user_id: User ID performing the change.
+    """
+    from datetime import date as dt_date
+    from datetime import time as dt_time
+
+    if "fish_id" in data and data["fish_id"]:
+        schedule.fish_id = UUID(str(data["fish_id"]))
+    if "time" in data:
+        time_str = data["time"]
+        if isinstance(time_str, str):
+            parts = time_str.split(":")
+            schedule.time = dt_time(int(parts[0]), int(parts[1]))
+        else:
+            schedule.time = time_str
+    if "interval_days" in data:
+        schedule.interval_days = data["interval_days"]
+    if "anchor_date" in data:
+        ad = data["anchor_date"]
+        if isinstance(ad, str):
+            schedule.anchor_date = dt_date.fromisoformat(ad[:10])
+        else:
+            schedule.anchor_date = ad
+    if "food_type" in data:
+        schedule.food_type = data["food_type"]
+    if "portion_hint" in data:
+        schedule.portion_hint = data["portion_hint"]
+    if "active" in data:
+        schedule.active = data["active"]
+    if "created_by_user_id" in data and data["created_by_user_id"]:
+        schedule.created_by_user_id = UUID(str(data["created_by_user_id"]))
 
 
 async def _apply_schedule_change(
@@ -939,14 +832,7 @@ async def _apply_schedule_change(
                     resolution="server_wins",
                 )
             # Client wins - update existing
-            if "times_per_day" in change.data:
-                existing.times_per_day = change.data["times_per_day"]
-            if "scheduled_times" in change.data:
-                existing.scheduled_times = change.data["scheduled_times"]
-            if "food_type" in change.data:
-                existing.food_type = change.data["food_type"]
-            if "portion_hint" in change.data:
-                existing.portion_hint = change.data["portion_hint"]
+            _apply_schedule_fields(existing, change.data, user_id)
             logger.debug(f"CREATE->UPDATE schedule {change.entity_id}: client wins")
         else:
             # Create new schedule
@@ -954,13 +840,43 @@ async def _apply_schedule_change(
             if aquarium_id:
                 aquarium_id = UUID(str(aquarium_id))
 
+            fish_id = change.data.get("fish_id")
+            if fish_id:
+                fish_id = UUID(str(fish_id))
+
+            from datetime import date as dt_date
+            from datetime import time as dt_time
+
+            time_str = change.data.get("time", "09:00")
+            if isinstance(time_str, str):
+                parts = time_str.split(":")
+                schedule_time = dt_time(int(parts[0]), int(parts[1]))
+            else:
+                schedule_time = time_str
+
+            anchor_date_val = change.data.get("anchor_date")
+            if isinstance(anchor_date_val, str):
+                anchor_date = dt_date.fromisoformat(anchor_date_val[:10])
+            elif anchor_date_val:
+                anchor_date = anchor_date_val
+            else:
+                anchor_date = dt_date.today()
+
             schedule = FeedingSchedule(
                 id=change.entity_id,
                 aquarium_id=aquarium_id,
-                times_per_day=change.data.get("times_per_day", 2),
-                scheduled_times=change.data.get("scheduled_times", []),
+                fish_id=fish_id,
+                time=schedule_time,
+                interval_days=change.data.get("interval_days", 1),
+                anchor_date=anchor_date,
                 food_type=change.data.get("food_type", "flakes"),
                 portion_hint=change.data.get("portion_hint"),
+                active=change.data.get("active", True),
+                created_by_user_id=(
+                    UUID(str(change.data["created_by_user_id"]))
+                    if change.data.get("created_by_user_id")
+                    else user_id
+                ),
             )
             db.add(schedule)
             logger.debug(f"Created schedule {change.entity_id}")
@@ -984,14 +900,7 @@ async def _apply_schedule_change(
             )
 
         # Client wins - apply update
-        if "times_per_day" in change.data:
-            existing.times_per_day = change.data["times_per_day"]
-        if "scheduled_times" in change.data:
-            existing.scheduled_times = change.data["scheduled_times"]
-        if "food_type" in change.data:
-            existing.food_type = change.data["food_type"]
-        if "portion_hint" in change.data:
-            existing.portion_hint = change.data["portion_hint"]
+        _apply_schedule_fields(existing, change.data, user_id)
         logger.debug(f"Updated schedule {change.entity_id}")
 
     elif change.operation == "delete":
@@ -1276,7 +1185,7 @@ async def apply_changes(
         f"Applying changes for user {user_id}: "
         f"{len(grouped['aquarium'])} aquariums, "
         f"{len(grouped['fish'])} fish, "
-        f"{len(grouped['event'])} events, "
+        f"{len(grouped['feeding_log'])} feeding_logs, "
         f"{len(grouped['schedule'])} schedules, "
         f"{len(grouped['streak'])} streaks, "
         f"{len(grouped['achievement'])} achievements, "
@@ -1309,9 +1218,9 @@ async def apply_changes(
                 if aquarium_id:
                     affected_aquarium_ids.add(aquarium_id)
 
-    # Process event changes
-    for change in grouped["event"]:
-        conflict = await _apply_event_change(db, user_id, change)
+    # Process feeding log changes
+    for change in grouped["feeding_log"]:
+        conflict = await _apply_feeding_log_change(db, user_id, change)
         if conflict:
             conflicts.append(conflict)
 
@@ -1342,16 +1251,9 @@ async def apply_changes(
     # Flush to ensure all changes are applied
     await db.flush()
 
-    # Auto-generate feeding schedules for aquariums with fish changes
-    if affected_aquarium_ids:
-        logger.debug(f"Generating feeding schedules for {len(affected_aquarium_ids)} aquariums")
-        for aquarium_id in affected_aquarium_ids:
-            try:
-                await feeding_service.generate_schedule(db, aquarium_id, user_id)
-                logger.debug(f"Generated schedule for aquarium {aquarium_id}")
-            except Exception as e:
-                # Log but don't fail sync if schedule generation fails
-                logger.warning(f"Failed to generate schedule for aquarium {aquarium_id}: {e}")
+    # NOTE: Removed auto-generation of feeding schedules here.
+    # Schedule creation is client-initiated (offline-first architecture).
+    # _ensure_schedules_for_user() provides fallback for new fish without schedules.
 
     logger.debug(f"Applied changes with {len(conflicts)} conflicts")
     return conflicts
@@ -1361,10 +1263,11 @@ async def _ensure_schedules_for_user(
     db: AsyncSession,
     user_id: UUID,
 ) -> None:
-    """Ensure feeding schedules exist for all user's aquariums with fish.
+    """Ensure feeding schedules exist for all user's fish.
 
-    Checks each aquarium owned by user. If aquarium has fish but no schedule,
-    generates a schedule based on fish species feeding requirements.
+    Checks each fish owned by user. If a fish has no schedule, generates
+    schedules based on species feeding requirements. Works per-fish, not
+    per-aquarium, so new fish added to existing aquariums get their own schedules.
 
     Args:
         db: Database session.
@@ -1375,36 +1278,48 @@ async def _ensure_schedules_for_user(
     if not user_aquarium_ids:
         return
 
-    # Get aquariums that have fish but no schedule
-    aquariums_with_fish_stmt = (
-        select(Fish.aquarium_id)
+    # Get all active fish in user's aquariums
+    all_fish_stmt = (
+        select(Fish.id, Fish.aquarium_id)
         .where(Fish.aquarium_id.in_(user_aquarium_ids))
         .where(Fish.deleted_at.is_(None))
-        .distinct()
     )
-    result = await db.execute(aquariums_with_fish_stmt)
-    aquariums_with_fish = set(result.scalars().all())
+    result = await db.execute(all_fish_stmt)
+    all_fish = {row.id: row.aquarium_id for row in result}
 
-    aquariums_with_schedule_stmt = select(FeedingSchedule.aquarium_id).where(
-        FeedingSchedule.aquarium_id.in_(user_aquarium_ids)
-    )
-    result = await db.execute(aquariums_with_schedule_stmt)
-    aquariums_with_schedule = set(result.scalars().all())
-
-    # Find aquariums that need schedules
-    aquariums_needing_schedule = aquariums_with_fish - aquariums_with_schedule
-
-    if not aquariums_needing_schedule:
+    if not all_fish:
         return
 
-    logger.info(f"Creating schedules for {len(aquariums_needing_schedule)} aquariums that have fish but no schedule")
+    # Get fish that already have schedules
+    fish_with_schedule_stmt = (
+        select(FeedingSchedule.fish_id)
+        .where(FeedingSchedule.fish_id.in_(all_fish.keys()))
+        .distinct()
+    )
+    result = await db.execute(fish_with_schedule_stmt)
+    fish_with_schedule = set(result.scalars().all())
 
+    # Find fish that need schedules
+    fish_needing_schedule = set(all_fish.keys()) - fish_with_schedule
+
+    if not fish_needing_schedule:
+        return
+
+    # Group by aquarium for efficient schedule generation
+    aquariums_needing_schedule = {all_fish[fish_id] for fish_id in fish_needing_schedule}
+
+    logger.info(
+        f"Creating schedules for {len(fish_needing_schedule)} fish "
+        f"in {len(aquariums_needing_schedule)} aquariums"
+    )
+
+    # generate_schedule() is idempotent — it skips fish that already have schedules
     for aquarium_id in aquariums_needing_schedule:
         try:
             await feeding_service.generate_schedule(db, aquarium_id, user_id)
-            logger.debug(f"Created schedule for aquarium {aquarium_id}")
+            logger.debug(f"Generated schedules for aquarium {aquarium_id}")
         except Exception as e:
-            logger.warning(f"Failed to create schedule for aquarium {aquarium_id}: {e}")
+            logger.warning(f"Failed to generate schedules for aquarium {aquarium_id}: {e}")
 
 
 async def get_server_state(
@@ -1473,7 +1388,7 @@ async def get_server_state(
         return ServerState(
             aquariums=[],
             fish=[],
-            events=[],
+            feeding_logs=[],
             schedules=[],
             streaks=streaks_data,
             achievements=achievements_data,
@@ -1536,43 +1451,43 @@ async def get_server_state(
         for fish in result.scalars().all():
             fish_data.append(_entity_to_dict(fish))
 
-    # Query feeding events
-    event_stmt = select(FeedingEvent).where(FeedingEvent.aquarium_id.in_(user_aquarium_ids))
+    # Query feeding logs (FeedingLog has no soft-delete; use created_at for delta)
+    log_stmt = select(FeedingLog).where(FeedingLog.aquarium_id.in_(user_aquarium_ids))
 
     if since is not None:
-        # Delta sync: get updated and deleted events
-        # Active events updated after 'since' (use >= for timing edge cases)
-        active_event_stmt = event_stmt.where(
-            FeedingEvent.deleted_at.is_(None),
-            FeedingEvent.updated_at >= since,
-        )
-        result = await db.execute(active_event_stmt)
-        for event in result.scalars().all():
-            events_data.append(_entity_to_dict(event))
+        # Delta sync: get logs created after 'since'
+        log_stmt = log_stmt.where(FeedingLog.created_at >= since)
 
-        # Deleted events after 'since'
-        deleted_event_stmt = event_stmt.where(
-            FeedingEvent.deleted_at.is_not(None),
-            FeedingEvent.deleted_at >= since,
-        )
-        result = await db.execute(deleted_event_stmt)
-        deleted.events = [e.id for e in result.scalars().all()]
-    else:
-        # Initial sync: get all active events only
-        active_event_stmt = event_stmt.where(FeedingEvent.deleted_at.is_(None))
-        result = await db.execute(active_event_stmt)
-        for event in result.scalars().all():
-            events_data.append(_entity_to_dict(event))
+    result = await db.execute(log_stmt)
+    for log in result.scalars().all():
+        events_data.append(_entity_to_dict(log))
 
     # Query feeding schedules
     schedule_stmt = select(FeedingSchedule).where(FeedingSchedule.aquarium_id.in_(user_aquarium_ids))
 
     if since is not None:
-        schedule_stmt = schedule_stmt.where(FeedingSchedule.updated_at >= since)
+        # Delta sync: get active schedules updated after 'since'
+        active_schedule_stmt = schedule_stmt.where(
+            FeedingSchedule.active.is_(True),
+            FeedingSchedule.updated_at >= since,
+        )
+        result = await db.execute(active_schedule_stmt)
+        for schedule in result.scalars().all():
+            schedules_data.append(_entity_to_dict(schedule))
 
-    result = await db.execute(schedule_stmt)
-    for schedule in result.scalars().all():
-        schedules_data.append(_entity_to_dict(schedule))
+        # Deactivated schedules after 'since' -> treat as deleted
+        inactive_schedule_stmt = schedule_stmt.where(
+            FeedingSchedule.active.is_(False),
+            FeedingSchedule.updated_at >= since,
+        )
+        result = await db.execute(inactive_schedule_stmt)
+        deleted.schedules = [s.id for s in result.scalars().all()]
+    else:
+        # Initial sync: get all active schedules
+        active_schedule_stmt = schedule_stmt.where(FeedingSchedule.active.is_(True))
+        result = await db.execute(active_schedule_stmt)
+        for schedule in result.scalars().all():
+            schedules_data.append(_entity_to_dict(schedule))
 
     logger.debug(
         f"get_server_state returning: "
@@ -1582,13 +1497,13 @@ async def get_server_state(
         f"{len(progress_data)} progress, "
         f"{len(deleted.aquariums)} deleted aquariums, "
         f"{len(deleted.fish)} deleted fish, "
-        f"{len(deleted.events)} deleted events"
+        f"{len(deleted.feeding_logs)} deleted events"
     )
 
     return ServerState(
         aquariums=aquariums_data,
         fish=fish_data,
-        events=events_data,
+        feeding_logs=events_data,
         schedules=schedules_data,
         streaks=streaks_data,
         achievements=achievements_data,
@@ -1622,8 +1537,8 @@ def _apply_pagination(
         all_items.append(("aquarium", aquarium))
     for fish in server_state.fish:
         all_items.append(("fish", fish))
-    for event in server_state.events:
-        all_items.append(("event", event))
+    for log in server_state.feeding_logs:
+        all_items.append(("feeding_log", log))
     for schedule in server_state.schedules:
         all_items.append(("schedule", schedule))
 
@@ -1645,7 +1560,7 @@ def _apply_pagination(
     # Reconstruct paginated server state
     paginated_aquariums: list[dict[str, Any]] = []
     paginated_fish: list[dict[str, Any]] = []
-    paginated_events: list[dict[str, Any]] = []
+    paginated_feeding_logs: list[dict[str, Any]] = []
     paginated_schedules: list[dict[str, Any]] = []
 
     for entity_type, data in paginated_items:
@@ -1653,8 +1568,8 @@ def _apply_pagination(
             paginated_aquariums.append(data)
         elif entity_type == "fish":
             paginated_fish.append(data)
-        elif entity_type == "event":
-            paginated_events.append(data)
+        elif entity_type == "feeding_log":
+            paginated_feeding_logs.append(data)
         elif entity_type == "schedule":
             paginated_schedules.append(data)
 
@@ -1662,7 +1577,7 @@ def _apply_pagination(
         ServerState(
             aquariums=paginated_aquariums,
             fish=paginated_fish,
-            events=paginated_events,
+            feeding_logs=paginated_feeding_logs,
             schedules=paginated_schedules,
             # User-scoped entities are always included in full (not paginated)
             streaks=server_state.streaks,
@@ -1716,8 +1631,9 @@ async def process_sync(
         # Step 2: Apply client changes and collect conflicts
         conflicts = await apply_changes(db, user_id, request.changes)
 
-        # Step 2.5: Ensure feeding schedules exist for all aquariums with fish
-        await _ensure_schedules_for_user(db, user_id)
+        # NOTE: No server-side schedule generation here.
+        # Schedules are created by the client (offline-first architecture).
+        # Server only stores what client sends via sync.
 
         # Step 3: Get server state (delta sync if last_sync_at provided)
         server_state = await get_server_state(db, user_id, request.last_sync_at)
@@ -1725,19 +1641,30 @@ async def process_sync(
         # Step 4: Apply pagination
         paginated_state, has_more, next_cursor = _apply_pagination(server_state, request.page_size, request.cursor)
 
-        # Step 5: Generate sync token
+        # Step 5: Compute synced_ids (accepted changes without conflicts)
+        conflict_entity_ids = {c.entity_id for c in conflicts}
+        synced_ids = [
+            change.entity_id
+            for change in request.changes
+            if change.entity_id not in conflict_entity_ids
+        ]
+
+        # Step 6: Generate sync token
         sync_token = _generate_sync_token()
 
         # Commit all changes
         await db.commit()
 
         logger.info(
-            f"Sync completed for user {user_id}: {len(conflicts)} conflicts, has_more={has_more}, token={sync_token}"
+            f"Sync completed for user {user_id}: "
+            f"{len(synced_ids)} synced, {len(conflicts)} conflicts, "
+            f"has_more={has_more}, token={sync_token}"
         )
 
         return SyncResponse(
             server_state=paginated_state,
             conflicts=conflicts,
+            synced_ids=synced_ids,
             sync_token=sync_token,
             has_more=has_more,
             next_cursor=next_cursor,

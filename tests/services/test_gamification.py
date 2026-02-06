@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.aquarium import Aquarium, AquariumMember
-from app.models.feeding import FeedingEvent, FeedingSchedule
+from app.models.feeding import FeedingLog, FeedingSchedule
 from app.models.fish import Fish
 from app.models.gamification import Streak
 from app.models.user import User
@@ -369,7 +369,7 @@ async def cleanup_all_data(session: AsyncSession) -> None:
     await session.rollback()
     await session.execute(text("TRUNCATE TABLE achievements CASCADE"))
     await session.execute(text("TRUNCATE TABLE streaks CASCADE"))
-    await session.execute(text("TRUNCATE TABLE feeding_events CASCADE"))
+    await session.execute(text("TRUNCATE TABLE feeding_logs CASCADE"))
     await session.execute(text("TRUNCATE TABLE feeding_schedules CASCADE"))
     await session.execute(text("TRUNCATE TABLE fish CASCADE"))
     await session.execute(text("TRUNCATE TABLE aquarium_members CASCADE"))
@@ -463,27 +463,34 @@ async def create_completed_feeding(
     aquarium: Aquarium,
     user: User,
     completed_at: datetime | None = None,
-) -> FeedingEvent:
-    """Helper to create a completed feeding event."""
+) -> FeedingLog:
+    """Helper to create a completed feeding log."""
+    import uuid
+
     if completed_at is None:
         completed_at = datetime.now(UTC)
 
-    schedule = FeedingSchedule(aquarium_id=aquarium.id)
+    # Need a fish for the schedule and log
+    fish = await create_fish_in_aquarium(session, aquarium)
+
+    schedule = FeedingSchedule(aquarium_id=aquarium.id, fish_id=fish.id, food_type="flakes")
     session.add(schedule)
     await session.flush()
 
-    event = FeedingEvent(
+    log = FeedingLog(
         aquarium_id=aquarium.id,
         schedule_id=schedule.id,
-        scheduled_at=completed_at,
-        status="completed",
-        completed_at=completed_at,
-        completed_by=user.id,
+        fish_id=fish.id,
+        scheduled_for=completed_at.replace(tzinfo=None),
+        action="fed",
+        acted_at=completed_at,
+        acted_by_user_id=user.id,
+        device_id=uuid.uuid4(),
     )
-    session.add(event)
+    session.add(log)
     await session.flush()
-    await session.refresh(event)
-    return event
+    await session.refresh(log)
+    return log
 
 
 @pytest.mark.asyncio(loop_scope="session")

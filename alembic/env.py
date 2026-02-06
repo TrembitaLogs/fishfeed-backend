@@ -6,24 +6,23 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
-
 from app.config import get_settings
 from app.models import (  # noqa: F401
-    Base,
-    User,
-    RefreshToken,
-    Aquarium,
-    AquariumMember,
-    FamilyInvite,
-    Species,
-    Fish,
-    FeedingSchedule,
-    FeedingEvent,
-    Streak,
     Achievement,
     AIScan,
-    PushToken,
+    Aquarium,
+    AquariumMember,
+    Base,
+    FamilyInvite,
+    FeedingLog,
+    FeedingSchedule,
+    Fish,
     NotificationPreference,
+    PushToken,
+    RefreshToken,
+    Species,
+    Streak,
+    User,
 )
 
 config = context.config

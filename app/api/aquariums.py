@@ -25,7 +25,7 @@ from app.services.aquarium import (
     list_user_aquariums,
     update_aquarium,
 )
-from app.services.feeding import get_schedule
+from app.services.feeding import get_schedules
 
 router = APIRouter(prefix="/aquariums", tags=["Aquariums"])
 
@@ -91,11 +91,10 @@ async def get_aquarium_details(
     """Get aquarium details including fish and feeding schedule."""
     try:
         aquarium = await get_aquarium_with_fish(db, aquarium_id, current_user.id)
-        schedule = await get_schedule(db, aquarium_id, current_user.id)
+        schedules = await get_schedules(db, aquarium_id, current_user.id)
 
         response = AquariumWithFish.model_validate(aquarium)
-        if schedule:
-            response.schedule = ScheduleResponse.model_validate(schedule)
+        response.schedules = [ScheduleResponse.model_validate(s) for s in schedules]
         return response
     except AquariumNotFoundError as e:
         raise HTTPException(status_code=e.status_code, detail=e.message) from None

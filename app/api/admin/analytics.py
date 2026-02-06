@@ -1,4 +1,4 @@
-"""Admin API endpoints for system management."""
+"""Admin analytics endpoints for cleanup and anonymization management."""
 
 from typing import Annotated
 
@@ -12,7 +12,7 @@ from app.jobs.analytics_cleanup import (
     delete_old_events_job,
 )
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(prefix="/analytics", tags=["admin-analytics"])
 
 
 class CleanupResponse(BaseModel):
@@ -44,7 +44,7 @@ class AnalyticsCleanupResponse(BaseModel):
 
 
 @router.post(
-    "/analytics/anonymize",
+    "/anonymize",
     response_model=CleanupResultResponse,
     summary="Trigger analytics anonymization",
     description="Manually trigger anonymization of analytics events older than configured threshold. Admin only.",
@@ -82,7 +82,7 @@ async def trigger_anonymization(
 
 
 @router.post(
-    "/analytics/cleanup",
+    "/cleanup",
     response_model=CleanupResultResponse,
     summary="Trigger analytics retention cleanup",
     description="Manually trigger deletion of analytics events older than retention period. Admin only.",
@@ -119,7 +119,7 @@ async def trigger_retention_cleanup(
 
 
 @router.post(
-    "/analytics/full-cleanup",
+    "/full-cleanup",
     response_model=AnalyticsCleanupResponse,
     summary="Trigger full analytics cleanup",
     description="Manually trigger both anonymization and retention cleanup. Admin only.",

@@ -99,7 +99,7 @@ class TestWebhookSignatureValidation:
                 mock_settings.return_value.REVENUECAT_WEBHOOK_SECRET = secret
 
                 response = await client.post(
-                    "/purchases/webhook",
+                    "/api/v1/purchases/webhook",
                     content=payload_bytes,
                     headers={
                         "Content-Type": "application/json",
@@ -141,7 +141,7 @@ class TestWebhookSignatureValidation:
                 mock_settings.return_value.REVENUECAT_WEBHOOK_SECRET = secret
 
                 response = await client.post(
-                    "/purchases/webhook",
+                    "/api/v1/purchases/webhook",
                     content=payload_bytes,
                     headers={
                         "Content-Type": "application/json",
@@ -177,7 +177,7 @@ class TestWebhookSignatureValidation:
                 mock_settings.return_value.REVENUECAT_WEBHOOK_SECRET = secret
 
                 response = await client.post(
-                    "/purchases/webhook",
+                    "/api/v1/purchases/webhook",
                     content=payload_bytes,
                     headers={"Content-Type": "application/json"},
                 )
@@ -212,7 +212,7 @@ class TestWebhookSignatureValidation:
                 mock_settings.return_value.REVENUECAT_WEBHOOK_SECRET = None
 
                 response = await client.post(
-                    "/purchases/webhook",
+                    "/api/v1/purchases/webhook",
                     content=payload_bytes,
                     headers={"Content-Type": "application/json"},
                 )
@@ -255,7 +255,7 @@ class TestWebhookIdempotency:
 
                 # First request
                 response1 = await client.post(
-                    "/purchases/webhook",
+                    "/api/v1/purchases/webhook",
                     content=payload_bytes,
                     headers={"Content-Type": "application/json"},
                 )
@@ -265,7 +265,7 @@ class TestWebhookIdempotency:
 
                 # Second request (duplicate)
                 response2 = await client.post(
-                    "/purchases/webhook",
+                    "/api/v1/purchases/webhook",
                     content=payload_bytes,
                     headers={"Content-Type": "application/json"},
                 )
@@ -312,7 +312,7 @@ class TestWebhookIdempotency:
                 # Send concurrent requests
                 async def send_webhook():
                     return await client.post(
-                        "/purchases/webhook",
+                        "/api/v1/purchases/webhook",
                         content=payload_bytes,
                         headers={"Content-Type": "application/json"},
                     )
@@ -382,7 +382,7 @@ class TestWebhookTransactionLogging:
                 mock_settings.return_value.REVENUECAT_WEBHOOK_SECRET = None
 
                 response = await client.post(
-                    "/purchases/webhook",
+                    "/api/v1/purchases/webhook",
                     content=payload_bytes,
                     headers={"Content-Type": "application/json"},
                 )
@@ -426,7 +426,7 @@ class TestWebhookTransactionLogging:
                 mock_settings.return_value.REVENUECAT_WEBHOOK_SECRET = None
 
                 response = await client.post(
-                    "/purchases/webhook",
+                    "/api/v1/purchases/webhook",
                     content=invalid_payload,
                     headers={"Content-Type": "application/json"},
                 )
@@ -476,7 +476,7 @@ class TestWebhookTransactionLogging:
                 mock_settings.return_value.REVENUECAT_WEBHOOK_SECRET = None
 
                 response = await client.post(
-                    "/purchases/webhook",
+                    "/api/v1/purchases/webhook",
                     content=payload_bytes,
                     headers={"Content-Type": "application/json"},
                 )
@@ -508,7 +508,7 @@ class TestSubscriptionEndpoint:
         client: AsyncClient,
     ):
         """Test that subscription endpoint requires authentication."""
-        response = await client.get("/purchases/subscription")
+        response = await client.get("/api/v1/purchases/subscription")
         assert response.status_code == 401
 
     @pytest.mark.asyncio(loop_scope="session")
@@ -538,7 +538,7 @@ class TestSubscriptionEndpoint:
             token = create_access_token(str(user.id))
 
             response = await client.get(
-                "/purchases/subscription",
+                "/api/v1/purchases/subscription",
                 headers={"Authorization": f"Bearer {token}"},
             )
 

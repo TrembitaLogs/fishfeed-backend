@@ -1,6 +1,7 @@
-"""E2E tests for feeding schedule and events API endpoints."""
+"""E2E tests for feeding schedule and feeding log API endpoints."""
 
 import uuid
+from datetime import date, datetime
 
 import pytest
 from httpx import AsyncClient
@@ -13,11 +14,11 @@ TEST_SPECIES_HUNGRY = "test-hungry"  # feeding_frequency=3
 async def register_and_login(client: AsyncClient, email: str) -> dict:
     """Helper to register and login a user, returns tokens."""
     await client.post(
-        "/auth/register",
+        "/api/v1/auth/register",
         json={"email": email, "password": "SecurePass123"},
     )
     response = await client.post(
-        "/auth/login",
+        "/api/v1/auth/login",
         json={"email": email, "password": "SecurePass123"},
     )
     return response.json()
@@ -31,421 +32,369 @@ def auth_headers(tokens: dict) -> dict:
 async def create_aquarium(client: AsyncClient, tokens: dict, name: str = "Test Tank") -> str:
     """Helper to create an aquarium and return its ID."""
     response = await client.post(
-        "/aquariums",
+        "/api/v1/aquariums",
         json={"name": name},
         headers=auth_headers(tokens),
     )
     return response.json()["id"]
 
 
-@pytest.mark.asyncio(loop_scope="session")
-class TestGetSchedule:
-    """Tests for GET /aquariums/{id}/schedule endpoint."""
+async def add_fish_and_generate(
+    client: AsyncClient, tokens: dict, aquarium_id: str, species_id: str = TEST_SPECIES_GUPPY
+) -> list[dict]:
+    """Helper: add fish, generate schedules, return schedule list."""
+    await client.post(
+        f"/api/v1/aquariums/{aquarium_id}/fish",
+        json={"species_id": species_id},
+        headers=auth_headers(tokens),
+    )
+    response = await client.post(
+        f"/api/v1/aquariums/{aquarium_id}/schedules/generate",
+        headers=auth_headers(tokens),
+    )
+    return response.json()
 
-    async def test_get_schedule_without_auth_returns_401(self, client: AsyncClient):
-        """Test that getting schedule without auth returns 401."""
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestListSchedules:
+    """Tests for GET /aquariums/{id}/schedules endpoint."""
+
+    async def test_list_schedules_without_auth_returns_401(self, client: AsyncClient):
         random_id = str(uuid.uuid4())
-        response = await client.get(f"/aquariums/{random_id}/schedule")
+        response = await client.get(f"/api/v1/aquariums/{random_id}/schedules")
         assert response.status_code == 401
 
-    async def test_get_schedule_returns_null_when_not_set(self, client: AsyncClient):
-        """Test that new aquarium has no schedule."""
-        email = f"getsched-null-{uuid.uuid4()}@example.com"
+    async def test_list_schedules_returns_empty_list(self, client: AsyncClient):
+        email = f"listsched-empty-{uuid.uuid4()}@example.com"
         tokens = await register_and_login(client, email)
         aquarium_id = await create_aquarium(client, tokens)
 
         response = await client.get(
-            f"/aquariums/{aquarium_id}/schedule",
+            f"/api/v1/aquariums/{aquarium_id}/schedules",
             headers=auth_headers(tokens),
         )
-
         assert response.status_code == 200
-        assert response.json() is None
+        assert response.json() == []
 
-    async def test_get_schedule_returns_schedule_after_generate(self, client: AsyncClient):
-        """Test that schedule is returned after generation."""
-        email = f"getsched-{uuid.uuid4()}@example.com"
+    async def test_list_schedules_after_generate(self, client: AsyncClient):
+        email = f"listsched-gen-{uuid.uuid4()}@example.com"
         tokens = await register_and_login(client, email)
         aquarium_id = await create_aquarium(client, tokens)
 
-        # Generate schedule
-        await client.post(
-            f"/aquariums/{aquarium_id}/schedule/generate",
-            headers=auth_headers(tokens),
-        )
+        await add_fish_and_generate(client, tokens, aquarium_id)
 
         response = await client.get(
-            f"/aquariums/{aquarium_id}/schedule",
+            f"/api/v1/aquariums/{aquarium_id}/schedules",
             headers=auth_headers(tokens),
         )
-
         assert response.status_code == 200
         data = response.json()
-        assert data is not None
-        assert "times_per_day" in data
-        assert "scheduled_times" in data
+        assert len(data) >= 1
+        assert "fish_id" in data[0]
+        assert "time" in data[0]
+        assert "interval_days" in data[0]
 
-    async def test_get_schedule_other_user_aquarium_returns_403(self, client: AsyncClient):
-        """Test that getting schedule of other user's aquarium returns 403."""
-        email1 = f"getsched-owner-{uuid.uuid4()}@example.com"
-        email2 = f"getsched-other-{uuid.uuid4()}@example.com"
+    async def test_list_schedules_active_filter(self, client: AsyncClient):
+        email = f"listsched-filter-{uuid.uuid4()}@example.com"
+        tokens = await register_and_login(client, email)
+        aquarium_id = await create_aquarium(client, tokens)
 
+        schedules = await add_fish_and_generate(client, tokens, aquarium_id)
+
+        # Deactivate first schedule
+        schedule_id = schedules[0]["id"]
+        await client.patch(
+            f"/api/v1/aquariums/{aquarium_id}/schedules/{schedule_id}",
+            json={"active": False},
+            headers=auth_headers(tokens),
+        )
+
+        # Filter active=true
+        response = await client.get(
+            f"/api/v1/aquariums/{aquarium_id}/schedules?active=true",
+            headers=auth_headers(tokens),
+        )
+        assert response.status_code == 200
+        active_schedules = response.json()
+        assert all(s["active"] for s in active_schedules)
+
+    async def test_list_schedules_other_user_returns_403(self, client: AsyncClient):
+        email1 = f"listsched-owner-{uuid.uuid4()}@example.com"
+        email2 = f"listsched-other-{uuid.uuid4()}@example.com"
         tokens1 = await register_and_login(client, email1)
         tokens2 = await register_and_login(client, email2)
-
         aquarium_id = await create_aquarium(client, tokens1)
 
         response = await client.get(
-            f"/aquariums/{aquarium_id}/schedule",
+            f"/api/v1/aquariums/{aquarium_id}/schedules",
             headers=auth_headers(tokens2),
         )
-
         assert response.status_code == 403
 
 
 @pytest.mark.asyncio(loop_scope="session")
-class TestGenerateSchedule:
-    """Tests for POST /aquariums/{id}/schedule/generate endpoint."""
+class TestGenerateSchedules:
+    """Tests for POST /aquariums/{id}/schedules/generate endpoint."""
 
-    async def test_generate_schedule_creates_schedule(self, client: AsyncClient):
-        """Test that generate creates a schedule."""
+    async def test_generate_creates_schedules(self, client: AsyncClient):
         email = f"gensched-{uuid.uuid4()}@example.com"
         tokens = await register_and_login(client, email)
         aquarium_id = await create_aquarium(client, tokens)
 
-        response = await client.post(
-            f"/aquariums/{aquarium_id}/schedule/generate",
-            headers=auth_headers(tokens),
-        )
+        schedules = await add_fish_and_generate(client, tokens, aquarium_id)
 
-        assert response.status_code == 200
-        data = response.json()
-        assert "id" in data
-        assert "times_per_day" in data
-        assert "scheduled_times" in data
-        assert "food_type" in data
+        assert isinstance(schedules, list)
+        assert len(schedules) >= 1
+        assert "id" in schedules[0]
+        assert "fish_id" in schedules[0]
+        assert "food_type" in schedules[0]
 
-    async def test_generate_schedule_considers_fish_species(self, client: AsyncClient):
-        """Test that schedule generation considers fish species frequency."""
+    async def test_generate_considers_fish_species(self, client: AsyncClient):
         email = f"gensched-fish-{uuid.uuid4()}@example.com"
         tokens = await register_and_login(client, email)
         aquarium_id = await create_aquarium(client, tokens)
 
-        # Add fish with high feeding frequency (pre-seeded species with frequency=3)
-        await client.post(
-            f"/aquariums/{aquarium_id}/fish",
-            json={"species_id": TEST_SPECIES_HUNGRY},
-            headers=auth_headers(tokens),
-        )
+        schedules = await add_fish_and_generate(client, tokens, aquarium_id, TEST_SPECIES_HUNGRY)
 
-        response = await client.post(
-            f"/aquariums/{aquarium_id}/schedule/generate",
-            headers=auth_headers(tokens),
-        )
+        # Species frequency=3 should produce 3 schedules for the fish
+        assert len(schedules) == 3
 
-        assert response.status_code == 200
-        data = response.json()
-        assert data["times_per_day"] == 3
-        assert len(data["scheduled_times"]) == 3
-
-    async def test_generate_schedule_other_user_aquarium_returns_403(
-        self, client: AsyncClient
-    ):
-        """Test that generating schedule for other user's aquarium returns 403."""
+    async def test_generate_other_user_aquarium_returns_403(self, client: AsyncClient):
         email1 = f"gensched-owner-{uuid.uuid4()}@example.com"
         email2 = f"gensched-other-{uuid.uuid4()}@example.com"
-
         tokens1 = await register_and_login(client, email1)
         tokens2 = await register_and_login(client, email2)
-
         aquarium_id = await create_aquarium(client, tokens1)
 
         response = await client.post(
-            f"/aquariums/{aquarium_id}/schedule/generate",
+            f"/api/v1/aquariums/{aquarium_id}/schedules/generate",
             headers=auth_headers(tokens2),
         )
-
         assert response.status_code == 403
 
 
 @pytest.mark.asyncio(loop_scope="session")
-class TestUpdateSchedule:
-    """Tests for PUT /aquariums/{id}/schedule endpoint."""
+class TestCreateSchedule:
+    """Tests for POST /aquariums/{id}/schedules endpoint."""
 
-    async def test_update_schedule_changes_values(self, client: AsyncClient):
-        """Test that update changes schedule values."""
-        email = f"updsched-{uuid.uuid4()}@example.com"
+    async def test_create_schedule_returns_201(self, client: AsyncClient):
+        email = f"createsched-{uuid.uuid4()}@example.com"
         tokens = await register_and_login(client, email)
         aquarium_id = await create_aquarium(client, tokens)
 
-        # Generate schedule first
+        # Add fish first
         await client.post(
-            f"/aquariums/{aquarium_id}/schedule/generate",
+            f"/api/v1/aquariums/{aquarium_id}/fish",
+            json={"species_id": TEST_SPECIES_GUPPY},
             headers=auth_headers(tokens),
         )
+        fish_response = await client.get(
+            f"/api/v1/aquariums/{aquarium_id}/fish",
+            headers=auth_headers(tokens),
+        )
+        fish_id = fish_response.json()[0]["id"]
 
-        # Update schedule
-        response = await client.put(
-            f"/aquariums/{aquarium_id}/schedule",
+        response = await client.post(
+            f"/api/v1/aquariums/{aquarium_id}/schedules",
             json={
-                "times_per_day": 1,
-                "scheduled_times": ["09:00"],
+                "fish_id": fish_id,
+                "time": "10:30",
+                "interval_days": 1,
+                "anchor_date": str(date.today()),
                 "food_type": "pellets",
             },
             headers=auth_headers(tokens),
         )
 
+        assert response.status_code == 201
+        data = response.json()
+        assert data["fish_id"] == fish_id
+        assert data["time"] == "10:30"
+        assert data["active"] is True
+
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestUpdateSchedule:
+    """Tests for PATCH /aquariums/{id}/schedules/{schedule_id} endpoint."""
+
+    async def test_update_schedule_changes_values(self, client: AsyncClient):
+        email = f"updsched-{uuid.uuid4()}@example.com"
+        tokens = await register_and_login(client, email)
+        aquarium_id = await create_aquarium(client, tokens)
+
+        schedules = await add_fish_and_generate(client, tokens, aquarium_id)
+        schedule_id = schedules[0]["id"]
+
+        response = await client.patch(
+            f"/api/v1/aquariums/{aquarium_id}/schedules/{schedule_id}",
+            json={"time": "14:00", "food_type": "pellets"},
+            headers=auth_headers(tokens),
+        )
+
         assert response.status_code == 200
         data = response.json()
-        assert data["times_per_day"] == 1
-        assert data["scheduled_times"] == ["09:00"]
+        assert data["time"] == "14:00"
         assert data["food_type"] == "pellets"
 
-    async def test_update_schedule_without_schedule_returns_404(self, client: AsyncClient):
-        """Test that updating non-existent schedule returns 404."""
+    async def test_update_nonexistent_schedule_returns_404(self, client: AsyncClient):
         email = f"updsched-404-{uuid.uuid4()}@example.com"
         tokens = await register_and_login(client, email)
         aquarium_id = await create_aquarium(client, tokens)
+        random_id = str(uuid.uuid4())
 
-        response = await client.put(
-            f"/aquariums/{aquarium_id}/schedule",
+        response = await client.patch(
+            f"/api/v1/aquariums/{aquarium_id}/schedules/{random_id}",
             json={"food_type": "pellets"},
             headers=auth_headers(tokens),
         )
-
         assert response.status_code == 404
 
 
 @pytest.mark.asyncio(loop_scope="session")
-class TestGetEvents:
-    """Tests for GET /aquariums/{id}/events endpoint."""
+class TestDeleteSchedule:
+    """Tests for DELETE /aquariums/{id}/schedules/{schedule_id} endpoint."""
 
-    async def test_get_events_returns_list(self, client: AsyncClient):
-        """Test that get events returns a list."""
-        email = f"getevents-{uuid.uuid4()}@example.com"
+    async def test_delete_schedule_returns_204(self, client: AsyncClient):
+        email = f"delsched-{uuid.uuid4()}@example.com"
         tokens = await register_and_login(client, email)
         aquarium_id = await create_aquarium(client, tokens)
 
-        # Generate schedule to create events
-        await client.post(
-            f"/aquariums/{aquarium_id}/schedule/generate",
+        schedules = await add_fish_and_generate(client, tokens, aquarium_id)
+        schedule_id = schedules[0]["id"]
+
+        response = await client.delete(
+            f"/api/v1/aquariums/{aquarium_id}/schedules/{schedule_id}",
             headers=auth_headers(tokens),
         )
+        assert response.status_code == 204
 
-        response = await client.get(
-            f"/aquariums/{aquarium_id}/events",
-            headers=auth_headers(tokens),
-        )
-
-        assert response.status_code == 200
-        data = response.json()
-        assert isinstance(data, list)
-
-    async def test_get_events_without_auth_returns_401(self, client: AsyncClient):
-        """Test that getting events without auth returns 401."""
+    async def test_delete_nonexistent_schedule_returns_404(self, client: AsyncClient):
+        email = f"delsched-404-{uuid.uuid4()}@example.com"
+        tokens = await register_and_login(client, email)
+        aquarium_id = await create_aquarium(client, tokens)
         random_id = str(uuid.uuid4())
-        response = await client.get(f"/aquariums/{random_id}/events")
-        assert response.status_code == 401
+
+        response = await client.delete(
+            f"/api/v1/aquariums/{aquarium_id}/schedules/{random_id}",
+            headers=auth_headers(tokens),
+        )
+        assert response.status_code == 404
 
 
 @pytest.mark.asyncio(loop_scope="session")
-class TestGetTodayEvents:
-    """Tests for GET /aquariums/{id}/events/today endpoint."""
+class TestFeedingLogs:
+    """Tests for feeding log endpoints."""
 
-    async def test_get_today_events_returns_structure(self, client: AsyncClient):
-        """Test that today events returns expected structure."""
-        email = f"gettoday-{uuid.uuid4()}@example.com"
+    async def test_get_feeding_logs_without_auth_returns_401(self, client: AsyncClient):
+        random_id = str(uuid.uuid4())
+        response = await client.get(
+            f"/api/v1/aquariums/{random_id}/feeding-logs?from=2025-01-01T00:00:00&to=2025-01-02T00:00:00"
+        )
+        assert response.status_code == 401
+
+    async def test_get_feeding_logs_returns_empty_list(self, client: AsyncClient):
+        email = f"getlogs-empty-{uuid.uuid4()}@example.com"
         tokens = await register_and_login(client, email)
         aquarium_id = await create_aquarium(client, tokens)
 
-        # Generate schedule to create events
-        await client.post(
-            f"/aquariums/{aquarium_id}/schedule/generate",
-            headers=auth_headers(tokens),
-        )
-
         response = await client.get(
-            f"/aquariums/{aquarium_id}/events/today",
+            f"/api/v1/aquariums/{aquarium_id}/feeding-logs?from=2025-01-01T00:00:00&to=2025-12-31T23:59:59",
+            headers=auth_headers(tokens),
+        )
+        assert response.status_code == 200
+        assert response.json() == []
+
+    async def test_create_feeding_log_returns_201(self, client: AsyncClient):
+        email = f"createlog-{uuid.uuid4()}@example.com"
+        tokens = await register_and_login(client, email)
+        aquarium_id = await create_aquarium(client, tokens)
+
+        schedules = await add_fish_and_generate(client, tokens, aquarium_id)
+        schedule = schedules[0]
+
+        response = await client.post(
+            f"/api/v1/aquariums/{aquarium_id}/feeding-logs",
+            json={
+                "schedule_id": schedule["id"],
+                "fish_id": schedule["fish_id"],
+                "scheduled_for": datetime.now().isoformat(),
+                "action": "fed",
+                "device_id": str(uuid.uuid4()),
+            },
             headers=auth_headers(tokens),
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 201
         data = response.json()
-        assert "events" in data
-        assert "next_feeding" in data
-        assert isinstance(data["events"], list)
+        assert data["action"] == "fed"
+        assert data["schedule_id"] == schedule["id"]
 
-    async def test_get_today_events_without_auth_returns_401(self, client: AsyncClient):
-        """Test that getting today's events without auth returns 401."""
-        random_id = str(uuid.uuid4())
-        response = await client.get(f"/aquariums/{random_id}/events/today")
-        assert response.status_code == 401
+    async def test_duplicate_feeding_log_returns_409(self, client: AsyncClient):
+        email = f"duplog-{uuid.uuid4()}@example.com"
+        tokens = await register_and_login(client, email)
+        aquarium_id = await create_aquarium(client, tokens)
 
-    async def test_get_today_events_other_user_returns_403(self, client: AsyncClient):
-        """Test that getting today's events for other user's aquarium returns 403."""
-        email1 = f"gettoday-owner-{uuid.uuid4()}@example.com"
-        email2 = f"gettoday-other-{uuid.uuid4()}@example.com"
+        schedules = await add_fish_and_generate(client, tokens, aquarium_id)
+        schedule = schedules[0]
+        scheduled_for = "2025-06-15T09:00:00"
 
+        log_data = {
+            "schedule_id": schedule["id"],
+            "fish_id": schedule["fish_id"],
+            "scheduled_for": scheduled_for,
+            "action": "fed",
+            "device_id": str(uuid.uuid4()),
+        }
+
+        # First create succeeds
+        r1 = await client.post(
+            f"/api/v1/aquariums/{aquarium_id}/feeding-logs",
+            json=log_data,
+            headers=auth_headers(tokens),
+        )
+        assert r1.status_code == 201
+
+        # Second create returns 409
+        r2 = await client.post(
+            f"/api/v1/aquariums/{aquarium_id}/feeding-logs",
+            json=log_data,
+            headers=auth_headers(tokens),
+        )
+        assert r2.status_code == 409
+        data = r2.json()
+        assert data["error"] == "conflict"
+        assert "existing_log" in data
+
+    async def test_create_feeding_log_other_user_returns_403(self, client: AsyncClient):
+        email1 = f"createlog-owner-{uuid.uuid4()}@example.com"
+        email2 = f"createlog-other-{uuid.uuid4()}@example.com"
         tokens1 = await register_and_login(client, email1)
         tokens2 = await register_and_login(client, email2)
-
         aquarium_id = await create_aquarium(client, tokens1)
 
-        response = await client.get(
-            f"/aquariums/{aquarium_id}/events/today",
+        schedules = await add_fish_and_generate(client, tokens1, aquarium_id)
+        schedule = schedules[0]
+
+        response = await client.post(
+            f"/api/v1/aquariums/{aquarium_id}/feeding-logs",
+            json={
+                "schedule_id": schedule["id"],
+                "fish_id": schedule["fish_id"],
+                "scheduled_for": datetime.now().isoformat(),
+                "action": "fed",
+                "device_id": str(uuid.uuid4()),
+            },
             headers=auth_headers(tokens2),
         )
-
         assert response.status_code == 403
 
-
-@pytest.mark.asyncio(loop_scope="session")
-class TestMarkAsFed:
-    """Tests for POST /aquariums/{id}/events/{event_id}/fed endpoint."""
-
-    async def test_mark_as_fed_updates_status(self, client: AsyncClient):
-        """Test that marking as fed updates event status."""
-        email = f"markfed-{uuid.uuid4()}@example.com"
+    async def test_date_range_exceeds_366_days_returns_400(self, client: AsyncClient):
+        email = f"getlogs-range-{uuid.uuid4()}@example.com"
         tokens = await register_and_login(client, email)
         aquarium_id = await create_aquarium(client, tokens)
 
-        # Generate schedule to create events
-        await client.post(
-            f"/aquariums/{aquarium_id}/schedule/generate",
+        response = await client.get(
+            f"/api/v1/aquariums/{aquarium_id}/feeding-logs?from=2024-01-01T00:00:00&to=2025-12-31T23:59:59",
             headers=auth_headers(tokens),
         )
-
-        # Get today's events
-        events_response = await client.get(
-            f"/aquariums/{aquarium_id}/events/today",
-            headers=auth_headers(tokens),
-        )
-        events = events_response.json()["events"]
-
-        if events:
-            event_id = events[0]["id"]
-
-            response = await client.post(
-                f"/aquariums/{aquarium_id}/events/{event_id}/fed",
-                headers=auth_headers(tokens),
-            )
-
-            assert response.status_code == 200
-            data = response.json()
-            assert data["status"] == "completed"
-            assert data["completed_at"] is not None
-            assert data["completed_by"] is not None
-
-    async def test_mark_as_fed_without_auth_returns_401(self, client: AsyncClient):
-        """Test that marking as fed without auth returns 401."""
-        random_aq_id = str(uuid.uuid4())
-        random_event_id = str(uuid.uuid4())
-        response = await client.post(f"/aquariums/{random_aq_id}/events/{random_event_id}/fed")
-        assert response.status_code == 401
-
-    async def test_mark_as_fed_nonexistent_event_returns_404(self, client: AsyncClient):
-        """Test that marking non-existent event returns 404."""
-        email = f"markfed-404-{uuid.uuid4()}@example.com"
-        tokens = await register_and_login(client, email)
-        aquarium_id = await create_aquarium(client, tokens)
-        random_event_id = str(uuid.uuid4())
-
-        response = await client.post(
-            f"/aquariums/{aquarium_id}/events/{random_event_id}/fed",
-            headers=auth_headers(tokens),
-        )
-
-        assert response.status_code == 404
-
-
-@pytest.mark.asyncio(loop_scope="session")
-class TestMarkAsMissed:
-    """Tests for POST /aquariums/{id}/events/{event_id}/missed endpoint."""
-
-    async def test_mark_as_missed_updates_status(self, client: AsyncClient):
-        """Test that marking as missed updates event status."""
-        email = f"markmissed-{uuid.uuid4()}@example.com"
-        tokens = await register_and_login(client, email)
-        aquarium_id = await create_aquarium(client, tokens)
-
-        # Generate schedule to create events
-        await client.post(
-            f"/aquariums/{aquarium_id}/schedule/generate",
-            headers=auth_headers(tokens),
-        )
-
-        # Get today's events
-        events_response = await client.get(
-            f"/aquariums/{aquarium_id}/events/today",
-            headers=auth_headers(tokens),
-        )
-        events = events_response.json()["events"]
-
-        if events:
-            event_id = events[0]["id"]
-
-            response = await client.post(
-                f"/aquariums/{aquarium_id}/events/{event_id}/missed",
-                headers=auth_headers(tokens),
-            )
-
-            assert response.status_code == 200
-            data = response.json()
-            assert data["status"] == "missed"
-
-    async def test_mark_as_missed_without_auth_returns_401(self, client: AsyncClient):
-        """Test that marking as missed without auth returns 401."""
-        random_aq_id = str(uuid.uuid4())
-        random_event_id = str(uuid.uuid4())
-        response = await client.post(
-            f"/aquariums/{random_aq_id}/events/{random_event_id}/missed"
-        )
-        assert response.status_code == 401
-
-    async def test_mark_as_missed_nonexistent_event_returns_404(self, client: AsyncClient):
-        """Test that marking non-existent event as missed returns 404."""
-        email = f"markmissed-404-{uuid.uuid4()}@example.com"
-        tokens = await register_and_login(client, email)
-        aquarium_id = await create_aquarium(client, tokens)
-        random_event_id = str(uuid.uuid4())
-
-        response = await client.post(
-            f"/aquariums/{aquarium_id}/events/{random_event_id}/missed",
-            headers=auth_headers(tokens),
-        )
-
-        assert response.status_code == 404
-
-    async def test_mark_as_missed_other_user_returns_403(self, client: AsyncClient):
-        """Test that marking other user's event as missed returns 403."""
-        email1 = f"markmissed-owner-{uuid.uuid4()}@example.com"
-        email2 = f"markmissed-other-{uuid.uuid4()}@example.com"
-
-        tokens1 = await register_and_login(client, email1)
-        tokens2 = await register_and_login(client, email2)
-
-        aquarium_id = await create_aquarium(client, tokens1)
-
-        # Generate schedule
-        await client.post(
-            f"/aquariums/{aquarium_id}/schedule/generate",
-            headers=auth_headers(tokens1),
-        )
-
-        # Get events
-        events_response = await client.get(
-            f"/aquariums/{aquarium_id}/events/today",
-            headers=auth_headers(tokens1),
-        )
-        events = events_response.json()["events"]
-
-        if events:
-            event_id = events[0]["id"]
-
-            # User 2 tries to mark as missed
-            response = await client.post(
-                f"/aquariums/{aquarium_id}/events/{event_id}/missed",
-                headers=auth_headers(tokens2),
-            )
-
-            assert response.status_code == 403
+        assert response.status_code == 400

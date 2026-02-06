@@ -12,12 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.dependencies import CurrentActiveUser
 from app.schemas.sync import (
-    MobileSyncRequest,
-    MobileSyncResponse,
     SyncRequest,
     SyncResponse,
 )
-from app.services.mobile_sync import process_mobile_sync
 from app.services.sync import (
     SyncAccessDeniedError,
     SyncError,
@@ -35,79 +32,10 @@ def _generate_correlation_id() -> str:
     return uuid4().hex[:16]
 
 
-def _is_mobile_request(body: dict[str, Any]) -> bool:
-    """Check if the request body is in mobile app format."""
-    return "events" in body and "client_timestamp" in body
-
-
-async def _handle_mobile_sync(
-    body: dict[str, Any],
-    db: AsyncSession,
-    current_user: Any,
-    correlation_id: str,
-) -> MobileSyncResponse:
-    """Handle sync request from mobile app.
-
-    Mobile app sends: { events: [...], client_timestamp: "..." }
-    Mobile app expects: { synced_ids: [...], server_events: [...] }
-    """
-    log = logger.bind(
-        correlation_id=correlation_id,
-        user_id=str(current_user.id),
-        sync_type="mobile",
-    )
-
-    try:
-        mobile_request = MobileSyncRequest.model_validate(body)
-    except ValidationError as e:
-        log.warning("mobile_sync_validation_error", error=str(e))
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid mobile sync request: {e}",
-        ) from None
-
-    log.info(
-        "mobile_sync_request_received",
-        events_count=len(mobile_request.events),
-        client_timestamp=mobile_request.client_timestamp.isoformat(),
-    )
-
-    try:
-        response = await process_mobile_sync(db, current_user.id, mobile_request)
-
-        log.info(
-            "mobile_sync_completed",
-            synced_count=len(response.synced_ids),
-            server_events_count=len(response.server_events),
-        )
-
-        return response
-
-    except SyncValidationError as e:
-        log.warning("mobile_sync_validation_error", error=e.message)
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=e.message,
-        ) from None
-
-    except SyncAccessDeniedError as e:
-        log.warning("mobile_sync_access_denied", error=e.message)
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=e.message,
-        ) from None
-
-    except SyncError as e:
-        log.error("mobile_sync_error", error=e.message)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Mobile sync processing failed",
-        ) from None
-
-
 @router.post(
     "",
     status_code=status.HTTP_200_OK,
+    response_model=SyncResponse,
     summary="Synchronize client data with server",
     responses={
         200: {"description": "Sync completed successfully"},
@@ -124,16 +52,10 @@ async def sync_data(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: CurrentActiveUser,
     if_none_match: Annotated[str | None, Header()] = None,
-) -> SyncResponse | MobileSyncResponse:
+) -> SyncResponse:
     """Synchronize offline client changes with the server.
 
-    Supports two request formats:
-
-    1. Mobile app format:
-       { "events": [...], "client_timestamp": "..." }
-       Returns: { "synced_ids": [...], "server_events": [...] }
-
-    2. Standard format:
+    Standard format:
        { "changes": [...], "last_sync_at": "...", ... }
        Returns: { "server_state": {...}, "conflicts": [...], ... }
 
@@ -146,11 +68,7 @@ async def sync_data(
     correlation_id = _generate_correlation_id()
     start_time = time.monotonic()
 
-    # Detect mobile app format and handle separately
-    if _is_mobile_request(body):
-        return await _handle_mobile_sync(body, db, current_user, correlation_id)
-
-    # Standard sync format - parse into SyncRequest
+    # Parse into SyncRequest
     try:
         request = SyncRequest.model_validate(body)
     except ValidationError as e:
@@ -197,21 +115,19 @@ async def sync_data(
             conflicts_count=len(sync_response.conflicts),
             aquariums_count=len(sync_response.server_state.aquariums),
             fish_count=len(sync_response.server_state.fish),
-            events_count=len(sync_response.server_state.events),
+            feeding_logs_count=len(sync_response.server_state.feeding_logs),
             duration_ms=round(duration_ms, 2),
             sync_token=sync_response.sync_token,
         )
 
         # ETag cache validation
-        # Check if client has the same state (If-None-Match matches current state)
-        # For delta sync with no changes, return 304 Not Modified
         if (
             if_none_match is not None
             and request.last_sync_at is not None
             and len(request.changes) == 0
             and len(sync_response.server_state.aquariums) == 0
             and len(sync_response.server_state.fish) == 0
-            and len(sync_response.server_state.events) == 0
+            and len(sync_response.server_state.feeding_logs) == 0
             and len(sync_response.server_state.deleted.aquariums) == 0
             and len(sync_response.server_state.deleted.fish) == 0
         ):
@@ -263,7 +179,6 @@ async def sync_data(
             status_code=e.status_code,
             duration_ms=round(duration_ms, 2),
         )
-        # Use 409 for conflicts requiring client resolution
         if e.status_code == 409:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,

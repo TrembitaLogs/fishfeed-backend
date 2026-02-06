@@ -74,7 +74,7 @@ class TestListSpecies:
             await create_test_species(async_session, "fish-b", "Beta Fish")
             await create_test_species(async_session, "fish-c", "Gamma Fish")
 
-            response = await client.get("/species", params={"page": 1, "per_page": 2})
+            response = await client.get("/api/v1/species", params={"page": 1, "per_page": 2})
 
             assert response.status_code == 200
             data = response.json()
@@ -103,7 +103,7 @@ class TestListSpecies:
             )
 
             response = await client.get(
-                "/species", params={"care_level": "intermediate"}
+                "/api/v1/species", params={"care_level": "intermediate"}
             )
 
             assert response.status_code == 200
@@ -126,7 +126,7 @@ class TestListSpecies:
                 async_session, "salt-fish", "Salt Fish", water_type="saltwater"
             )
 
-            response = await client.get("/species", params={"water_type": "saltwater"})
+            response = await client.get("/api/v1/species", params={"water_type": "saltwater"})
 
             assert response.status_code == 200
             data = response.json()
@@ -141,7 +141,7 @@ class TestListSpecies:
         """Test that GET /species returns empty list when no species exist."""
         await cleanup_data(async_session)
         try:
-            response = await client.get("/species")
+            response = await client.get("/api/v1/species")
 
             assert response.status_code == 200
             data = response.json()
@@ -168,7 +168,7 @@ class TestSearchSpecies:
                 async_session, "betta", "Betta Fish", "Betta splendens"
             )
 
-            response = await client.get("/species/search", params={"q": "gup"})
+            response = await client.get("/api/v1/species/search", params={"q": "gup"})
 
             assert response.status_code == 200
             data = response.json()
@@ -187,7 +187,7 @@ class TestSearchSpecies:
                 async_session, "neon-tetra", "Neon Tetra", "Paracheirodon innesi"
             )
 
-            response = await client.get("/species/search", params={"q": "paracheirodon"})
+            response = await client.get("/api/v1/species/search", params={"q": "paracheirodon"})
 
             assert response.status_code == 200
             data = response.json()
@@ -200,7 +200,7 @@ class TestSearchSpecies:
         self, client: AsyncClient, async_session: AsyncSession
     ):
         """Test that search with query < 2 chars returns 422."""
-        response = await client.get("/species/search", params={"q": "x"})
+        response = await client.get("/api/v1/species/search", params={"q": "x"})
         assert response.status_code == 422
 
     async def test_search_no_matches_returns_empty_list(
@@ -212,7 +212,7 @@ class TestSearchSpecies:
             await create_test_species(async_session, "guppy", "Guppy")
 
             response = await client.get(
-                "/species/search", params={"q": "nonexistent"}
+                "/api/v1/species/search", params={"q": "nonexistent"}
             )
 
             assert response.status_code == 200
@@ -236,7 +236,7 @@ class TestGetPopularSpecies:
             await create_test_species(async_session, "guppy", "Guppy")
             await create_test_species(async_session, "rare-fish", "Rare Fish")
 
-            response = await client.get("/species/popular")
+            response = await client.get("/api/v1/species/popular")
 
             assert response.status_code == 200
             data = response.json()
@@ -254,7 +254,7 @@ class TestGetPopularSpecies:
         """Test that GET /species/popular returns at most 20 species."""
         await cleanup_data(async_session)
         try:
-            response = await client.get("/species/popular")
+            response = await client.get("/api/v1/species/popular")
 
             assert response.status_code == 200
             data = response.json()
@@ -277,7 +277,7 @@ class TestGetSpeciesById:
                 async_session, "test-fish", "Test Fish", "Testus fishus"
             )
 
-            response = await client.get("/species/test-fish")
+            response = await client.get("/api/v1/species/test-fish")
 
             assert response.status_code == 200
             data = response.json()
@@ -293,7 +293,7 @@ class TestGetSpeciesById:
         """Test that GET /species/{id} returns 404 for non-existent ID."""
         await cleanup_data(async_session)
         try:
-            response = await client.get("/species/non-existent-id")
+            response = await client.get("/api/v1/species/non-existent-id")
 
             assert response.status_code == 404
             assert "not found" in response.json()["detail"].lower()
@@ -310,7 +310,7 @@ class TestAdminCreateSpecies:
     ):
         """Test that POST /admin/species without auth returns 401."""
         response = await client.post(
-            "/admin/species",
+            "/api/v1/admin/species",
             json={
                 "id": "new-fish",
                 "common_name": "New Fish",
@@ -330,7 +330,7 @@ class TestAdminCreateSpecies:
             )
 
             response = await client.post(
-                "/admin/species",
+                "/api/v1/admin/species",
                 json={
                     "id": "new-fish",
                     "common_name": "New Fish",
@@ -353,7 +353,7 @@ class TestAdminCreateSpecies:
             )
 
             response = await client.post(
-                "/admin/species",
+                "/api/v1/admin/species",
                 json={
                     "id": "new-fish",
                     "common_name": "New Fish",
@@ -384,7 +384,7 @@ class TestAdminCreateSpecies:
             )
 
             response = await client.post(
-                "/admin/species",
+                "/api/v1/admin/species",
                 json={
                     "id": "existing-fish",
                     "common_name": "Another Fish",
@@ -407,7 +407,7 @@ class TestAdminUpdateSpecies:
     ):
         """Test that PUT /admin/species without auth returns 401."""
         response = await client.put(
-            "/admin/species/some-fish",
+            "/api/v1/admin/species/some-fish",
             json={"common_name": "Updated Name"},
         )
         assert response.status_code == 401
@@ -424,7 +424,7 @@ class TestAdminUpdateSpecies:
             )
 
             response = await client.put(
-                "/admin/species/update-fish",
+                "/api/v1/admin/species/update-fish",
                 json={"common_name": "Updated Name"},
                 headers={"Authorization": f"Bearer {access_token}"},
             )
@@ -444,7 +444,7 @@ class TestAdminUpdateSpecies:
             )
 
             response = await client.put(
-                "/admin/species/update-fish",
+                "/api/v1/admin/species/update-fish",
                 json={"common_name": "Updated Name", "care_level": "advanced"},
                 headers={"Authorization": f"Bearer {access_token}"},
             )
@@ -466,7 +466,7 @@ class TestAdminUpdateSpecies:
             )
 
             response = await client.put(
-                "/admin/species/non-existent",
+                "/api/v1/admin/species/non-existent",
                 json={"common_name": "Updated Name"},
                 headers={"Authorization": f"Bearer {access_token}"},
             )
@@ -483,7 +483,7 @@ class TestAdminDeleteSpecies:
         self, client: AsyncClient, async_session: AsyncSession
     ):
         """Test that DELETE /admin/species without auth returns 401."""
-        response = await client.delete("/admin/species/some-fish")
+        response = await client.delete("/api/v1/admin/species/some-fish")
         assert response.status_code == 401
 
     async def test_delete_species_non_admin_returns_403(
@@ -498,7 +498,7 @@ class TestAdminDeleteSpecies:
             )
 
             response = await client.delete(
-                "/admin/species/delete-fish",
+                "/api/v1/admin/species/delete-fish",
                 headers={"Authorization": f"Bearer {access_token}"},
             )
             assert response.status_code == 403
@@ -517,13 +517,13 @@ class TestAdminDeleteSpecies:
             )
 
             response = await client.delete(
-                "/admin/species/delete-fish",
+                "/api/v1/admin/species/delete-fish",
                 headers={"Authorization": f"Bearer {access_token}"},
             )
             assert response.status_code == 204
 
             # Verify species is deleted
-            get_response = await client.get("/species/delete-fish")
+            get_response = await client.get("/api/v1/species/delete-fish")
             assert get_response.status_code == 404
         finally:
             await cleanup_data(async_session)
@@ -539,7 +539,7 @@ class TestAdminDeleteSpecies:
             )
 
             response = await client.delete(
-                "/admin/species/non-existent",
+                "/api/v1/admin/species/non-existent",
                 headers={"Authorization": f"Bearer {access_token}"},
             )
             assert response.status_code == 404

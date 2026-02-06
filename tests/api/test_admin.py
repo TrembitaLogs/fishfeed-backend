@@ -80,7 +80,7 @@ class TestAdminAnalyticsAnonymize:
             )
 
             response = await client.post(
-                "/admin/analytics/anonymize",
+                "/api/v1/admin/analytics/anonymize",
                 headers={"Authorization": f"Bearer {token}"},
             )
 
@@ -93,7 +93,7 @@ class TestAdminAnalyticsAnonymize:
         self, client: AsyncClient, async_session: AsyncSession
     ):
         """Test that anonymize endpoint requires authentication."""
-        response = await client.post("/admin/analytics/anonymize")
+        response = await client.post("/api/v1/admin/analytics/anonymize")
 
         assert response.status_code == 401
 
@@ -120,10 +120,10 @@ class TestAdminAnalyticsAnonymize:
             }
 
             with patch(
-                "app.api.admin.anonymize_old_events_job", return_value=mock_result
+                "app.api.admin.analytics.anonymize_old_events_job", return_value=mock_result
             ):
                 response = await client.post(
-                    "/admin/analytics/anonymize",
+                    "/api/v1/admin/analytics/anonymize",
                     params={"dry_run": True},
                     headers={"Authorization": f"Bearer {token}"},
                 )
@@ -157,10 +157,10 @@ class TestAdminAnalyticsAnonymize:
             }
 
             with patch(
-                "app.api.admin.anonymize_old_events_job", return_value=mock_result
+                "app.api.admin.analytics.anonymize_old_events_job", return_value=mock_result
             ):
                 response = await client.post(
-                    "/admin/analytics/anonymize",
+                    "/api/v1/admin/analytics/anonymize",
                     params={"dry_run": False},
                     headers={"Authorization": f"Bearer {token}"},
                 )
@@ -189,7 +189,7 @@ class TestAdminAnalyticsCleanup:
             )
 
             response = await client.post(
-                "/admin/analytics/cleanup",
+                "/api/v1/admin/analytics/cleanup",
                 headers={"Authorization": f"Bearer {token}"},
             )
 
@@ -219,10 +219,10 @@ class TestAdminAnalyticsCleanup:
             }
 
             with patch(
-                "app.api.admin.delete_old_events_job", return_value=mock_result
+                "app.api.admin.analytics.delete_old_events_job", return_value=mock_result
             ):
                 response = await client.post(
-                    "/admin/analytics/cleanup",
+                    "/api/v1/admin/analytics/cleanup",
                     params={"dry_run": True},
                     headers={"Authorization": f"Bearer {token}"},
                 )
@@ -256,10 +256,10 @@ class TestAdminAnalyticsCleanup:
             }
 
             with patch(
-                "app.api.admin.delete_old_events_job", return_value=mock_result
+                "app.api.admin.analytics.delete_old_events_job", return_value=mock_result
             ):
                 response = await client.post(
-                    "/admin/analytics/cleanup",
+                    "/api/v1/admin/analytics/cleanup",
                     params={"dry_run": False},
                     headers={"Authorization": f"Bearer {token}"},
                 )
@@ -288,7 +288,7 @@ class TestAdminAnalyticsFullCleanup:
             )
 
             response = await client.post(
-                "/admin/analytics/full-cleanup",
+                "/api/v1/admin/analytics/full-cleanup",
                 headers={"Authorization": f"Bearer {token}"},
             )
 
@@ -323,10 +323,10 @@ class TestAdminAnalyticsFullCleanup:
             }
 
             with patch(
-                "app.api.admin.analytics_cleanup_job", return_value=mock_result
+                "app.api.admin.analytics.analytics_cleanup_job", return_value=mock_result
             ):
                 response = await client.post(
-                    "/admin/analytics/full-cleanup",
+                    "/api/v1/admin/analytics/full-cleanup",
                     params={"dry_run": True},
                     headers={"Authorization": f"Bearer {token}"},
                 )
@@ -366,10 +366,10 @@ class TestAdminAnalyticsFullCleanup:
             }
 
             with patch(
-                "app.api.admin.analytics_cleanup_job", return_value=mock_result
+                "app.api.admin.analytics.analytics_cleanup_job", return_value=mock_result
             ):
                 response = await client.post(
-                    "/admin/analytics/full-cleanup",
+                    "/api/v1/admin/analytics/full-cleanup",
                     params={"dry_run": False},
                     headers={"Authorization": f"Bearer {token}"},
                 )

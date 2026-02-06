@@ -1,235 +1,271 @@
-"""Feeding schedule and events API endpoints."""
+"""Feeding schedule and feeding log API endpoints."""
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.dependencies import CurrentActiveUser
 from app.schemas.feeding import (
-    EventResponse,
+    FeedingLogConflictResponse,
+    FeedingLogCreate,
+    FeedingLogResponse,
+    ScheduleCreate,
     ScheduleResponse,
     ScheduleUpdate,
-    TodayEventsResponse,
 )
 from app.services.aquarium import AquariumAccessDeniedError, AquariumNotFoundError
 from app.services.feeding import (
-    EventAlreadyCompletedError,
-    EventNotFoundError,
+    FeedingError,
+    FeedingLogConflictError,
     ScheduleNotFoundError,
+    create_feeding_log,
+    create_schedule,
+    delete_schedule,
     generate_schedule,
-    get_all_events,
-    get_schedule,
-    get_today_events,
-    mark_as_fed,
-    mark_as_missed_by_user,
+    get_feeding_logs,
+    get_schedules,
     update_schedule,
 )
 
 router = APIRouter(tags=["Feeding"])
 
 
+def _handle_feeding_error(e: FeedingError) -> HTTPException:
+    """Convert FeedingError to HTTPException."""
+    return HTTPException(status_code=e.status_code, detail=e.message)
+
+
+def _handle_aquarium_error(e: AquariumNotFoundError | AquariumAccessDeniedError) -> HTTPException:
+    """Convert aquarium errors to HTTPException."""
+    return HTTPException(status_code=e.status_code, detail=e.message)
+
+
+# ── Schedule endpoints ──────────────────────────────────────────────
+
+
 @router.get(
-    "/aquariums/{aquarium_id}/schedule",
-    response_model=ScheduleResponse | None,
-    summary="Get feeding schedule",
+    "/aquariums/{aquarium_id}/schedules",
+    response_model=list[ScheduleResponse],
+    summary="List feeding schedules",
     responses={
-        200: {"description": "Feeding schedule or null if not set"},
+        200: {"description": "List of feeding schedules"},
         401: {"description": "Not authenticated"},
         403: {"description": "Access denied"},
         404: {"description": "Aquarium not found"},
     },
 )
-async def get_aquarium_schedule(
+async def list_schedules(
     aquarium_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: CurrentActiveUser,
-) -> ScheduleResponse | None:
-    """Get the current feeding schedule for an aquarium."""
+    active: bool | None = Query(default=None),
+) -> list[ScheduleResponse]:
+    """Get feeding schedules for an aquarium. Filter by active status optionally."""
     try:
-        schedule = await get_schedule(db, aquarium_id, current_user.id)
-        if schedule is None:
-            return None
+        schedules = await get_schedules(db, aquarium_id, current_user.id, active=active)
+        return [ScheduleResponse.model_validate(s) for s in schedules]
+    except (AquariumNotFoundError, AquariumAccessDeniedError) as e:
+        raise _handle_aquarium_error(e) from None
+
+
+@router.post(
+    "/aquariums/{aquarium_id}/schedules",
+    response_model=ScheduleResponse,
+    status_code=201,
+    summary="Create feeding schedule",
+    responses={
+        201: {"description": "Schedule created"},
+        400: {"description": "Validation error"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Access denied"},
+        404: {"description": "Aquarium not found"},
+    },
+)
+async def create_aquarium_schedule(
+    aquarium_id: UUID,
+    data: ScheduleCreate,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: CurrentActiveUser,
+) -> ScheduleResponse:
+    """Create a new feeding schedule for an aquarium."""
+    try:
+        schedule = await create_schedule(db, aquarium_id, current_user.id, data)
         return ScheduleResponse.model_validate(schedule)
-    except AquariumNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumAccessDeniedError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    except (AquariumNotFoundError, AquariumAccessDeniedError) as e:
+        raise _handle_aquarium_error(e) from None
+    except FeedingError as e:
+        raise _handle_feeding_error(e) from None
 
 
-@router.put(
-    "/aquariums/{aquarium_id}/schedule",
+@router.patch(
+    "/aquariums/{aquarium_id}/schedules/{schedule_id}",
     response_model=ScheduleResponse,
     summary="Update feeding schedule",
     responses={
         200: {"description": "Schedule updated"},
+        400: {"description": "Validation error"},
         401: {"description": "Not authenticated"},
         403: {"description": "Access denied"},
-        404: {"description": "Aquarium or schedule not found"},
-        422: {"description": "Validation error"},
+        404: {"description": "Schedule not found"},
     },
 )
 async def update_aquarium_schedule(
     aquarium_id: UUID,
+    schedule_id: UUID,
     data: ScheduleUpdate,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: CurrentActiveUser,
 ) -> ScheduleResponse:
-    """Manually update the feeding schedule for an aquarium."""
+    """Partially update a feeding schedule."""
     try:
-        schedule = await update_schedule(db, aquarium_id, current_user.id, data)
+        schedule = await update_schedule(db, aquarium_id, schedule_id, current_user.id, data)
         return ScheduleResponse.model_validate(schedule)
-    except AquariumNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumAccessDeniedError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    except (AquariumNotFoundError, AquariumAccessDeniedError) as e:
+        raise _handle_aquarium_error(e) from None
     except ScheduleNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+        raise _handle_feeding_error(e) from None
+    except FeedingError as e:
+        raise _handle_feeding_error(e) from None
+
+
+@router.delete(
+    "/aquariums/{aquarium_id}/schedules/{schedule_id}",
+    status_code=204,
+    summary="Delete feeding schedule",
+    responses={
+        204: {"description": "Schedule deleted"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Access denied"},
+        404: {"description": "Schedule not found"},
+    },
+)
+async def delete_aquarium_schedule(
+    aquarium_id: UUID,
+    schedule_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: CurrentActiveUser,
+) -> None:
+    """Delete a feeding schedule."""
+    try:
+        await delete_schedule(db, aquarium_id, schedule_id, current_user.id)
+    except (AquariumNotFoundError, AquariumAccessDeniedError) as e:
+        raise _handle_aquarium_error(e) from None
+    except ScheduleNotFoundError as e:
+        raise _handle_feeding_error(e) from None
 
 
 @router.post(
-    "/aquariums/{aquarium_id}/schedule/generate",
-    response_model=ScheduleResponse,
-    summary="Generate feeding schedule",
+    "/aquariums/{aquarium_id}/schedules/generate",
+    response_model=list[ScheduleResponse],
+    summary="Auto-generate feeding schedules",
     responses={
-        200: {"description": "Schedule generated"},
+        200: {"description": "Schedules generated"},
         401: {"description": "Not authenticated"},
         403: {"description": "Access denied"},
         404: {"description": "Aquarium not found"},
     },
 )
-async def generate_aquarium_schedule(
+async def generate_aquarium_schedules(
     aquarium_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: CurrentActiveUser,
-) -> ScheduleResponse:
-    """Auto-generate feeding schedule based on fish species in aquarium."""
+) -> list[ScheduleResponse]:
+    """Auto-generate feeding schedules based on fish species in aquarium."""
     try:
-        schedule = await generate_schedule(db, aquarium_id, current_user.id)
-        return ScheduleResponse.model_validate(schedule)
-    except AquariumNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumAccessDeniedError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+        schedules = await generate_schedule(db, aquarium_id, current_user.id)
+        return [ScheduleResponse.model_validate(s) for s in schedules]
+    except (AquariumNotFoundError, AquariumAccessDeniedError) as e:
+        raise _handle_aquarium_error(e) from None
+
+
+# ── FeedingLog endpoints ────────────────────────────────────────────
 
 
 @router.get(
-    "/aquariums/{aquarium_id}/events",
-    response_model=list[EventResponse],
-    summary="List all feeding events",
+    "/aquariums/{aquarium_id}/feeding-logs",
+    response_model=list[FeedingLogResponse],
+    summary="List feeding logs",
     responses={
-        200: {"description": "List of all feeding events"},
+        200: {"description": "List of feeding logs"},
+        400: {"description": "Invalid date range"},
         401: {"description": "Not authenticated"},
         403: {"description": "Access denied"},
         404: {"description": "Aquarium not found"},
     },
 )
-async def list_feeding_events(
+async def list_feeding_logs(
     aquarium_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: CurrentActiveUser,
-) -> list[EventResponse]:
-    """Get all feeding events for an aquarium."""
+    from_date: datetime = Query(..., alias="from"),
+    to_date: datetime = Query(..., alias="to"),
+    fish_id: UUID | None = Query(default=None),
+) -> list[FeedingLogResponse]:
+    """Get feeding logs for an aquarium within a date range."""
+    # Validate max date range
+    delta = to_date - from_date
+    if delta.days > 366:
+        raise HTTPException(status_code=400, detail="Date range cannot exceed 366 days")
+
     try:
-        events = await get_all_events(db, aquarium_id, current_user.id)
-        return [EventResponse.model_validate(e) for e in events]
-    except AquariumNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumAccessDeniedError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+        logs = await get_feeding_logs(
+            db, aquarium_id, current_user.id, from_date, to_date, fish_id
+        )
+        responses = []
+        for log in logs:
+            resp = FeedingLogResponse.model_validate(log)
+            resp.acted_by_user_name = (
+                log.acted_by_user.nickname if log.acted_by_user else None
+            )
+            responses.append(resp)
+        return responses
+    except (AquariumNotFoundError, AquariumAccessDeniedError) as e:
+        raise _handle_aquarium_error(e) from None
 
 
-@router.get(
-    "/aquariums/{aquarium_id}/events/today",
-    response_model=TodayEventsResponse,
-    summary="Get today's feeding events",
+@router.post(
+    "/aquariums/{aquarium_id}/feeding-logs",
+    response_model=FeedingLogResponse,
+    status_code=201,
+    summary="Create feeding log",
     responses={
-        200: {"description": "Today's feeding events with next feeding time"},
+        201: {"description": "Feeding log created"},
         401: {"description": "Not authenticated"},
         403: {"description": "Access denied"},
         404: {"description": "Aquarium not found"},
+        409: {"description": "Duplicate feeding log", "model": FeedingLogConflictResponse},
     },
 )
-async def get_today_feeding_events(
+async def create_aquarium_feeding_log(
     aquarium_id: UUID,
+    data: FeedingLogCreate,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: CurrentActiveUser,
-) -> TodayEventsResponse:
-    """Get today's feeding events with next scheduled feeding time."""
+) -> FeedingLogResponse | JSONResponse:
+    """Create a feeding log entry. Returns 409 on duplicate (schedule_id, scheduled_for)."""
     try:
-        events = await get_today_events(db, aquarium_id, current_user.id)
-        event_responses = [EventResponse.model_validate(e) for e in events]
-
-        # Find next pending feeding
-        now = datetime.now(UTC)
-        next_feeding = None
-        for event in events:
-            if event.status == "pending" and event.scheduled_at > now:
-                next_feeding = event.scheduled_at
-                break
-
-        return TodayEventsResponse(events=event_responses, next_feeding=next_feeding)
-    except AquariumNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumAccessDeniedError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-
-
-@router.post(
-    "/aquariums/{aquarium_id}/events/{event_id}/fed",
-    response_model=EventResponse,
-    summary="Mark feeding as completed",
-    responses={
-        200: {"description": "Event marked as fed"},
-        400: {"description": "Event already completed"},
-        401: {"description": "Not authenticated"},
-        403: {"description": "Access denied"},
-        404: {"description": "Event not found"},
-    },
-)
-async def mark_event_as_fed(
-    aquarium_id: UUID,
-    event_id: UUID,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: CurrentActiveUser,
-) -> EventResponse:
-    """Mark a feeding event as completed."""
-    try:
-        event = await mark_as_fed(db, event_id, current_user.id)
-        return EventResponse.model_validate(event)
-    except EventNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumAccessDeniedError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except EventAlreadyCompletedError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-
-
-@router.post(
-    "/aquariums/{aquarium_id}/events/{event_id}/missed",
-    response_model=EventResponse,
-    summary="Mark feeding as missed",
-    responses={
-        200: {"description": "Event marked as missed"},
-        401: {"description": "Not authenticated"},
-        403: {"description": "Access denied"},
-        404: {"description": "Event not found"},
-    },
-)
-async def mark_event_as_missed(
-    aquarium_id: UUID,
-    event_id: UUID,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: CurrentActiveUser,
-) -> EventResponse:
-    """Mark a feeding event as missed."""
-    try:
-        event = await mark_as_missed_by_user(db, event_id, current_user.id)
-        return EventResponse.model_validate(event)
-    except EventNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumAccessDeniedError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+        log = await create_feeding_log(db, aquarium_id, current_user.id, data)
+        resp = FeedingLogResponse.model_validate(log)
+        resp.acted_by_user_name = (
+            log.acted_by_user.nickname if log.acted_by_user else None
+        )
+        return resp
+    except (AquariumNotFoundError, AquariumAccessDeniedError) as e:
+        raise _handle_aquarium_error(e) from None
+    except FeedingLogConflictError as e:
+        existing_resp = FeedingLogResponse.model_validate(e.existing_log)
+        existing_resp.acted_by_user_name = e.acted_by_user_name
+        conflict = FeedingLogConflictResponse(
+            error="conflict",
+            message=e.message,
+            existing_log=existing_resp,
+        )
+        return JSONResponse(
+            status_code=409,
+            content=conflict.model_dump(mode="json"),
+        )

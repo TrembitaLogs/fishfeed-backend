@@ -13,20 +13,20 @@ class TestGetUserProfile:
 
     async def test_get_profile_requires_auth(self, client: AsyncClient):
         """Test that GET /users/me requires authentication."""
-        response = await client.get("/users/me")
+        response = await client.get("/api/v1/users/me")
         assert response.status_code == 401
 
     async def test_get_profile_returns_full_profile(self, client: AsyncClient):
         """Test that GET /users/me returns full profile with all fields."""
         email = f"profile_{uuid4().hex[:8]}@example.com"
         register_response = await client.post(
-            "/auth/register",
+            "/api/v1/auth/register",
             json={"email": email, "password": "SecurePass123"},
         )
         access_token = register_response.json()["access_token"]
 
         response = await client.get(
-            "/users/me",
+            "/api/v1/users/me",
             headers={"Authorization": f"Bearer {access_token}"},
         )
 
@@ -48,13 +48,13 @@ class TestGetUserProfile:
         """Test that streak contains current_streak, best_streak, freeze_available, last_feed_date."""
         email = f"streak_fields_{uuid4().hex[:8]}@example.com"
         register_response = await client.post(
-            "/auth/register",
+            "/api/v1/auth/register",
             json={"email": email, "password": "SecurePass123"},
         )
         access_token = register_response.json()["access_token"]
 
         response = await client.get(
-            "/users/me",
+            "/api/v1/users/me",
             headers={"Authorization": f"Bearer {access_token}"},
         )
 
@@ -70,13 +70,13 @@ class TestGetUserProfile:
         """Test that new user has streak with zero values."""
         email = f"new_user_streak_{uuid4().hex[:8]}@example.com"
         register_response = await client.post(
-            "/auth/register",
+            "/api/v1/auth/register",
             json={"email": email, "password": "SecurePass123"},
         )
         access_token = register_response.json()["access_token"]
 
         response = await client.get(
-            "/users/me",
+            "/api/v1/users/me",
             headers={"Authorization": f"Bearer {access_token}"},
         )
 
@@ -94,21 +94,21 @@ class TestUpdateUserProfile:
 
     async def test_update_profile_requires_auth(self, client: AsyncClient):
         """Test that PUT /users/me requires authentication."""
-        response = await client.put("/users/me", json={"display_name": "Test"})
+        response = await client.put("/api/v1/users/me", json={"display_name": "Test"})
         assert response.status_code == 401
 
     async def test_update_display_name(self, client: AsyncClient):
         """Test that PUT /users/me updates display_name."""
         email = f"update_name_{uuid4().hex[:8]}@example.com"
         register_response = await client.post(
-            "/auth/register",
+            "/api/v1/auth/register",
             json={"email": email, "password": "SecurePass123"},
         )
         access_token = register_response.json()["access_token"]
 
         # Update display_name
         update_response = await client.put(
-            "/users/me",
+            "/api/v1/users/me",
             json={"display_name": "NewDisplayName"},
             headers={"Authorization": f"Bearer {access_token}"},
         )
@@ -118,7 +118,7 @@ class TestUpdateUserProfile:
 
         # Verify with GET
         get_response = await client.get(
-            "/users/me",
+            "/api/v1/users/me",
             headers={"Authorization": f"Bearer {access_token}"},
         )
         assert get_response.json()["display_name"] == "NewDisplayName"
@@ -127,14 +127,14 @@ class TestUpdateUserProfile:
         """Test that PUT /users/me updates avatar_url."""
         email = f"update_avatar_{uuid4().hex[:8]}@example.com"
         register_response = await client.post(
-            "/auth/register",
+            "/api/v1/auth/register",
             json={"email": email, "password": "SecurePass123"},
         )
         access_token = register_response.json()["access_token"]
 
         avatar_url = "https://example.com/avatar.png"
         update_response = await client.put(
-            "/users/me",
+            "/api/v1/users/me",
             json={"avatar_url": avatar_url},
             headers={"Authorization": f"Bearer {access_token}"},
         )
@@ -146,14 +146,14 @@ class TestUpdateUserProfile:
         """Test that invalid avatar_url (not http/https) returns 422."""
         email = f"invalid_avatar_{uuid4().hex[:8]}@example.com"
         register_response = await client.post(
-            "/auth/register",
+            "/api/v1/auth/register",
             json={"email": email, "password": "SecurePass123"},
         )
         access_token = register_response.json()["access_token"]
 
         # Try to set invalid URL (not http/https)
         response = await client.put(
-            "/users/me",
+            "/api/v1/users/me",
             json={"avatar_url": "ftp://example.com/avatar.png"},
             headers={"Authorization": f"Bearer {access_token}"},
         )
@@ -164,13 +164,13 @@ class TestUpdateUserProfile:
         """Test that PUT /users/me with empty body returns 200 OK."""
         email = f"empty_update_{uuid4().hex[:8]}@example.com"
         register_response = await client.post(
-            "/auth/register",
+            "/api/v1/auth/register",
             json={"email": email, "password": "SecurePass123"},
         )
         access_token = register_response.json()["access_token"]
 
         response = await client.put(
-            "/users/me",
+            "/api/v1/users/me",
             json={},
             headers={"Authorization": f"Bearer {access_token}"},
         )
@@ -181,14 +181,14 @@ class TestUpdateUserProfile:
         """Test that display_name > 50 characters returns 422."""
         email = f"long_name_{uuid4().hex[:8]}@example.com"
         register_response = await client.post(
-            "/auth/register",
+            "/api/v1/auth/register",
             json={"email": email, "password": "SecurePass123"},
         )
         access_token = register_response.json()["access_token"]
 
         long_name = "A" * 51
         response = await client.put(
-            "/users/me",
+            "/api/v1/users/me",
             json={"display_name": long_name},
             headers={"Authorization": f"Bearer {access_token}"},
         )
@@ -199,14 +199,14 @@ class TestUpdateUserProfile:
         """Test that PUT /users/me allows setting display_name and avatar_url to null."""
         email = f"null_values_{uuid4().hex[:8]}@example.com"
         register_response = await client.post(
-            "/auth/register",
+            "/api/v1/auth/register",
             json={"email": email, "password": "SecurePass123"},
         )
         access_token = register_response.json()["access_token"]
 
         # First set values
         await client.put(
-            "/users/me",
+            "/api/v1/users/me",
             json={
                 "display_name": "TestName",
                 "avatar_url": "https://example.com/avatar.png",
@@ -216,7 +216,7 @@ class TestUpdateUserProfile:
 
         # Then set to null
         response = await client.put(
-            "/users/me",
+            "/api/v1/users/me",
             json={"display_name": None, "avatar_url": None},
             headers={"Authorization": f"Bearer {access_token}"},
         )
@@ -237,14 +237,14 @@ class TestUserProfileIntegration:
         """Test that GET /users/me shows correct streak after feeding events."""
         email = f"feeding_streak_{uuid4().hex[:8]}@example.com"
         register_response = await client.post(
-            "/auth/register",
+            "/api/v1/auth/register",
             json={"email": email, "password": "SecurePass123"},
         )
         access_token = register_response.json()["access_token"]
 
         # Create an aquarium
         aquarium_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Test Aquarium"},
             headers={"Authorization": f"Bearer {access_token}"},
         )
@@ -252,7 +252,7 @@ class TestUserProfileIntegration:
 
         # Create a feeding schedule
         schedule_response = await client.post(
-            f"/aquariums/{aquarium_id}/feeding/schedules",
+            f"/api/v1/aquariums/{aquarium_id}/feeding/schedules",
             json={"time": "08:00", "food_type": "flakes"},
             headers={"Authorization": f"Bearer {access_token}"},
         )
@@ -262,13 +262,13 @@ class TestUserProfileIntegration:
 
             # Mark as fed to trigger streak update
             await client.post(
-                f"/aquariums/{aquarium_id}/feeding/schedules/{schedule_id}/mark-fed",
+                f"/api/v1/aquariums/{aquarium_id}/feeding/schedules/{schedule_id}/mark-fed",
                 headers={"Authorization": f"Bearer {access_token}"},
             )
 
         # Check profile - streak should be updated
         profile_response = await client.get(
-            "/users/me",
+            "/api/v1/users/me",
             headers={"Authorization": f"Bearer {access_token}"},
         )
 
@@ -286,7 +286,7 @@ class TestDataExport:
 
     async def test_data_export_requires_auth(self, client: AsyncClient):
         """Test that data export requires authentication."""
-        response = await client.get("/users/me/data-export")
+        response = await client.get("/api/v1/users/me/data-export")
         assert response.status_code == 401
 
     async def test_data_export_returns_valid_response(self, client: AsyncClient):
@@ -294,7 +294,7 @@ class TestDataExport:
         # Register and login
         email = f"export_{uuid4().hex[:8]}@example.com"
         register_response = await client.post(
-            "/auth/register",
+            "/api/v1/auth/register",
             json={"email": email, "password": "SecurePass123"},
         )
         access_token = register_response.json()["access_token"]
@@ -310,7 +310,7 @@ class TestDataExport:
             "app.services.analytics.S3StorageService", return_value=mock_storage
         ):
             response = await client.get(
-                "/users/me/data-export",
+                "/api/v1/users/me/data-export",
                 headers={"Authorization": f"Bearer {access_token}"},
             )
 
@@ -325,7 +325,7 @@ class TestDataExport:
         """Test that data export returns 503 when storage not configured."""
         email = f"export_no_storage_{uuid4().hex[:8]}@example.com"
         register_response = await client.post(
-            "/auth/register",
+            "/api/v1/auth/register",
             json={"email": email, "password": "SecurePass123"},
         )
         access_token = register_response.json()["access_token"]
@@ -340,7 +340,7 @@ class TestDataExport:
             "app.services.analytics.S3StorageService", return_value=mock_storage
         ):
             response = await client.get(
-                "/users/me/data-export",
+                "/api/v1/users/me/data-export",
                 headers={"Authorization": f"Bearer {access_token}"},
             )
 
@@ -354,7 +354,7 @@ class TestDataDeletion:
 
     async def test_data_deletion_requires_auth(self, client: AsyncClient):
         """Test that data deletion requires authentication."""
-        response = await client.delete("/users/me/data")
+        response = await client.delete("/api/v1/users/me/data")
         assert response.status_code == 401
 
     async def test_data_deletion_removes_user(self, client: AsyncClient):
@@ -362,21 +362,21 @@ class TestDataDeletion:
         # Register and login
         email = f"delete_{uuid4().hex[:8]}@example.com"
         register_response = await client.post(
-            "/auth/register",
+            "/api/v1/auth/register",
             json={"email": email, "password": "SecurePass123"},
         )
         access_token = register_response.json()["access_token"]
 
         # Delete user data
         delete_response = await client.delete(
-            "/users/me/data",
+            "/api/v1/users/me/data",
             headers={"Authorization": f"Bearer {access_token}"},
         )
         assert delete_response.status_code == 204
 
         # Verify user can no longer login
         login_response = await client.post(
-            "/auth/login",
+            "/api/v1/auth/login",
             json={"email": email, "password": "SecurePass123"},
         )
         assert login_response.status_code == 401
@@ -386,14 +386,14 @@ class TestDataDeletion:
         # Register and login
         email = f"delete_related_{uuid4().hex[:8]}@example.com"
         register_response = await client.post(
-            "/auth/register",
+            "/api/v1/auth/register",
             json={"email": email, "password": "SecurePass123"},
         )
         access_token = register_response.json()["access_token"]
 
         # Create an aquarium
         aquarium_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Test Aquarium"},
             headers={"Authorization": f"Bearer {access_token}"},
         )
@@ -401,7 +401,7 @@ class TestDataDeletion:
 
         # Delete user data (aquarium will be deleted as orphan)
         delete_response = await client.delete(
-            "/users/me/data",
+            "/api/v1/users/me/data",
             headers={"Authorization": f"Bearer {access_token}"},
         )
         assert delete_response.status_code == 204
@@ -411,14 +411,14 @@ class TestDataDeletion:
         # Register and login
         email = f"delete_twice_{uuid4().hex[:8]}@example.com"
         register_response = await client.post(
-            "/auth/register",
+            "/api/v1/auth/register",
             json={"email": email, "password": "SecurePass123"},
         )
         access_token = register_response.json()["access_token"]
 
         # First deletion
         first_delete = await client.delete(
-            "/users/me/data",
+            "/api/v1/users/me/data",
             headers={"Authorization": f"Bearer {access_token}"},
         )
         assert first_delete.status_code == 204
@@ -426,7 +426,7 @@ class TestDataDeletion:
         # Second deletion attempt with same token should fail
         # (user doesn't exist anymore, so token validation fails)
         second_delete = await client.delete(
-            "/users/me/data",
+            "/api/v1/users/me/data",
             headers={"Authorization": f"Bearer {access_token}"},
         )
         # Token is invalid after user deletion
@@ -441,14 +441,14 @@ class TestGDPRCompliance:
         """Test that export collects data from all tables."""
         email = f"gdpr_full_{uuid4().hex[:8]}@example.com"
         register_response = await client.post(
-            "/auth/register",
+            "/api/v1/auth/register",
             json={"email": email, "password": "SecurePass123"},
         )
         access_token = register_response.json()["access_token"]
 
         # Create some data
         await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "GDPR Test Aquarium"},
             headers={"Authorization": f"Bearer {access_token}"},
         )
@@ -473,7 +473,7 @@ class TestGDPRCompliance:
             "app.services.analytics.S3StorageService", return_value=mock_storage
         ):
             response = await client.get(
-                "/users/me/data-export",
+                "/api/v1/users/me/data-export",
                 headers={"Authorization": f"Bearer {access_token}"},
             )
 
@@ -487,7 +487,7 @@ class TestGDPRCompliance:
             "aquarium_memberships",
             "fish",
             "feeding_schedules",
-            "feeding_events",
+            "feeding_logs",
             "streak",
             "achievements",
             "ai_scans",
@@ -504,28 +504,28 @@ class TestGDPRCompliance:
         """Test that deletion doesn't violate FK constraints."""
         email = f"fk_test_{uuid4().hex[:8]}@example.com"
         register_response = await client.post(
-            "/auth/register",
+            "/api/v1/auth/register",
             json={"email": email, "password": "SecurePass123"},
         )
         access_token = register_response.json()["access_token"]
 
         # Create aquarium with fish
         aquarium_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "FK Test Aquarium"},
             headers={"Authorization": f"Bearer {access_token}"},
         )
         aquarium_id = aquarium_response.json()["id"]
 
         await client.post(
-            f"/aquariums/{aquarium_id}/fish",
+            f"/api/v1/aquariums/{aquarium_id}/fish",
             json={"species_id": "test-guppy", "quantity": 5},
             headers={"Authorization": f"Bearer {access_token}"},
         )
 
         # This should not raise any FK constraint errors
         delete_response = await client.delete(
-            "/users/me/data",
+            "/api/v1/users/me/data",
             headers={"Authorization": f"Bearer {access_token}"},
         )
         assert delete_response.status_code == 204

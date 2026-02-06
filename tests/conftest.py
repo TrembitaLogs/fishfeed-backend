@@ -2,7 +2,7 @@ import os
 from collections.abc import AsyncGenerator
 
 import pytest_asyncio
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 from httpx import ASGITransport, AsyncClient
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -127,22 +127,28 @@ async def redis_client() -> AsyncGenerator[Redis]:
 async def app(async_engine, redis_client) -> AsyncGenerator[FastAPI]:
     """Create FastAPI app for testing."""
     app = FastAPI()
+
+    # Health and releases are not versioned
     app.include_router(health_router)
-    app.include_router(auth_router)
-    app.include_router(users_router)
-    app.include_router(species_router)
-    app.include_router(species_admin_router)
-    app.include_router(aquariums_router)
-    app.include_router(fish_router)
-    app.include_router(feeding_router)
-    app.include_router(sync_router)
-    app.include_router(family_router)
-    app.include_router(push_router)
-    app.include_router(ai_router)
-    app.include_router(gamification_router)
-    app.include_router(purchase_router)
     app.include_router(releases_router)
-    app.include_router(admin_router)
+
+    # All API routes under /api/v1
+    api_v1 = APIRouter(prefix="/api/v1")
+    api_v1.include_router(auth_router)
+    api_v1.include_router(users_router)
+    api_v1.include_router(species_router)
+    api_v1.include_router(species_admin_router)
+    api_v1.include_router(aquariums_router)
+    api_v1.include_router(fish_router)
+    api_v1.include_router(feeding_router)
+    api_v1.include_router(sync_router)
+    api_v1.include_router(family_router)
+    api_v1.include_router(push_router)
+    api_v1.include_router(ai_router)
+    api_v1.include_router(gamification_router)
+    api_v1.include_router(purchase_router)
+    api_v1.include_router(admin_router)
+    app.include_router(api_v1)
 
     async_session_maker = async_sessionmaker(
         async_engine,

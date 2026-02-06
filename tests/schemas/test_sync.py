@@ -53,7 +53,7 @@ class TestChangeItem:
     def test_valid_delete_operation(self):
         """Test valid ChangeItem with delete operation."""
         change = ChangeItem(
-            entity_type="event",
+            entity_type="feeding_log",
             entity_id=uuid4(),
             operation="delete",
             client_updated_at=datetime.now(UTC),
@@ -66,7 +66,7 @@ class TestChangeItem:
         """Test that all entity types are valid."""
         now = datetime.now(UTC)
 
-        for entity_type in ["aquarium", "fish", "event"]:
+        for entity_type in ["aquarium", "fish", "feeding_log"]:
             change = ChangeItem(
                 entity_type=entity_type,
                 entity_id=uuid4(),
@@ -205,7 +205,7 @@ class TestSyncRequest:
                 client_updated_at=now,
             ),
             ChangeItem(
-                entity_type="event",
+                entity_type="feeding_log",
                 entity_id=uuid4(),
                 operation="delete",
                 client_updated_at=now,
@@ -217,7 +217,7 @@ class TestSyncRequest:
         assert len(request.changes) == 3
         assert request.changes[0].entity_type == "aquarium"
         assert request.changes[1].entity_type == "fish"
-        assert request.changes[2].entity_type == "event"
+        assert request.changes[2].entity_type == "feeding_log"
 
     def test_json_serialization(self):
         """Test SyncRequest can be serialized to JSON."""
@@ -305,7 +305,7 @@ class TestConflictItem:
     def test_json_serialization(self):
         """Test ConflictItem can be serialized to JSON."""
         conflict = ConflictItem(
-            entity_type="event",
+            entity_type="feeding_log",
             entity_id=uuid4(),
             client_data={"status": "completed"},
             server_data={"status": "pending"},
@@ -315,7 +315,7 @@ class TestConflictItem:
         )
 
         data = conflict.model_dump()
-        assert data["entity_type"] == "event"
+        assert data["entity_type"] == "feeding_log"
         assert data["resolution"] == "server_wins"
 
 
@@ -328,23 +328,23 @@ class TestServerState:
 
         assert state.aquariums == []
         assert state.fish == []
-        assert state.events == []
+        assert state.feeding_logs == []
 
     def test_server_state_with_data(self):
         """Test ServerState with data."""
         aquarium_id = uuid4()
         fish_id = uuid4()
-        event_id = uuid4()
+        log_id = uuid4()
 
         state = ServerState(
             aquariums=[{"id": str(aquarium_id), "name": "My Aquarium"}],
             fish=[{"id": str(fish_id), "name": "Nemo"}],
-            events=[{"id": str(event_id), "status": "pending"}],
+            feeding_logs=[{"id": str(log_id), "action": "fed"}],
         )
 
         assert len(state.aquariums) == 1
         assert len(state.fish) == 1
-        assert len(state.events) == 1
+        assert len(state.feeding_logs) == 1
 
     def test_default_values(self):
         """Test ServerState default values."""
@@ -352,20 +352,20 @@ class TestServerState:
 
         assert state.aquariums == []
         assert state.fish == []
-        assert state.events == []
+        assert state.feeding_logs == []
 
     def test_json_serialization(self):
         """Test ServerState can be serialized to JSON."""
         state = ServerState(
             aquariums=[{"id": str(uuid4()), "name": "Test"}],
             fish=[],
-            events=[],
+            feeding_logs=[],
         )
 
         data = state.model_dump()
         assert len(data["aquariums"]) == 1
         assert data["fish"] == []
-        assert data["events"] == []
+        assert data["feeding_logs"] == []
 
 
 class TestSyncResponse:
@@ -376,7 +376,7 @@ class TestSyncResponse:
         state = ServerState(
             aquariums=[{"id": str(uuid4()), "name": "Aquarium"}],
             fish=[],
-            events=[],
+            feeding_logs=[],
         )
 
         response = SyncResponse(
@@ -425,7 +425,7 @@ class TestSyncResponse:
         state = ServerState(
             aquariums=[{"id": str(uuid4()), "name": "Test"}],
             fish=[{"id": str(uuid4()), "name": "Nemo"}],
-            events=[],
+            feeding_logs=[],
         )
 
         response = SyncResponse(
@@ -445,7 +445,7 @@ class TestSyncResponse:
             "server_state": {
                 "aquariums": [{"id": str(uuid4()), "name": "Aquarium"}],
                 "fish": [],
-                "events": [],
+                "feeding_logs": [],
             },
             "conflicts": [],
             "sync_token": "my-sync-token",
@@ -465,7 +465,7 @@ class TestSyncResponse:
             server_state=ServerState(
                 aquariums=[{"id": str(entity_id), "name": "Test"}],
                 fish=[],
-                events=[],
+                feeding_logs=[],
             ),
             conflicts=[
                 ConflictItem(

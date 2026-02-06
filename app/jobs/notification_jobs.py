@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.database import async_session_maker
 from app.models.aquarium import Aquarium, AquariumMember
-from app.models.feeding import FeedingEvent
+from app.models.feeding import FeedingLog
 from app.models.user import User
 from app.services.notification import NotificationService
 
@@ -122,29 +122,29 @@ async def _get_user_weekly_stats(
     if not aquarium_ids:
         return {"completed": 0, "missed": 0, "total_events": 0}
 
-    # Count completed events
-    completed_stmt = (
+    # Count fed logs
+    fed_stmt = (
         select(func.count())
-        .select_from(FeedingEvent)
-        .where(FeedingEvent.aquarium_id.in_(aquarium_ids))
-        .where(FeedingEvent.scheduled_at >= week_start)
-        .where(FeedingEvent.scheduled_at <= week_end)
-        .where(FeedingEvent.status == "completed")
+        .select_from(FeedingLog)
+        .where(FeedingLog.aquarium_id.in_(aquarium_ids))
+        .where(FeedingLog.acted_at >= week_start)
+        .where(FeedingLog.acted_at <= week_end)
+        .where(FeedingLog.action == "fed")
     )
-    completed_result = await db.execute(completed_stmt)
-    completed = completed_result.scalar_one()
+    fed_result = await db.execute(fed_stmt)
+    completed = fed_result.scalar_one()
 
-    # Count missed events
-    missed_stmt = (
+    # Count skipped logs
+    skipped_stmt = (
         select(func.count())
-        .select_from(FeedingEvent)
-        .where(FeedingEvent.aquarium_id.in_(aquarium_ids))
-        .where(FeedingEvent.scheduled_at >= week_start)
-        .where(FeedingEvent.scheduled_at <= week_end)
-        .where(FeedingEvent.status == "missed")
+        .select_from(FeedingLog)
+        .where(FeedingLog.aquarium_id.in_(aquarium_ids))
+        .where(FeedingLog.acted_at >= week_start)
+        .where(FeedingLog.acted_at <= week_end)
+        .where(FeedingLog.action == "skipped")
     )
-    missed_result = await db.execute(missed_stmt)
-    missed = missed_result.scalar_one()
+    skipped_result = await db.execute(skipped_stmt)
+    missed = skipped_result.scalar_one()
 
     return {
         "completed": completed,
@@ -247,11 +247,11 @@ async def _find_inactive_users(
     Returns:
         List of inactive user IDs.
     """
-    # Subquery: users who have completed feeding after cutoff
+    # Subquery: users who have logged a feeding after cutoff
     active_users_subquery = (
-        select(distinct(FeedingEvent.completed_by))
-        .where(FeedingEvent.completed_at >= cutoff_date)
-        .where(FeedingEvent.completed_by.isnot(None))
+        select(distinct(FeedingLog.acted_by_user_id))
+        .where(FeedingLog.acted_at >= cutoff_date)
+        .where(FeedingLog.action == "fed")
     ).subquery()
 
     # Main query: users with aquarium memberships who are NOT in active list
@@ -268,45 +268,45 @@ async def _find_inactive_users(
 
 async def family_feeding_trigger(
     db: AsyncSession,
-    feeding_event_id: UUID,
+    feeding_log_id: UUID,
     completed_by_user_id: UUID,
 ) -> int:
-    """Send push notification to family members when feeding is completed.
+    """Send push notification to family members when feeding is logged.
 
-    Notifies all members of the aquarium (except the user who completed
-    the feeding) that a feeding has been marked as done.
+    Notifies all members of the aquarium (except the user who logged
+    the feeding) that a feeding has been recorded.
 
     This function is called directly from the feeding service, not scheduled.
 
     Args:
         db: Database session.
-        feeding_event_id: ID of the completed feeding event.
-        completed_by_user_id: ID of the user who completed the feeding.
+        feeding_log_id: ID of the created feeding log.
+        completed_by_user_id: ID of the user who performed the feeding.
 
     Returns:
         Number of notifications sent.
     """
     logger.info(
-        f"Triggering family notification for event {feeding_event_id} "
+        f"Triggering family notification for feeding log {feeding_log_id} "
         f"by user {completed_by_user_id}"
     )
 
-    # Get the feeding event with aquarium info
-    event_stmt = select(FeedingEvent).where(FeedingEvent.id == feeding_event_id)
-    result = await db.execute(event_stmt)
-    event = result.scalar_one_or_none()
+    # Get the feeding log with aquarium info
+    log_stmt = select(FeedingLog).where(FeedingLog.id == feeding_log_id)
+    result = await db.execute(log_stmt)
+    log = result.scalar_one_or_none()
 
-    if event is None:
-        logger.warning(f"Feeding event {feeding_event_id} not found")
+    if log is None:
+        logger.warning(f"Feeding log {feeding_log_id} not found")
         return 0
 
     # Get aquarium name
-    aquarium_stmt = select(Aquarium).where(Aquarium.id == event.aquarium_id)
+    aquarium_stmt = select(Aquarium).where(Aquarium.id == log.aquarium_id)
     aquarium_result = await db.execute(aquarium_stmt)
     aquarium = aquarium_result.scalar_one_or_none()
 
     if aquarium is None:
-        logger.warning(f"Aquarium {event.aquarium_id} not found")
+        logger.warning(f"Aquarium {log.aquarium_id} not found")
         return 0
 
     # Get the nickname of the user who completed feeding
@@ -317,14 +317,14 @@ async def family_feeding_trigger(
     # Get all family members except the one who did the feeding
     members_stmt = (
         select(AquariumMember.user_id)
-        .where(AquariumMember.aquarium_id == event.aquarium_id)
+        .where(AquariumMember.aquarium_id == log.aquarium_id)
         .where(AquariumMember.user_id != completed_by_user_id)
     )
     members_result = await db.execute(members_stmt)
     member_ids = [row[0] for row in members_result.all()]
 
     if not member_ids:
-        logger.debug(f"No other family members for aquarium {event.aquarium_id}")
+        logger.debug(f"No other family members for aquarium {log.aquarium_id}")
         return 0
 
     notification_service = NotificationService(db)
@@ -341,8 +341,8 @@ async def family_feeding_trigger(
                 body=body,
                 data={
                     "type": "family_feeding",
-                    "aquarium_id": str(event.aquarium_id),
-                    "event_id": str(feeding_event_id),
+                    "aquarium_id": str(log.aquarium_id),
+                    "feeding_log_id": str(feeding_log_id),
                     "completed_by": str(completed_by_user_id),
                 },
                 notification_type="family_update",

@@ -8,7 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-EntityType = Literal["aquarium", "fish", "event", "schedule", "streak", "achievement", "progress"]
+EntityType = Literal["aquarium", "fish", "feeding_log", "schedule", "streak", "achievement", "progress"]
 OperationType = Literal["create", "update", "delete"]
 
 
@@ -57,7 +57,7 @@ class DeletedEntities(BaseModel):
     aquariums: list[UUID] = Field(default_factory=list, description="List of deleted aquarium IDs")
     fish: list[UUID] = Field(default_factory=list, description="List of deleted fish IDs")
     schedules: list[UUID] = Field(default_factory=list, description="List of deleted feeding schedule IDs")
-    events: list[UUID] = Field(default_factory=list, description="List of deleted feeding event IDs")
+    feeding_logs: list[UUID] = Field(default_factory=list, description="List of deleted feeding log IDs")
 
 
 class ServerState(BaseModel):
@@ -65,7 +65,7 @@ class ServerState(BaseModel):
 
     aquariums: list[dict[str, Any]] = Field(default_factory=list, description="List of aquarium entities")
     fish: list[dict[str, Any]] = Field(default_factory=list, description="List of fish entities")
-    events: list[dict[str, Any]] = Field(default_factory=list, description="List of feeding event entities")
+    feeding_logs: list[dict[str, Any]] = Field(default_factory=list, description="List of feeding log entities")
     schedules: list[dict[str, Any]] = Field(default_factory=list, description="List of feeding schedule entities")
     streaks: list[dict[str, Any]] = Field(default_factory=list, description="List of user streak entities")
     achievements: list[dict[str, Any]] = Field(default_factory=list, description="List of user achievement entities")
@@ -80,50 +80,10 @@ class SyncResponse(BaseModel):
 
     server_state: ServerState = Field(description="Current server state (delta or full depending on request)")
     conflicts: list[ConflictItem] = Field(default_factory=list, description="List of conflicts detected during sync")
+    synced_ids: list[UUID] = Field(
+        default_factory=list,
+        description="Entity IDs successfully accepted by the server (no conflict). Client should mark these as synced.",
+    )
     sync_token: str = Field(description="Token to use for the next sync request")
     has_more: bool = Field(default=False, description="Whether there are more items to fetch (pagination)")
     next_cursor: str | None = Field(default=None, description="Cursor for fetching next page (None if no more pages)")
-
-
-# ============ Mobile App Sync Schemas ============
-# These schemas support the mobile app's simplified sync format
-
-
-class MobileFeedingEvent(BaseModel):
-    """Schema for a feeding event from mobile app."""
-
-    id: str = Field(description="Event ID (UUID as string)")
-    local_id: str | None = Field(default=None, description="Local ID on device")
-    fish_id: str | None = Field(default=None, description="Fish ID")
-    aquarium_id: str | None = Field(default=None, description="Aquarium ID")
-    feeding_time: datetime = Field(description="When the feeding occurred")
-    amount: float | None = Field(default=None, description="Amount of food")
-    food_type: str | None = Field(default=None, description="Type of food")
-    notes: str | None = Field(default=None, description="Notes")
-    created_at: datetime = Field(description="When the event was created")
-    updated_at: datetime | None = Field(default=None, description="Last update time")
-    completed_by: str | None = Field(default=None, description="User ID who completed")
-    completed_by_name: str | None = Field(default=None, description="Name of who completed")
-    completed_by_avatar: str | None = Field(default=None, description="Avatar URL")
-
-
-class MobileSyncRequest(BaseModel):
-    """Schema for sync request from mobile app.
-
-    Mobile app sends feeding events in a simplified format.
-    """
-
-    events: list[MobileFeedingEvent] = Field(default_factory=list, description="List of feeding events to sync")
-    client_timestamp: datetime = Field(description="Client timestamp when sync was initiated")
-
-
-class MobileSyncResponse(BaseModel):
-    """Schema for sync response to mobile app.
-
-    Mobile app expects synced_ids and optional server_events.
-    """
-
-    synced_ids: list[str] = Field(default_factory=list, description="List of event IDs that were successfully synced")
-    server_events: list[dict[str, Any]] = Field(
-        default_factory=list, description="Events from server that client should apply"
-    )

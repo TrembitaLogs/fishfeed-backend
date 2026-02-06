@@ -9,7 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base, SoftDeleteMixin, TimestampMixin
 
 if TYPE_CHECKING:
-    from app.models.feeding import FeedingEvent, FeedingSchedule
+    from app.models.feeding import FeedingLog, FeedingSchedule
     from app.models.fish import Fish
     from app.models.user import User
 
@@ -60,8 +60,8 @@ class Aquarium(Base, TimestampMixin, SoftDeleteMixin):
         back_populates="aquarium",
         cascade="all, delete-orphan",
     )
-    feeding_events: Mapped[list[FeedingEvent]] = relationship(
-        "FeedingEvent",
+    feeding_logs: Mapped[list[FeedingLog]] = relationship(
+        "FeedingLog",
         back_populates="aquarium",
         cascade="all, delete-orphan",
     )

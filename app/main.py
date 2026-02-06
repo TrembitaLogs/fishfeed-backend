@@ -2,9 +2,10 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import sentry_sdk
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.admin.setup import setup_admin
 from app.api import (
     admin_router,
     ai_router,
@@ -76,6 +77,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# SQLAdmin panel (must be mounted before middleware/routers)
+setup_admin(app)
+
 # Middleware registration order matters - first registered = outermost wrapper
 # Execution order for incoming requests: RequestId -> SizeLimit -> RateLimit -> Timeout -> CORS
 app.add_middleware(RequestIdMiddleware)  # Outermost - adds correlation ID for logging
@@ -91,19 +95,24 @@ app.add_middleware(
 )
 
 
+# Health and releases are not versioned
 app.include_router(health_router)
-app.include_router(auth_router)
-app.include_router(users_router)
-app.include_router(species_router)
-app.include_router(species_admin_router)
-app.include_router(aquariums_router)
-app.include_router(fish_router)
-app.include_router(feeding_router)
-app.include_router(sync_router)
-app.include_router(family_router)
-app.include_router(push_router)
-app.include_router(ai_router)
-app.include_router(gamification_router)
-app.include_router(purchase_router)
 app.include_router(releases_router)
-app.include_router(admin_router)
+
+# All API routes under /api/v1
+api_v1 = APIRouter(prefix="/api/v1")
+api_v1.include_router(auth_router)
+api_v1.include_router(users_router)
+api_v1.include_router(species_router)
+api_v1.include_router(species_admin_router)
+api_v1.include_router(aquariums_router)
+api_v1.include_router(fish_router)
+api_v1.include_router(feeding_router)
+api_v1.include_router(sync_router)
+api_v1.include_router(family_router)
+api_v1.include_router(push_router)
+api_v1.include_router(ai_router)
+api_v1.include_router(gamification_router)
+api_v1.include_router(purchase_router)
+api_v1.include_router(admin_router)
+app.include_router(api_v1)

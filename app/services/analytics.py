@@ -9,14 +9,14 @@ from typing import Any
 from uuid import UUID
 
 import httpx
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.models.ai import AIScan
 from app.models.analytics import AnalyticsEvent
 from app.models.aquarium import Aquarium, AquariumMember, FamilyInvite
-from app.models.feeding import FeedingEvent, FeedingSchedule
+from app.models.feeding import FeedingLog, FeedingSchedule
 from app.models.fish import Fish
 from app.models.gamification import Achievement, Streak
 from app.models.notification import NotificationLog, NotificationPreference, PushToken
@@ -430,35 +430,42 @@ async def _collect_user_data(
             {
                 "id": str(s.id),
                 "aquarium_id": str(s.aquarium_id),
-                "times_per_day": s.times_per_day,
-                "scheduled_times": s.scheduled_times,
+                "fish_id": str(s.fish_id),
+                "time": s.time.strftime("%H:%M") if s.time else None,
+                "interval_days": s.interval_days,
+                "anchor_date": s.anchor_date.isoformat() if s.anchor_date else None,
                 "food_type": s.food_type,
                 "portion_hint": s.portion_hint,
+                "active": s.active,
+                "created_by_user_id": str(s.created_by_user_id) if s.created_by_user_id else None,
                 "created_at": s.created_at.isoformat() if s.created_at else None,
+                "updated_at": s.updated_at.isoformat() if s.updated_at else None,
             }
             for s in schedules
         ]
 
-        # Feeding events
-        events_result = await db.execute(
-            select(FeedingEvent).where(FeedingEvent.aquarium_id.in_(aquarium_ids))
+        # Feeding logs
+        logs_result = await db.execute(
+            select(FeedingLog).where(FeedingLog.aquarium_id.in_(aquarium_ids))
         )
-        events = events_result.scalars().all()
-        export_data["feeding_events"] = [
+        logs = logs_result.scalars().all()
+        export_data["feeding_logs"] = [
             {
-                "id": str(e.id),
-                "aquarium_id": str(e.aquarium_id),
-                "scheduled_at": e.scheduled_at.isoformat() if e.scheduled_at else None,
-                "status": e.status,
-                "completed_at": e.completed_at.isoformat() if e.completed_at else None,
-                "completed_by": str(e.completed_by) if e.completed_by else None,
+                "id": str(log.id),
+                "aquarium_id": str(log.aquarium_id),
+                "schedule_id": str(log.schedule_id),
+                "fish_id": str(log.fish_id),
+                "scheduled_for": log.scheduled_for.isoformat() if log.scheduled_for else None,
+                "action": log.action,
+                "acted_at": log.acted_at.isoformat() if log.acted_at else None,
+                "acted_by_user_id": str(log.acted_by_user_id),
             }
-            for e in events
+            for log in logs
         ]
     else:
         export_data["fish"] = []
         export_data["feeding_schedules"] = []
-        export_data["feeding_events"] = []
+        export_data["feeding_logs"] = []
 
     # Streaks
     streak_result = await db.execute(
@@ -642,17 +649,10 @@ async def delete_user_data(db: AsyncSession, user_id: UUID) -> None:
         )
         logger.debug(f"Deleted streaks and achievements for user {user_id}")
 
-        # 6. Nullify completed_by in feeding_events (don't delete events from other users' aquariums)
-        await db.execute(
-            update(FeedingEvent)
-            .where(FeedingEvent.completed_by == user_id)
-            .values(completed_by=None)
-        )
-
-        # 7. Delete feeding_events and feeding_schedules from owned aquariums
+        # 6. Delete feeding_logs and feeding_schedules from owned aquariums
         if owned_aquarium_ids:
             await db.execute(
-                delete(FeedingEvent).where(FeedingEvent.aquarium_id.in_(owned_aquarium_ids))
+                delete(FeedingLog).where(FeedingLog.aquarium_id.in_(owned_aquarium_ids))
             )
             await db.execute(
                 delete(FeedingSchedule).where(FeedingSchedule.aquarium_id.in_(owned_aquarium_ids))

@@ -44,7 +44,7 @@ class AquariumResponse(BaseModel):
 
 
 class AquariumWithFish(AquariumResponse):
-    """Response schema for aquarium with fish and schedule."""
+    """Response schema for aquarium with fish and schedules."""
 
     fish: list[FishResponse] = Field(default_factory=list)
-    schedule: ScheduleResponse | None = None
+    schedules: list[ScheduleResponse] = Field(default_factory=list)

@@ -4,17 +4,22 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+import pytest_asyncio
 from httpx import AsyncClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.species import Species
 
 
 async def register_and_login(client: AsyncClient, email: str) -> dict:
     """Helper to register and login a user, returns tokens."""
     await client.post(
-        "/auth/register",
+        "/api/v1/auth/register",
         json={"email": email, "password": "SecurePass123"},
     )
     response = await client.post(
-        "/auth/login",
+        "/api/v1/auth/login",
         json={"email": email, "password": "SecurePass123"},
     )
     return response.json()
@@ -32,7 +37,7 @@ class TestSyncAuthentication:
     async def test_sync_without_auth_returns_401(self, client: AsyncClient):
         """Test that sync without auth returns 401."""
         response = await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={"changes": [], "last_sync_at": None},
         )
         assert response.status_code == 401
@@ -43,7 +48,7 @@ class TestSyncAuthentication:
         tokens = await register_and_login(client, email)
 
         response = await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={"changes": [], "last_sync_at": None},
             headers=auth_headers(tokens),
         )
@@ -61,7 +66,7 @@ class TestSyncBasicFunctionality:
         tokens = await register_and_login(client, email)
 
         response = await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={"changes": []},
             headers=auth_headers(tokens),
         )
@@ -80,13 +85,13 @@ class TestSyncBasicFunctionality:
 
         # Create aquarium via regular API
         await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Sync Test Tank"},
             headers=auth_headers(tokens),
         )
 
         response = await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={"changes": []},
             headers=auth_headers(tokens),
         )
@@ -103,7 +108,7 @@ class TestSyncBasicFunctionality:
         aquarium_id = str(uuid.uuid4())
 
         response = await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={
                 "changes": [
                     {
@@ -134,7 +139,7 @@ class TestSyncPagination:
         tokens = await register_and_login(client, email)
 
         response = await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={"changes": []},
             headers=auth_headers(tokens),
         )
@@ -152,7 +157,7 @@ class TestSyncPagination:
         tokens = await register_and_login(client, email)
 
         response = await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={"changes": [], "page_size": 10},
             headers=auth_headers(tokens),
         )
@@ -170,7 +175,7 @@ class TestSyncPagination:
 
         # page_size > 500
         response = await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={"changes": [], "page_size": 1000},
             headers=auth_headers(tokens),
         )
@@ -185,14 +190,14 @@ class TestSyncPagination:
         # Create 5 aquariums
         for i in range(5):
             await client.post(
-                "/aquariums",
+                "/api/v1/aquariums",
                 json={"name": f"Tank {i}"},
                 headers=auth_headers(tokens),
             )
 
         # Request with page_size=2
         response = await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={"changes": [], "page_size": 2},
             headers=auth_headers(tokens),
         )
@@ -205,7 +210,7 @@ class TestSyncPagination:
 
         # Fetch next page
         response2 = await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={"changes": [], "page_size": 2, "cursor": data["next_cursor"]},
             headers=auth_headers(tokens),
         )
@@ -225,7 +230,7 @@ class TestSyncETag:
         tokens = await register_and_login(client, email)
 
         response = await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={"changes": []},
             headers=auth_headers(tokens),
         )
@@ -239,7 +244,7 @@ class TestSyncETag:
         tokens = await register_and_login(client, email)
 
         response = await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={"changes": []},
             headers=auth_headers(tokens),
         )
@@ -254,7 +259,7 @@ class TestSyncETag:
 
         # First sync to get ETag
         response1 = await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={"changes": []},
             headers=auth_headers(tokens),
         )
@@ -264,7 +269,7 @@ class TestSyncETag:
         # Second sync with If-None-Match and delta sync (last_sync_at)
         # Using a recent timestamp to get delta sync with no changes
         response2 = await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={
                 "changes": [],
                 "last_sync_at": datetime.now(UTC).isoformat(),
@@ -290,7 +295,7 @@ class TestSyncConflictResolution:
 
         # Create aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Original Name"},
             headers=auth_headers(tokens),
         )
@@ -298,7 +303,7 @@ class TestSyncConflictResolution:
 
         # Update via sync with newer timestamp
         response = await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={
                 "changes": [
                     {
@@ -353,7 +358,7 @@ class TestSyncBatchProcessing:
             )
 
         response = await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={"changes": changes},
             headers=auth_headers(tokens),
         )
@@ -382,7 +387,7 @@ class TestSyncBatchProcessing:
             )
 
         response = await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={"changes": changes, "page_size": 500},
             headers=auth_headers(tokens),
         )
@@ -409,14 +414,14 @@ class TestSyncDeltaSync:
 
         # Create first aquarium
         await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "First Tank"},
             headers=auth_headers(tokens),
         )
 
         # Initial sync
         response1 = await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={"changes": []},
             headers=auth_headers(tokens),
         )
@@ -432,14 +437,14 @@ class TestSyncDeltaSync:
 
         # Create second aquarium
         await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Second Tank"},
             headers=auth_headers(tokens),
         )
 
         # Delta sync - should only return the new aquarium
         response2 = await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={"changes": [], "last_sync_at": sync_time.isoformat()},
             headers=auth_headers(tokens),
         )
@@ -455,7 +460,9 @@ class TestSyncDeltaSync:
 class TestSyncAccessControl:
     """Tests for sync access control."""
 
-    async def test_sync_cannot_access_other_user_aquarium(self, client: AsyncClient):
+    async def test_sync_cannot_access_other_user_aquarium(
+        self, client: AsyncClient
+    ):
         """Test that sync cannot modify other user's aquarium."""
         email1 = f"sync-access-owner-{uuid.uuid4()}@example.com"
         email2 = f"sync-access-other-{uuid.uuid4()}@example.com"
@@ -465,7 +472,7 @@ class TestSyncAccessControl:
 
         # User 1 creates aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Owner's Tank"},
             headers=auth_headers(tokens1),
         )
@@ -473,7 +480,7 @@ class TestSyncAccessControl:
 
         # User 2 tries to update via sync
         response = await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={
                 "changes": [
                     {
@@ -492,356 +499,424 @@ class TestSyncAccessControl:
         assert response.status_code == 403
 
 
-# ============================================================================
-# Mobile Sync API Tests
-# ============================================================================
+async def _setup_aquarium_with_schedule(
+    client: AsyncClient, tokens: dict
+) -> tuple[str, str, str]:
+    """Helper: create aquarium, add fish, create schedule via sync.
+
+    Uses two sync calls because access validation runs BEFORE changes are
+    applied — so the aquarium must exist before fish/schedule can reference it.
+    Uses ``test-betta`` species which is never deleted by other test modules.
+
+    Returns (aquarium_id, fish_id, schedule_id).
+    """
+    now = datetime.now(UTC)
+    aquarium_id = str(uuid.uuid4())
+    fish_id = str(uuid.uuid4())
+    schedule_id = str(uuid.uuid4())
+    hdrs = auth_headers(tokens)
+
+    # Step 1: Create aquarium (adds user as owner/member)
+    resp1 = await client.post(
+        "/api/v1/sync",
+        json={
+            "changes": [
+                {
+                    "entity_type": "aquarium",
+                    "entity_id": aquarium_id,
+                    "operation": "create",
+                    "data": {"name": f"Sync FL Tank {uuid.uuid4().hex[:6]}"},
+                    "client_updated_at": now.isoformat(),
+                }
+            ]
+        },
+        headers=hdrs,
+    )
+    assert resp1.status_code == 200, (
+        f"Aquarium setup failed: {resp1.status_code} {resp1.text}"
+    )
+
+    # Step 2: Create fish + schedule (aquarium now exists in DB)
+    resp2 = await client.post(
+        "/api/v1/sync",
+        json={
+            "changes": [
+                {
+                    "entity_type": "fish",
+                    "entity_id": fish_id,
+                    "operation": "create",
+                    "data": {
+                        "aquarium_id": aquarium_id,
+                        "species_id": "test-betta",
+                        "quantity": 1,
+                    },
+                    "client_updated_at": now.isoformat(),
+                },
+                {
+                    "entity_type": "schedule",
+                    "entity_id": schedule_id,
+                    "operation": "create",
+                    "data": {
+                        "aquarium_id": aquarium_id,
+                        "fish_id": fish_id,
+                        "time": "09:00",
+                        "interval_days": 1,
+                        "anchor_date": now.strftime("%Y-%m-%d"),
+                        "food_type": "flakes",
+                        "active": True,
+                    },
+                    "client_updated_at": now.isoformat(),
+                },
+            ]
+        },
+        headers=hdrs,
+    )
+    assert resp2.status_code == 200, (
+        f"Fish/schedule setup failed: {resp2.status_code} {resp2.text}"
+    )
+
+    return aquarium_id, fish_id, schedule_id
 
 
+@pytest_asyncio.fixture(loop_scope="session")
+async def ensure_species(async_session: AsyncSession) -> None:
+    """Ensure test species exist — other modules may delete them."""
+    result = await async_session.execute(
+        select(Species).where(Species.id == "test-betta")
+    )
+    if result.scalar_one_or_none() is None:
+        async_session.add(
+            Species(
+                id="test-betta",
+                common_name="Test Betta",
+                scientific_name="Betta splendens",
+                food_types=["pellets", "live"],
+                feeding_frequency=2,
+                care_level="beginner",
+                water_type="freshwater",
+            )
+        )
+        await async_session.commit()
+
+
+@pytest.mark.usefixtures("ensure_species")
 @pytest.mark.asyncio(loop_scope="session")
-class TestMobileSyncBasic:
-    """Tests for mobile sync endpoint basic functionality."""
+class TestSyncFeedingLogs:
+    """Tests for feeding_log sync via POST /sync."""
 
-    async def test_mobile_sync_empty_events_returns_200(self, client: AsyncClient):
-        """Test that mobile sync with empty events returns 200."""
-        email = f"mobile-sync-empty-{uuid.uuid4()}@example.com"
+    async def test_sync_create_feeding_log(self, client: AsyncClient):
+        """Test creating a feeding log through sync endpoint."""
+        email = f"sync-fl-create-{uuid.uuid4()}@example.com"
         tokens = await register_and_login(client, email)
+        aquarium_id, fish_id, schedule_id = await _setup_aquarium_with_schedule(
+            client, tokens
+        )
+
+        log_id = str(uuid.uuid4())
+        now = datetime.now(UTC)
+        scheduled_for = now.replace(tzinfo=None).isoformat()
 
         response = await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={
-                "events": [],
-                "client_timestamp": datetime.now(UTC).isoformat(),
+                "changes": [
+                    {
+                        "entity_type": "feeding_log",
+                        "entity_id": log_id,
+                        "operation": "create",
+                        "data": {
+                            "schedule_id": schedule_id,
+                            "fish_id": fish_id,
+                            "aquarium_id": aquarium_id,
+                            "scheduled_for": scheduled_for,
+                            "action": "fed",
+                            "device_id": str(uuid.uuid4()),
+                            "acted_at": now.isoformat(),
+                        },
+                        "client_updated_at": now.isoformat(),
+                    }
+                ]
             },
             headers=auth_headers(tokens),
         )
 
         assert response.status_code == 200
         data = response.json()
-        assert "synced_ids" in data
-        assert "server_events" in data
-        assert data["synced_ids"] == []
+        assert data["conflicts"] == []
+        log_ids = [fl["id"] for fl in data["server_state"]["feeding_logs"]]
+        assert log_id in log_ids
 
-    async def test_mobile_sync_creates_feeding_event(self, client: AsyncClient):
-        """Test that mobile sync creates a feeding event in database."""
-        email = f"mobile-sync-create-{uuid.uuid4()}@example.com"
+    async def test_sync_feeding_log_duplicate_conflict(self, client: AsyncClient):
+        """Test that duplicate feeding_log returns first-write-wins conflict."""
+        email = f"sync-fl-dup-{uuid.uuid4()}@example.com"
         tokens = await register_and_login(client, email)
+        aquarium_id, fish_id, schedule_id = await _setup_aquarium_with_schedule(
+            client, tokens
+        )
 
-        # Create aquarium first
-        aq_response = await client.post(
-            "/aquariums",
-            json={"name": "Mobile Test Tank"},
+        now = datetime.now(UTC)
+        scheduled_for = now.replace(tzinfo=None).isoformat()
+
+        # First log — should succeed
+        first_id = str(uuid.uuid4())
+        resp1 = await client.post(
+            "/api/v1/sync",
+            json={
+                "changes": [
+                    {
+                        "entity_type": "feeding_log",
+                        "entity_id": first_id,
+                        "operation": "create",
+                        "data": {
+                            "schedule_id": schedule_id,
+                            "fish_id": fish_id,
+                            "aquarium_id": aquarium_id,
+                            "scheduled_for": scheduled_for,
+                            "action": "fed",
+                            "device_id": str(uuid.uuid4()),
+                            "acted_at": now.isoformat(),
+                        },
+                        "client_updated_at": now.isoformat(),
+                    }
+                ]
+            },
             headers=auth_headers(tokens),
         )
-        aquarium_id = aq_response.json()["id"]
-        event_id = str(uuid.uuid4())
+        assert resp1.status_code == 200
+        assert resp1.json()["conflicts"] == []
 
-        response = await client.post(
-            "/sync",
+        # Second log with SAME (schedule_id, scheduled_for) — should conflict
+        second_id = str(uuid.uuid4())
+        resp2 = await client.post(
+            "/api/v1/sync",
             json={
-                "events": [
+                "changes": [
                     {
-                        "id": event_id,
-                        "aquarium_id": aquarium_id,
-                        "feeding_time": datetime.now(UTC).isoformat(),
-                        "created_at": datetime.now(UTC).isoformat(),
+                        "entity_type": "feeding_log",
+                        "entity_id": second_id,
+                        "operation": "create",
+                        "data": {
+                            "schedule_id": schedule_id,
+                            "fish_id": fish_id,
+                            "aquarium_id": aquarium_id,
+                            "scheduled_for": scheduled_for,
+                            "action": "fed",
+                            "device_id": str(uuid.uuid4()),
+                            "acted_at": now.isoformat(),
+                        },
+                        "client_updated_at": now.isoformat(),
                     }
-                ],
-                "client_timestamp": (
-                    datetime.now(UTC) - timedelta(hours=1)
-                ).isoformat(),
+                ]
             },
             headers=auth_headers(tokens),
         )
 
-        assert response.status_code == 200
-        data = response.json()
-        assert event_id in data["synced_ids"]
+        assert resp2.status_code == 200
+        conflicts = resp2.json()["conflicts"]
+        assert len(conflicts) == 1
+        assert conflicts[0]["entity_type"] == "feeding_log"
+        assert conflicts[0]["resolution"] == "server_wins"
 
-    async def test_mobile_sync_returns_server_events(self, client: AsyncClient):
-        """Test that mobile sync returns server events after client_timestamp."""
-        email = f"mobile-sync-server-{uuid.uuid4()}@example.com"
+    async def test_sync_delta_returns_new_feeding_logs(self, client: AsyncClient):
+        """Test that delta sync returns feeding_logs created after last_sync_at."""
+        email = f"sync-fl-delta-{uuid.uuid4()}@example.com"
         tokens = await register_and_login(client, email)
-
-        # Create aquarium
-        aq_response = await client.post(
-            "/aquariums",
-            json={"name": "Server Events Tank"},
-            headers=auth_headers(tokens),
+        aquarium_id, fish_id, schedule_id = await _setup_aquarium_with_schedule(
+            client, tokens
         )
-        aquarium_id = aq_response.json()["id"]
 
-        # Create an event via mobile sync
-        first_event_id = str(uuid.uuid4())
-        first_timestamp = datetime.now(UTC) - timedelta(hours=2)
+        # Record time BEFORE creating a log
+        t_before = datetime.now(UTC)
 
+        # Create feeding log via sync
+        log_id = str(uuid.uuid4())
+        scheduled_for = datetime.now(UTC).replace(tzinfo=None).isoformat()
         await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={
-                "events": [
+                "changes": [
                     {
-                        "id": first_event_id,
-                        "aquarium_id": aquarium_id,
-                        "feeding_time": datetime.now(UTC).isoformat(),
-                        "created_at": datetime.now(UTC).isoformat(),
+                        "entity_type": "feeding_log",
+                        "entity_id": log_id,
+                        "operation": "create",
+                        "data": {
+                            "schedule_id": schedule_id,
+                            "fish_id": fish_id,
+                            "aquarium_id": aquarium_id,
+                            "scheduled_for": scheduled_for,
+                            "action": "fed",
+                            "device_id": str(uuid.uuid4()),
+                        },
+                        "client_updated_at": datetime.now(UTC).isoformat(),
                     }
-                ],
-                "client_timestamp": first_timestamp.isoformat(),
+                ]
             },
             headers=auth_headers(tokens),
         )
 
-        # Sync again with old timestamp to get server events
-        response = await client.post(
-            "/sync",
+        # Delta sync with timestamp BEFORE the log — should include it
+        resp_before = await client.post(
+            "/api/v1/sync",
             json={
-                "events": [],
-                "client_timestamp": first_timestamp.isoformat(),
+                "changes": [],
+                "last_sync_at": (t_before - timedelta(seconds=1)).isoformat(),
             },
             headers=auth_headers(tokens),
         )
+        assert resp_before.status_code == 200
+        log_ids_before = [
+            fl["id"] for fl in resp_before.json()["server_state"]["feeding_logs"]
+        ]
+        assert log_id in log_ids_before
 
-        assert response.status_code == 200
-        data = response.json()
-        server_event_ids = {e["id"] for e in data["server_events"]}
-        assert first_event_id in server_event_ids
+        # Delta sync with timestamp AFTER the log — should NOT include it
+        resp_after = await client.post(
+            "/api/v1/sync",
+            json={
+                "changes": [],
+                "last_sync_at": (datetime.now(UTC) + timedelta(seconds=5)).isoformat(),
+            },
+            headers=auth_headers(tokens),
+        )
+        assert resp_after.status_code in (200, 304)
+        if resp_after.status_code == 200:
+            log_ids_after = [
+                fl["id"]
+                for fl in resp_after.json()["server_state"]["feeding_logs"]
+            ]
+            assert log_id not in log_ids_after
 
-
-@pytest.mark.asyncio(loop_scope="session")
-class TestMobileSyncValidation:
-    """Tests for mobile sync validation errors."""
-
-    async def test_mobile_sync_validation_error_missing_aquarium_id(
-        self, client: AsyncClient
-    ):
-        """Test that missing aquarium_id returns validation error."""
-        email = f"mobile-sync-val-{uuid.uuid4()}@example.com"
+    async def test_sync_feeding_log_update_ignored(self, client: AsyncClient):
+        """Test that update operation on feeding_log is ignored (immutable)."""
+        email = f"sync-fl-upd-{uuid.uuid4()}@example.com"
         tokens = await register_and_login(client, email)
-
-        event_id = str(uuid.uuid4())
-
-        response = await client.post(
-            "/sync",
-            json={
-                "events": [
-                    {
-                        "id": event_id,
-                        # Missing aquarium_id
-                        "feeding_time": datetime.now(UTC).isoformat(),
-                        "created_at": datetime.now(UTC).isoformat(),
-                    }
-                ],
-                "client_timestamp": datetime.now(UTC).isoformat(),
-            },
-            headers=auth_headers(tokens),
+        aquarium_id, fish_id, schedule_id = await _setup_aquarium_with_schedule(
+            client, tokens
         )
 
-        assert response.status_code == 422
+        now = datetime.now(UTC)
+        log_id = str(uuid.uuid4())
+        scheduled_for = now.replace(tzinfo=None).isoformat()
 
-    async def test_mobile_sync_validation_error_invalid_event_id(
-        self, client: AsyncClient
-    ):
-        """Test that invalid event ID returns validation error."""
-        email = f"mobile-sync-invalid-{uuid.uuid4()}@example.com"
-        tokens = await register_and_login(client, email)
-
-        # Create aquarium
-        aq_response = await client.post(
-            "/aquariums",
-            json={"name": "Validation Tank"},
-            headers=auth_headers(tokens),
-        )
-        aquarium_id = aq_response.json()["id"]
-
-        response = await client.post(
-            "/sync",
-            json={
-                "events": [
-                    {
-                        "id": "not-a-valid-uuid",
-                        "aquarium_id": aquarium_id,
-                        "feeding_time": datetime.now(UTC).isoformat(),
-                        "created_at": datetime.now(UTC).isoformat(),
-                    }
-                ],
-                "client_timestamp": datetime.now(UTC).isoformat(),
-            },
-            headers=auth_headers(tokens),
-        )
-
-        assert response.status_code == 422
-
-
-@pytest.mark.asyncio(loop_scope="session")
-class TestMobileSyncAccessControl:
-    """Tests for mobile sync access control."""
-
-    async def test_mobile_sync_access_denied_other_user_aquarium(
-        self, client: AsyncClient
-    ):
-        """Test that mobile sync is denied for other user's aquarium."""
-        email1 = f"mobile-owner-{uuid.uuid4()}@example.com"
-        email2 = f"mobile-other-{uuid.uuid4()}@example.com"
-
-        tokens1 = await register_and_login(client, email1)
-        tokens2 = await register_and_login(client, email2)
-
-        # User 1 creates aquarium
-        aq_response = await client.post(
-            "/aquariums",
-            json={"name": "Owner's Mobile Tank"},
-            headers=auth_headers(tokens1),
-        )
-        aquarium_id = aq_response.json()["id"]
-
-        # User 2 tries to sync event to User 1's aquarium
-        response = await client.post(
-            "/sync",
-            json={
-                "events": [
-                    {
-                        "id": str(uuid.uuid4()),
-                        "aquarium_id": aquarium_id,
-                        "feeding_time": datetime.now(UTC).isoformat(),
-                        "created_at": datetime.now(UTC).isoformat(),
-                    }
-                ],
-                "client_timestamp": datetime.now(UTC).isoformat(),
-            },
-            headers=auth_headers(tokens2),
-        )
-
-        assert response.status_code == 403
-
-
-@pytest.mark.asyncio(loop_scope="session")
-class TestMobileSyncMultiDevice:
-    """Tests for mobile sync multi-device scenarios."""
-
-    async def test_mobile_sync_device_a_creates_device_b_receives(
-        self, client: AsyncClient
-    ):
-        """Test that Device B receives events created by Device A."""
-        email = f"mobile-multidevice-{uuid.uuid4()}@example.com"
-        tokens = await register_and_login(client, email)
-
-        # Create aquarium
-        aq_response = await client.post(
-            "/aquariums",
-            json={"name": "Multi-device Tank"},
-            headers=auth_headers(tokens),
-        )
-        aquarium_id = aq_response.json()["id"]
-
-        # Initial timestamp for both devices
-        initial_time = datetime.now(UTC) - timedelta(hours=2)
-
-        # Device A creates and syncs an event
-        event_id = str(uuid.uuid4())
+        # Create the log first
         await client.post(
-            "/sync",
+            "/api/v1/sync",
             json={
-                "events": [
+                "changes": [
                     {
-                        "id": event_id,
-                        "aquarium_id": aquarium_id,
-                        "feeding_time": datetime.now(UTC).isoformat(),
-                        "created_at": datetime.now(UTC).isoformat(),
+                        "entity_type": "feeding_log",
+                        "entity_id": log_id,
+                        "operation": "create",
+                        "data": {
+                            "schedule_id": schedule_id,
+                            "fish_id": fish_id,
+                            "aquarium_id": aquarium_id,
+                            "scheduled_for": scheduled_for,
+                            "action": "fed",
+                            "device_id": str(uuid.uuid4()),
+                        },
+                        "client_updated_at": now.isoformat(),
                     }
-                ],
-                "client_timestamp": initial_time.isoformat(),
+                ]
             },
             headers=auth_headers(tokens),
         )
 
-        # Device B syncs (no events, just getting server state)
-        response_b = await client.post(
-            "/sync",
+        # Try to update it — should be ignored
+        resp = await client.post(
+            "/api/v1/sync",
             json={
-                "events": [],
-                "client_timestamp": initial_time.isoformat(),
+                "changes": [
+                    {
+                        "entity_type": "feeding_log",
+                        "entity_id": log_id,
+                        "operation": "update",
+                        "data": {"action": "skipped", "notes": "changed"},
+                        "client_updated_at": datetime.now(UTC).isoformat(),
+                    }
+                ]
             },
             headers=auth_headers(tokens),
         )
+        assert resp.status_code == 200
+        # No conflicts, update was silently ignored
+        assert resp.json()["conflicts"] == []
 
-        assert response_b.status_code == 200
-        data = response_b.json()
-        server_event_ids = {e["id"] for e in data["server_events"]}
-        assert event_id in server_event_ids
+        # Verify original log is unchanged
+        logs = resp.json()["server_state"]["feeding_logs"]
+        original = next((fl for fl in logs if fl["id"] == log_id), None)
+        assert original is not None
+        assert original["action"] == "fed"
 
-    async def test_mobile_sync_conflict_resolution(self, client: AsyncClient):
-        """Test conflict resolution between devices."""
-        from datetime import timedelta
-
-        email = f"mobile-conflict-{uuid.uuid4()}@example.com"
+    async def test_sync_schedule_last_write_wins(self, client: AsyncClient):
+        """Test last-write-wins for schedule sync updates."""
+        email = f"sync-sched-lww-{uuid.uuid4()}@example.com"
         tokens = await register_and_login(client, email)
-
-        # Get user ID from profile
-        profile_response = await client.get(
-            "/users/me",
-            headers=auth_headers(tokens),
+        aquarium_id, fish_id, schedule_id = await _setup_aquarium_with_schedule(
+            client, tokens
         )
-        user_id = profile_response.json()["id"]
 
-        # Create aquarium
-        aq_response = await client.post(
-            "/aquariums",
-            json={"name": "Conflict Tank"},
-            headers=auth_headers(tokens),
-        )
-        aquarium_id = aq_response.json()["id"]
-
-        event_id = str(uuid.uuid4())
-        base_time = datetime.now(UTC)
-
-        # Device A syncs event first with NEWER timestamp
-        device_a_time = base_time + timedelta(minutes=5)
-        await client.post(
-            "/sync",
+        # Update with NEWER timestamp — should succeed
+        future_ts = (datetime.now(UTC) + timedelta(seconds=10)).isoformat()
+        resp1 = await client.post(
+            "/api/v1/sync",
             json={
-                "events": [
+                "changes": [
                     {
-                        "id": event_id,
-                        "aquarium_id": aquarium_id,
-                        "feeding_time": base_time.isoformat(),
-                        "created_at": base_time.isoformat(),
-                        "updated_at": device_a_time.isoformat(),
-                        "completed_by": user_id,  # Device A marks completed (valid user)
+                        "entity_type": "schedule",
+                        "entity_id": schedule_id,
+                        "operation": "update",
+                        "data": {"food_type": "pellets"},
+                        "client_updated_at": future_ts,
                     }
-                ],
-                "client_timestamp": (base_time - timedelta(hours=1)).isoformat(),
+                ]
             },
             headers=auth_headers(tokens),
         )
+        assert resp1.status_code == 200
+        assert resp1.json()["conflicts"] == []
+        schedule = next(
+            (
+                s
+                for s in resp1.json()["server_state"]["schedules"]
+                if s["id"] == schedule_id
+            ),
+            None,
+        )
+        assert schedule is not None
+        assert schedule["food_type"] == "pellets"
 
-        # Device B tries to sync same event with OLDER timestamp
-        device_b_time = base_time - timedelta(minutes=5)
-        response_b = await client.post(
-            "/sync",
+        # Update with OLDER timestamp — should conflict (server wins)
+        past_ts = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+        resp2 = await client.post(
+            "/api/v1/sync",
             json={
-                "events": [
+                "changes": [
                     {
-                        "id": event_id,
-                        "aquarium_id": aquarium_id,
-                        "feeding_time": base_time.isoformat(),
-                        "created_at": device_b_time.isoformat(),
-                        "updated_at": device_b_time.isoformat(),
-                        # Device B does NOT mark completed
+                        "entity_type": "schedule",
+                        "entity_id": schedule_id,
+                        "operation": "update",
+                        "data": {"food_type": "worms"},
+                        "client_updated_at": past_ts,
                     }
-                ],
-                "client_timestamp": (base_time - timedelta(hours=1)).isoformat(),
+                ]
             },
             headers=auth_headers(tokens),
         )
-
-        assert response_b.status_code == 200
-        data = response_b.json()
-
-        # Device B's event should NOT be in synced_ids (server wins)
-        assert event_id not in data["synced_ids"]
-
-        # Server event should show completed status (Device A's version)
-        server_event = next(
-            (e for e in data["server_events"] if e["id"] == event_id), None
+        assert resp2.status_code == 200
+        conflicts = resp2.json()["conflicts"]
+        assert len(conflicts) == 1
+        assert conflicts[0]["entity_type"] == "schedule"
+        assert conflicts[0]["resolution"] == "server_wins"
+        # food_type should still be "pellets"
+        schedule2 = next(
+            (
+                s
+                for s in resp2.json()["server_state"]["schedules"]
+                if s["id"] == schedule_id
+            ),
+            None,
         )
-        assert server_event is not None
-        assert server_event["status"] == "completed"
+        assert schedule2 is not None
+        assert schedule2["food_type"] == "pellets"
+

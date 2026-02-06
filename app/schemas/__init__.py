@@ -1,5 +1,13 @@
 """Pydantic schemas package."""
 
+from app.schemas.admin import (
+    DashboardAIStats,
+    DashboardAquariumsStats,
+    DashboardFeedingStats,
+    DashboardGamificationStats,
+    DashboardResponse,
+    DashboardUsersStats,
+)
 from app.schemas.ai import (
     AlternativeSpecies,
     ScanConfirmRequest,
@@ -32,12 +40,13 @@ from app.schemas.family import (
     InviteResponse,
 )
 from app.schemas.feeding import (
-    EventResponse,
-    FeedingStatus,
+    FeedingAction,
+    FeedingLogConflictResponse,
+    FeedingLogCreate,
+    FeedingLogResponse,
     ScheduleCreate,
     ScheduleResponse,
     ScheduleUpdate,
-    TodayEventsResponse,
 )
 from app.schemas.fish import (
     AddedVia,
@@ -94,6 +103,13 @@ from app.schemas.sync import (
 )
 
 __all__ = [
+    # Admin
+    "DashboardAIStats",
+    "DashboardAquariumsStats",
+    "DashboardFeedingStats",
+    "DashboardGamificationStats",
+    "DashboardResponse",
+    "DashboardUsersStats",
     # AI
     "AlternativeSpecies",
     "ScanConfirmRequest",
@@ -122,12 +138,13 @@ __all__ = [
     "TokenResponse",
     "UserResponse",
     # Feeding
-    "EventResponse",
-    "FeedingStatus",
+    "FeedingAction",
+    "FeedingLogConflictResponse",
+    "FeedingLogCreate",
+    "FeedingLogResponse",
     "ScheduleCreate",
     "ScheduleResponse",
     "ScheduleUpdate",
-    "TodayEventsResponse",
     # Fish
     "AddedVia",
     "FishCreate",

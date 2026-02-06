@@ -13,11 +13,11 @@ TEST_SPECIES_BETTA = "test-betta"
 async def register_and_login(client: AsyncClient, email: str) -> dict:
     """Helper to register and login a user, returns tokens."""
     await client.post(
-        "/auth/register",
+        "/api/v1/auth/register",
         json={"email": email, "password": "SecurePass123"},
     )
     response = await client.post(
-        "/auth/login",
+        "/api/v1/auth/login",
         json={"email": email, "password": "SecurePass123"},
     )
     return response.json()
@@ -31,7 +31,7 @@ def auth_headers(tokens: dict) -> dict:
 async def create_aquarium(client: AsyncClient, tokens: dict, name: str = "Test Tank") -> str:
     """Helper to create an aquarium and return its ID."""
     response = await client.post(
-        "/aquariums",
+        "/api/v1/aquariums",
         json={"name": name},
         headers=auth_headers(tokens),
     )
@@ -45,7 +45,7 @@ class TestListFish:
     async def test_list_fish_without_auth_returns_401(self, client: AsyncClient):
         """Test that listing fish without auth returns 401."""
         random_id = str(uuid.uuid4())
-        response = await client.get(f"/aquariums/{random_id}/fish")
+        response = await client.get(f"/api/v1/aquariums/{random_id}/fish")
         assert response.status_code == 401
 
     async def test_list_fish_returns_empty_list(self, client: AsyncClient):
@@ -55,7 +55,7 @@ class TestListFish:
         aquarium_id = await create_aquarium(client, tokens)
 
         response = await client.get(
-            f"/aquariums/{aquarium_id}/fish",
+            f"/api/v1/aquariums/{aquarium_id}/fish",
             headers=auth_headers(tokens),
         )
 
@@ -70,13 +70,13 @@ class TestListFish:
 
         # Add fish using pre-seeded species
         await client.post(
-            f"/aquariums/{aquarium_id}/fish",
+            f"/api/v1/aquariums/{aquarium_id}/fish",
             json={"species_id": TEST_SPECIES_GUPPY, "quantity": 5},
             headers=auth_headers(tokens),
         )
 
         response = await client.get(
-            f"/aquariums/{aquarium_id}/fish",
+            f"/api/v1/aquariums/{aquarium_id}/fish",
             headers=auth_headers(tokens),
         )
 
@@ -97,7 +97,7 @@ class TestListFish:
         aquarium_id = await create_aquarium(client, tokens1)
 
         response = await client.get(
-            f"/aquariums/{aquarium_id}/fish",
+            f"/api/v1/aquariums/{aquarium_id}/fish",
             headers=auth_headers(tokens2),
         )
 
@@ -110,7 +110,7 @@ class TestListFish:
         random_id = str(uuid.uuid4())
 
         response = await client.get(
-            f"/aquariums/{random_id}/fish",
+            f"/api/v1/aquariums/{random_id}/fish",
             headers=auth_headers(tokens),
         )
 
@@ -128,7 +128,7 @@ class TestAddFish:
         aquarium_id = await create_aquarium(client, tokens)
 
         response = await client.post(
-            f"/aquariums/{aquarium_id}/fish",
+            f"/api/v1/aquariums/{aquarium_id}/fish",
             json={
                 "species_id": TEST_SPECIES_GUPPY,
                 "quantity": 10,
@@ -148,7 +148,7 @@ class TestAddFish:
         """Test that adding fish without auth returns 401."""
         random_id = str(uuid.uuid4())
         response = await client.post(
-            f"/aquariums/{random_id}/fish",
+            f"/api/v1/aquariums/{random_id}/fish",
             json={"species_id": "guppy", "quantity": 1},
         )
         assert response.status_code == 401
@@ -160,7 +160,7 @@ class TestAddFish:
         aquarium_id = await create_aquarium(client, tokens)
 
         response = await client.post(
-            f"/aquariums/{aquarium_id}/fish",
+            f"/api/v1/aquariums/{aquarium_id}/fish",
             json={"species_id": "nonexistent_species_xyz"},
             headers=auth_headers(tokens),
         )
@@ -178,7 +178,7 @@ class TestAddFish:
         aquarium_id = await create_aquarium(client, tokens1)
 
         response = await client.post(
-            f"/aquariums/{aquarium_id}/fish",
+            f"/api/v1/aquariums/{aquarium_id}/fish",
             json={"species_id": "guppy"},
             headers=auth_headers(tokens2),
         )
@@ -198,14 +198,14 @@ class TestGetFish:
 
         # Add fish using pre-seeded species
         add_response = await client.post(
-            f"/aquariums/{aquarium_id}/fish",
+            f"/api/v1/aquariums/{aquarium_id}/fish",
             json={"species_id": TEST_SPECIES_BETTA, "quantity": 1, "custom_name": "Bluey"},
             headers=auth_headers(tokens),
         )
         fish_id = add_response.json()["id"]
 
         response = await client.get(
-            f"/fish/{fish_id}",
+            f"/api/v1/fish/{fish_id}",
             headers=auth_headers(tokens),
         )
 
@@ -221,7 +221,7 @@ class TestGetFish:
         random_id = str(uuid.uuid4())
 
         response = await client.get(
-            f"/fish/{random_id}",
+            f"/api/v1/fish/{random_id}",
             headers=auth_headers(tokens),
         )
 
@@ -239,7 +239,7 @@ class TestGetFish:
 
         # User 1 adds fish
         add_response = await client.post(
-            f"/aquariums/{aquarium_id}/fish",
+            f"/api/v1/aquariums/{aquarium_id}/fish",
             json={"species_id": TEST_SPECIES_GUPPY},
             headers=auth_headers(tokens1),
         )
@@ -247,7 +247,7 @@ class TestGetFish:
 
         # User 2 tries to get
         response = await client.get(
-            f"/fish/{fish_id}",
+            f"/api/v1/fish/{fish_id}",
             headers=auth_headers(tokens2),
         )
 
@@ -266,7 +266,7 @@ class TestUpdateFish:
 
         # Add fish
         add_response = await client.post(
-            f"/aquariums/{aquarium_id}/fish",
+            f"/api/v1/aquariums/{aquarium_id}/fish",
             json={"species_id": TEST_SPECIES_GUPPY, "quantity": 1},
             headers=auth_headers(tokens),
         )
@@ -274,7 +274,7 @@ class TestUpdateFish:
 
         # Update
         response = await client.put(
-            f"/fish/{fish_id}",
+            f"/api/v1/fish/{fish_id}",
             json={"quantity": 5, "custom_name": "New Name"},
             headers=auth_headers(tokens),
         )
@@ -291,7 +291,7 @@ class TestUpdateFish:
         random_id = str(uuid.uuid4())
 
         response = await client.put(
-            f"/fish/{random_id}",
+            f"/api/v1/fish/{random_id}",
             json={"quantity": 10},
             headers=auth_headers(tokens),
         )
@@ -311,7 +311,7 @@ class TestDeleteFish:
 
         # Add fish
         add_response = await client.post(
-            f"/aquariums/{aquarium_id}/fish",
+            f"/api/v1/aquariums/{aquarium_id}/fish",
             json={"species_id": TEST_SPECIES_GUPPY},
             headers=auth_headers(tokens),
         )
@@ -319,7 +319,7 @@ class TestDeleteFish:
 
         # Delete
         response = await client.delete(
-            f"/fish/{fish_id}",
+            f"/api/v1/fish/{fish_id}",
             headers=auth_headers(tokens),
         )
 
@@ -333,7 +333,7 @@ class TestDeleteFish:
 
         # Add fish
         add_response = await client.post(
-            f"/aquariums/{aquarium_id}/fish",
+            f"/api/v1/aquariums/{aquarium_id}/fish",
             json={"species_id": TEST_SPECIES_BETTA},
             headers=auth_headers(tokens),
         )
@@ -341,13 +341,13 @@ class TestDeleteFish:
 
         # Delete
         await client.delete(
-            f"/fish/{fish_id}",
+            f"/api/v1/fish/{fish_id}",
             headers=auth_headers(tokens),
         )
 
         # Try to get - should return 404
         response = await client.get(
-            f"/fish/{fish_id}",
+            f"/api/v1/fish/{fish_id}",
             headers=auth_headers(tokens),
         )
         assert response.status_code == 404
@@ -359,7 +359,7 @@ class TestDeleteFish:
         random_id = str(uuid.uuid4())
 
         response = await client.delete(
-            f"/fish/{random_id}",
+            f"/api/v1/fish/{random_id}",
             headers=auth_headers(tokens),
         )
 
@@ -377,7 +377,7 @@ class TestDeleteFish:
 
         # User 1 adds fish
         add_response = await client.post(
-            f"/aquariums/{aquarium_id}/fish",
+            f"/api/v1/aquariums/{aquarium_id}/fish",
             json={"species_id": TEST_SPECIES_GUPPY},
             headers=auth_headers(tokens1),
         )
@@ -385,7 +385,7 @@ class TestDeleteFish:
 
         # User 2 tries to delete
         response = await client.delete(
-            f"/fish/{fish_id}",
+            f"/api/v1/fish/{fish_id}",
             headers=auth_headers(tokens2),
         )
 

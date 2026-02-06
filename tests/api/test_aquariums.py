@@ -9,11 +9,11 @@ from httpx import AsyncClient
 async def register_and_login(client: AsyncClient, email: str) -> dict:
     """Helper to register and login a user, returns tokens."""
     await client.post(
-        "/auth/register",
+        "/api/v1/auth/register",
         json={"email": email, "password": "SecurePass123"},
     )
     response = await client.post(
-        "/auth/login",
+        "/api/v1/auth/login",
         json={"email": email, "password": "SecurePass123"},
     )
     return response.json()
@@ -30,7 +30,7 @@ class TestListAquariums:
 
     async def test_list_aquariums_without_auth_returns_401(self, client: AsyncClient):
         """Test that listing aquariums without auth returns 401."""
-        response = await client.get("/aquariums")
+        response = await client.get("/api/v1/aquariums")
         assert response.status_code == 401
 
     async def test_list_aquariums_returns_empty_list(self, client: AsyncClient):
@@ -38,7 +38,7 @@ class TestListAquariums:
         email = f"listaq-empty-{uuid.uuid4()}@example.com"
         tokens = await register_and_login(client, email)
 
-        response = await client.get("/aquariums", headers=auth_headers(tokens))
+        response = await client.get("/api/v1/aquariums", headers=auth_headers(tokens))
 
         assert response.status_code == 200
         assert response.json() == []
@@ -50,17 +50,17 @@ class TestListAquariums:
 
         # Create aquariums
         await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "My Tank 1"},
             headers=auth_headers(tokens),
         )
         await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "My Tank 2"},
             headers=auth_headers(tokens),
         )
 
-        response = await client.get("/aquariums", headers=auth_headers(tokens))
+        response = await client.get("/api/v1/aquariums", headers=auth_headers(tokens))
 
         assert response.status_code == 200
         data = response.json()
@@ -80,7 +80,7 @@ class TestCreateAquarium:
         tokens = await register_and_login(client, email)
 
         response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "My New Aquarium"},
             headers=auth_headers(tokens),
         )
@@ -95,7 +95,7 @@ class TestCreateAquarium:
     async def test_create_aquarium_without_auth_returns_401(self, client: AsyncClient):
         """Test that creating aquarium without auth returns 401."""
         response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Unauthorized Tank"},
         )
         assert response.status_code == 401
@@ -106,7 +106,7 @@ class TestCreateAquarium:
         tokens = await register_and_login(client, email)
 
         response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": ""},
             headers=auth_headers(tokens),
         )
@@ -127,14 +127,14 @@ class TestGetAquarium:
 
         # Create aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Detail Tank"},
             headers=auth_headers(tokens),
         )
         aquarium_id = create_response.json()["id"]
 
         response = await client.get(
-            f"/aquariums/{aquarium_id}",
+            f"/api/v1/aquariums/{aquarium_id}",
             headers=auth_headers(tokens),
         )
 
@@ -143,7 +143,8 @@ class TestGetAquarium:
         assert data["name"] == "Detail Tank"
         assert "fish" in data
         assert data["fish"] == []
-        assert "schedule" in data
+        assert "schedules" in data
+        assert data["schedules"] == []
 
     async def test_get_nonexistent_aquarium_returns_404(self, client: AsyncClient):
         """Test that getting non-existent aquarium returns 404."""
@@ -152,7 +153,7 @@ class TestGetAquarium:
         random_id = str(uuid.uuid4())
 
         response = await client.get(
-            f"/aquariums/{random_id}",
+            f"/api/v1/aquariums/{random_id}",
             headers=auth_headers(tokens),
         )
 
@@ -168,7 +169,7 @@ class TestGetAquarium:
 
         # User 1 creates aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Private Tank"},
             headers=auth_headers(tokens1),
         )
@@ -176,7 +177,7 @@ class TestGetAquarium:
 
         # User 2 tries to access
         response = await client.get(
-            f"/aquariums/{aquarium_id}",
+            f"/api/v1/aquariums/{aquarium_id}",
             headers=auth_headers(tokens2),
         )
 
@@ -194,7 +195,7 @@ class TestUpdateAquarium:
 
         # Create aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Original Name"},
             headers=auth_headers(tokens),
         )
@@ -202,7 +203,7 @@ class TestUpdateAquarium:
 
         # Update
         response = await client.put(
-            f"/aquariums/{aquarium_id}",
+            f"/api/v1/aquariums/{aquarium_id}",
             json={"name": "Updated Name"},
             headers=auth_headers(tokens),
         )
@@ -217,7 +218,7 @@ class TestUpdateAquarium:
         random_id = str(uuid.uuid4())
 
         response = await client.put(
-            f"/aquariums/{random_id}",
+            f"/api/v1/aquariums/{random_id}",
             json={"name": "New Name"},
             headers=auth_headers(tokens),
         )
@@ -236,7 +237,7 @@ class TestDeleteAquarium:
 
         # Create aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "To Delete"},
             headers=auth_headers(tokens),
         )
@@ -244,7 +245,7 @@ class TestDeleteAquarium:
 
         # Delete
         response = await client.delete(
-            f"/aquariums/{aquarium_id}",
+            f"/api/v1/aquariums/{aquarium_id}",
             headers=auth_headers(tokens),
         )
 
@@ -257,7 +258,7 @@ class TestDeleteAquarium:
 
         # Create aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Soft Delete"},
             headers=auth_headers(tokens),
         )
@@ -265,13 +266,13 @@ class TestDeleteAquarium:
 
         # Delete
         await client.delete(
-            f"/aquariums/{aquarium_id}",
+            f"/api/v1/aquariums/{aquarium_id}",
             headers=auth_headers(tokens),
         )
 
         # Try to get - should return 404
         response = await client.get(
-            f"/aquariums/{aquarium_id}",
+            f"/api/v1/aquariums/{aquarium_id}",
             headers=auth_headers(tokens),
         )
         assert response.status_code == 404
@@ -283,7 +284,7 @@ class TestDeleteAquarium:
         random_id = str(uuid.uuid4())
 
         response = await client.delete(
-            f"/aquariums/{random_id}",
+            f"/api/v1/aquariums/{random_id}",
             headers=auth_headers(tokens),
         )
 
@@ -299,7 +300,7 @@ class TestDeleteAquarium:
 
         # User 1 creates aquarium
         create_response = await client.post(
-            "/aquariums",
+            "/api/v1/aquariums",
             json={"name": "Private Tank"},
             headers=auth_headers(tokens1),
         )
@@ -307,7 +308,7 @@ class TestDeleteAquarium:
 
         # User 2 tries to delete
         response = await client.delete(
-            f"/aquariums/{aquarium_id}",
+            f"/api/v1/aquariums/{aquarium_id}",
             headers=auth_headers(tokens2),
         )
 
