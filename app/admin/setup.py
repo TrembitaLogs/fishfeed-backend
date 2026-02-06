@@ -1,5 +1,7 @@
 """Admin panel setup and view registration."""
 
+from pathlib import Path
+
 from fastapi import FastAPI
 from sqladmin import Admin
 
@@ -16,6 +18,7 @@ from app.admin.views import (
     FishAdmin,
     NotificationPreferenceAdmin,
     PushTokenAdmin,
+    ReleasesView,
     SpeciesAdmin,
     StreakAdmin,
     UserAdmin,
@@ -32,11 +35,14 @@ def setup_admin(app: FastAPI) -> Admin:
     settings = get_settings()
     authentication_backend = AdminAuth(secret_key=settings.JWT_SECRET_KEY)
 
+    templates_dir = str(Path(__file__).resolve().parent / "templates")
+
     admin = Admin(
         app=app,
         engine=engine,
         authentication_backend=authentication_backend,
         title="FishFeed Admin",
+        templates_dir=templates_dir,
     )
 
     admin.add_view(UserAdmin)
@@ -55,5 +61,6 @@ def setup_admin(app: FastAPI) -> Admin:
     admin.add_view(NotificationPreferenceAdmin)
     admin.add_view(AnalyticsEventAdmin)
     admin.add_view(WebhookTransactionAdmin)
+    admin.add_view(ReleasesView)
 
     return admin

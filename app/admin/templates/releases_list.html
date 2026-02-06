@@ -1,0 +1,52 @@
+{% extends "sqladmin/layout.html" %}
+
+{% block content %}
+<div class="container-xl">
+  <div class="page-header d-print-none">
+    <div class="row align-items-center">
+      <div class="col-auto">
+        <h2 class="page-title">Mobile Releases</h2>
+        <div class="text-muted mt-1">Download APK builds for testing</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-8 mt-3">
+    {% if releases %}
+      <div class="d-flex flex-column gap-2">
+        {% for release in releases %}
+        <a href="{{ request.url_for('admin:releases-detail') }}?v={{ release.version }}"
+           class="card text-decoration-none" style="transition:box-shadow .15s;">
+          <div class="card-body py-3">
+            <div class="d-flex justify-content-between align-items-center">
+              <div>
+                <div class="d-flex align-items-center gap-2">
+                  <strong class="text-body">{{ release.version_display }}</strong>
+                  {% if loop.first %}
+                    <span class="badge bg-green">latest</span>
+                  {% endif %}
+                </div>
+                {% if release.date or release.size_mb %}
+                <div class="text-muted small mt-1">
+                  {% if release.date %}{{ release.date }}{% endif %}
+                  {% if release.date and release.size_mb %} &middot; {% endif %}
+                  {% if release.size_mb %}{{ release.size_mb }} MB{% endif %}
+                </div>
+                {% endif %}
+              </div>
+              <span class="text-muted">&rsaquo;</span>
+            </div>
+          </div>
+        </a>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="card">
+        <div class="card-body text-center text-muted py-5">
+          No releases available yet.
+        </div>
+      </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

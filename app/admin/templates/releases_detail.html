@@ -1,0 +1,62 @@
+{% extends "sqladmin/layout.html" %}
+
+{% block content %}
+<div class="container-xl">
+  <div class="page-header d-print-none">
+    <div class="row align-items-center">
+      <div class="col-auto">
+        <a href="{{ request.url_for('admin:releases-list') }}" class="text-muted text-decoration-none">
+          <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler" width="16" height="16" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none"><path d="M15 6l-6 6l6 6"/></svg>
+          All releases
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <div class="row mt-3">
+    <div class="col-lg-6">
+      <div class="card">
+        <div class="card-body">
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <h2 class="card-title mb-0">{{ release.version_display }}</h2>
+            {% if is_latest %}
+              <span class="badge bg-green">latest</span>
+            {% endif %}
+          </div>
+
+          <div class="datagrid mb-3">
+            {% if release.date %}
+            <div class="datagrid-item">
+              <div class="datagrid-title">Date</div>
+              <div class="datagrid-content">{{ release.date }}</div>
+            </div>
+            {% endif %}
+            {% if release.size_mb %}
+            <div class="datagrid-item">
+              <div class="datagrid-title">Size</div>
+              <div class="datagrid-content">{{ release.size_mb }} MB</div>
+            </div>
+            {% endif %}
+            <div class="datagrid-item">
+              <div class="datagrid-title">File</div>
+              <div class="datagrid-content">{{ release.apk }}</div>
+            </div>
+          </div>
+
+          {% if release.notes %}
+          <div class="mb-3">
+            <div class="text-muted small mb-1">Release notes</div>
+            <div style="white-space:pre-line;">{{ release.notes }}</div>
+          </div>
+          {% endif %}
+
+          <a href="{{ request.url_for('admin:releases-download', file_path=release.apk) }}" class="btn btn-primary w-100">
+            <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-download" width="16" height="16" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/><polyline points="7 11 12 16 17 11"/><line x1="12" y1="4" x2="12" y2="16"/></svg>
+            Download APK
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -8,6 +8,7 @@ from app.admin.views.fish import FishAdmin
 from app.admin.views.gamification import AchievementAdmin, StreakAdmin, UserProgressAdmin
 from app.admin.views.notification import NotificationPreferenceAdmin, PushTokenAdmin
 from app.admin.views.purchase import WebhookTransactionAdmin
+from app.admin.views.releases import ReleasesView
 from app.admin.views.species import SpeciesAdmin
 from app.admin.views.user import UserAdmin
 
@@ -28,4 +29,5 @@ __all__ = [
     "NotificationPreferenceAdmin",
     "AnalyticsEventAdmin",
     "WebhookTransactionAdmin",
+    "ReleasesView",
 ]
