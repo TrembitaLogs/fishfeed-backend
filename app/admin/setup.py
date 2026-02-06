@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
 from sqladmin import Admin
 
 from app.admin.auth import AdminAuth
@@ -62,5 +63,9 @@ def setup_admin(app: FastAPI) -> Admin:
     admin.add_view(AnalyticsEventAdmin)
     admin.add_view(WebhookTransactionAdmin)
     admin.add_view(ReleasesView)
+
+    @app.get("/", include_in_schema=False)
+    async def root_redirect() -> RedirectResponse:
+        return RedirectResponse(url="/admin/")
 
     return admin

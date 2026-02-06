@@ -70,11 +70,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     logger.info("app_shutdown", app_name=settings.APP_NAME)
 
 
+_is_production = settings.ENVIRONMENT == "production"
+
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     description="Backend API for FishFeed aquarium management system",
     lifespan=lifespan,
+    docs_url=None if _is_production else "/docs",
+    redoc_url=None if _is_production else "/redoc",
+    openapi_url=None if _is_production else "/openapi.json",
 )
 
 # SQLAdmin panel (must be mounted before middleware/routers)

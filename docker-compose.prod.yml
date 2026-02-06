@@ -63,28 +63,26 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=traefik_proxy"
+      - "traefik.http.services.fishfeed.loadbalancer.server.port=8000"
+      # API router
       - "traefik.http.routers.fishfeed-api.rule=Host(`${API_DOMAIN}`)"
       - "traefik.http.routers.fishfeed-api.entrypoints=websecure"
       - "traefik.http.routers.fishfeed-api.tls=true"
-      - "traefik.http.routers.fishfeed-api.tls.certresolver=dns"
-      - "traefik.http.routers.fishfeed-api.tls.domains[0].main=${API_DOMAIN}"
-      - "traefik.http.routers.fishfeed-api.tls.domains[0].sans=*.${API_DOMAIN}"
-      - "traefik.http.services.fishfeed-api.loadbalancer.server.port=8000"
-      # HTTP to HTTPS redirect
+      - "traefik.http.routers.fishfeed-api.tls.certresolver=http"
+      # Admin router
+      - "traefik.http.routers.fishfeed-admin.rule=Host(`${ADMIN_DOMAIN}`)"
+      - "traefik.http.routers.fishfeed-admin.entrypoints=websecure"
+      - "traefik.http.routers.fishfeed-admin.tls=true"
+      - "traefik.http.routers.fishfeed-admin.tls.certresolver=http"
+      # HTTP to HTTPS redirects
       - "traefik.http.routers.fishfeed-api-http.rule=Host(`${API_DOMAIN}`)"
       - "traefik.http.routers.fishfeed-api-http.entrypoints=web"
       - "traefik.http.routers.fishfeed-api-http.middlewares=https-redirect"
+      - "traefik.http.routers.fishfeed-admin-http.rule=Host(`${ADMIN_DOMAIN}`)"
+      - "traefik.http.routers.fishfeed-admin-http.entrypoints=web"
+      - "traefik.http.routers.fishfeed-admin-http.middlewares=https-redirect"
       - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
       - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"
-      # Mobile releases with BasicAuth
-      - "traefik.http.routers.fishfeed-releases.rule=Host(`${API_DOMAIN}`) && PathPrefix(`/mobile/releases/`)"
-      - "traefik.http.routers.fishfeed-releases.entrypoints=websecure"
-      - "traefik.http.routers.fishfeed-releases.tls=true"
-      - "traefik.http.routers.fishfeed-releases.tls.certresolver=dns"
-      - "traefik.http.routers.fishfeed-releases.middlewares=releases-auth"
-      - "traefik.http.routers.fishfeed-releases.service=fishfeed-api"
-      - "traefik.http.routers.fishfeed-releases.priority=200"
-      - "traefik.http.middlewares.releases-auth.basicauth.users=${RELEASES_BASIC_AUTH}"
 
   worker:
     image: ghcr.io/${GITHUB_REPOSITORY:-owner/fishfeed}:${IMAGE_TAG:-latest}
