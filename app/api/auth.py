@@ -3,13 +3,15 @@
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.database import get_db
 from app.dependencies import CurrentActiveUser
+from app.middleware.rate_limit import RateLimiter, _get_client_ip, _hash_ip
 from app.models.user import User
 from app.redis import get_redis
 from app.schemas.auth import (
@@ -38,6 +40,38 @@ from app.utils.password import hash_password, verify_password
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
+async def _check_auth_rate_limit(
+    http_request: Request,
+    redis: Redis,
+    limit: int,
+    key_type: str,
+) -> None:
+    """Check per-IP rate limit for auth endpoints.
+
+    Args:
+        http_request: The incoming FastAPI request.
+        redis: Async Redis client.
+        limit: Max requests per window.
+        key_type: Rate limit key type (e.g. 'auth_login', 'auth_register').
+
+    Raises:
+        HTTPException: 429 if rate limit exceeded.
+    """
+    settings = get_settings()
+    client_ip = _get_client_ip(http_request)
+    ip_hash = _hash_ip(client_ip, settings.ANALYTICS_IP_SALT)
+
+    limiter = RateLimiter(redis)
+    result = await limiter.check_rate_limit(ip_hash, key_type, limit)
+
+    if not result.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many requests. Please try again later.",
+            headers={"Retry-After": str(result.retry_after or 60)},
+        )
+
+
 @router.post(
     "/register",
     response_model=TokenResponse,
@@ -51,6 +85,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 )
 async def register(
     request: RegisterRequest,
+    http_request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> TokenResponse:
@@ -59,6 +94,9 @@ async def register(
     Creates a new user with the provided email and password,
     then returns access and refresh tokens.
     """
+    settings = get_settings()
+    await _check_auth_rate_limit(http_request, redis, settings.RATE_LIMIT_REGISTER_PER_MIN, "auth_register")
+
     try:
         await register_user(db, request.email, request.password)
         return await login_user(db, redis, request.email, request.password)
@@ -78,6 +116,7 @@ async def register(
 )
 async def login(
     request: LoginRequest,
+    http_request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> TokenResponse:
@@ -85,6 +124,9 @@ async def login(
 
     Returns access and refresh tokens on successful authentication.
     """
+    settings = get_settings()
+    await _check_auth_rate_limit(http_request, redis, settings.RATE_LIMIT_LOGIN_PER_MIN, "auth_login")
+
     try:
         return await login_user(db, redis, request.email, request.password)
     except InvalidCredentialsError as e:
@@ -230,7 +272,8 @@ async def password_change(
         )
 
     current_user.password_hash = hash_password(request.new_password)
-    await db.commit()
+    current_user.token_version += 1
+    await db.flush()
 
     return {"message": "Password changed successfully"}
 
@@ -255,4 +298,5 @@ async def delete_account(
     The account data is preserved but the user can no longer login.
     """
     current_user.deleted_at = datetime.now(UTC)
-    await db.commit()
+    current_user.token_version += 1
+    await db.flush()

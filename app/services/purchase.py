@@ -2,11 +2,11 @@
 
 import hashlib
 import hmac
-import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
 import httpx
+import structlog
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +20,7 @@ from app.schemas.purchase import (
     WebhookEvent,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class PurchaseError(Exception):
@@ -230,15 +230,17 @@ async def log_webhook_transaction(
         error_message=error_message,
     )
     db.add(transaction)
-    await db.commit()
+    await db.flush()
 
-    log_level = logging.ERROR if processing_result == "error" else logging.INFO
-    logger.log(
-        log_level,
+    log_msg = (
         f"Webhook logged: transaction_id={transaction_id}, "
         f"event_type={event_type}, user_id={user_id}, "
         f"result={processing_result}, correlation_id={correlation_id}"
     )
+    if processing_result == "error":
+        logger.error(log_msg)
+    else:
+        logger.info(log_msg)
 
     return transaction
 
@@ -272,7 +274,7 @@ async def _clear_downgrade_info(db: AsyncSession, user_id: UUID) -> None:
         user.settings = settings_dict
         # Reset AI scans to premium (unlimited represented as high number)
         user.free_ai_scans_remaining = PREMIUM_USER_LIMITS.ai_scans_per_month
-        await db.commit()
+        await db.flush()
         logger.info(f"Cleared downgrade info for user {user_id}")
 
 
@@ -349,7 +351,7 @@ async def process_webhook(db: AsyncSession, event: WebhookEvent) -> None:
         subscription_settings = _get_subscription_settings(user)
         subscription_settings["will_renew"] = False
         _set_subscription_settings(user, subscription_settings)
-        await db.commit()
+        await db.flush()
         logger.info(f"User {user.id} cancelled subscription, active until {user.subscription_expires_at}")
 
     elif event_type == "EXPIRATION":
@@ -362,20 +364,20 @@ async def process_webhook(db: AsyncSession, event: WebhookEvent) -> None:
         subscription_settings["billing_issue"] = True
         subscription_settings["billing_issue_at"] = datetime.now(UTC).isoformat()
         _set_subscription_settings(user, subscription_settings)
-        await db.commit()
+        await db.flush()
 
     elif event_type == "PRODUCT_CHANGE":
         subscription_settings = _get_subscription_settings(user)
         subscription_settings["product_id"] = product_id or event_data.product_id
         _set_subscription_settings(user, subscription_settings)
-        await db.commit()
+        await db.flush()
         logger.info(f"User {user.id} changed product to {product_id or event_data.product_id}")
 
     elif event_type == "UNCANCELLATION":
         subscription_settings = _get_subscription_settings(user)
         subscription_settings["will_renew"] = True
         _set_subscription_settings(user, subscription_settings)
-        await db.commit()
+        await db.flush()
         logger.info(f"User {user.id} uncancelled subscription")
 
     elif event_type == "SUBSCRIBER_ALIAS":
@@ -421,7 +423,7 @@ async def update_subscription_status(
     subscription_settings["updated_at"] = datetime.now(UTC).isoformat()
     _set_subscription_settings(user, subscription_settings)
 
-    await db.commit()
+    await db.flush()
 
     logger.info(
         f"Updated subscription for user {user_id}: "
@@ -591,6 +593,6 @@ async def revert_to_free(db: AsyncSession, user_id: UUID) -> None:
     subscription_settings.pop("billing_issue", None)
     _set_subscription_settings(user, subscription_settings)
 
-    await db.commit()
+    await db.flush()
 
     logger.info(f"User {user_id} reverted to free tier")

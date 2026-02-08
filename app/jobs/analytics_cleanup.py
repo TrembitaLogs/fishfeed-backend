@@ -23,13 +23,14 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import structlog
 from sqlalchemy import delete, func, select
 
 from app.config import get_settings
 from app.database import async_session_maker
 from app.models.analytics import AnalyticsEvent
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 settings = get_settings()
 
 # PII patterns to remove from event properties

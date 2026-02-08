@@ -1,11 +1,11 @@
 """Species service with business logic for fish species management."""
 
 import json
-import logging
 
+import structlog
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.species import Species
@@ -30,7 +30,7 @@ from app.utils.cache import (
     species_search_key,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class SpeciesError(Exception):
@@ -263,27 +263,22 @@ async def search_species(
         except RedisError as e:
             logger.warning(f"Redis error on get: {e}")
 
-    # Build tsquery - add :* for prefix matching
-    ts_query = " & ".join(word + ":*" for word in search_query.split())
+    # Use plainto_tsquery for safe full-text search (no raw tsquery syntax injection).
+    # websearch_to_tsquery handles prefix matching via :* through a separate safe step.
+    tsvector_expr = func.to_tsvector(
+        "english",
+        func.coalesce(Species.common_name, "") + " " + func.coalesce(Species.scientific_name, ""),
+    )
+    tsquery_expr = func.websearch_to_tsquery("english", search_query)
 
     fts_stmt = (
         select(Species)
-        .where(
-            text(
-                "to_tsvector('english', coalesce(common_name, '') || ' ' || "
-                "coalesce(scientific_name, '')) @@ to_tsquery('english', :query)"
-            )
-        )
-        .order_by(
-            text(
-                "ts_rank(to_tsvector('english', coalesce(common_name, '') || ' ' || "
-                "coalesce(scientific_name, '')), to_tsquery('english', :query)) DESC"
-            )
-        )
+        .where(tsvector_expr.bool_op("@@")(tsquery_expr))
+        .order_by(func.ts_rank(tsvector_expr, tsquery_expr).desc())
         .limit(limit)
     )
 
-    result = await db.execute(fts_stmt, {"query": ts_query})
+    result = await db.execute(fts_stmt)
     species_list = result.scalars().all()
 
     # Fallback to ILIKE if FTS returns no results
@@ -451,7 +446,7 @@ async def create_species(
     )
 
     db.add(species)
-    await db.commit()
+    await db.flush()
     await db.refresh(species)
 
     # Invalidate list and popular caches
@@ -490,7 +485,7 @@ async def update_species(
         else:
             setattr(species, field, value)
 
-    await db.commit()
+    await db.flush()
     await db.refresh(species)
 
     # Invalidate detail, list, and popular caches
@@ -517,7 +512,7 @@ async def delete_species(
     """
     species = await get_species(db, species_id)
     await db.delete(species)
-    await db.commit()
+    await db.flush()
 
     # Invalidate all species cache
     if redis is not None:

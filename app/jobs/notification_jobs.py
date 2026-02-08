@@ -6,10 +6,10 @@ This module provides scheduled jobs for:
 - Family feeding triggers when a member completes feeding
 """
 
-import logging
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import structlog
 from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,7 +20,7 @@ from app.models.feeding import FeedingLog
 from app.models.user import User
 from app.services.notification import NotificationService
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 settings = get_settings()
 
 
@@ -91,6 +91,7 @@ async def weekly_summary_job() -> int:
                 logger.error(f"Failed to send weekly summary to user {user_id}: {e}")
                 continue
 
+        await db.commit()
         logger.info(f"Weekly summary sent to {sent_count} users")
         return sent_count
 
@@ -230,6 +231,7 @@ async def re_engagement_job() -> int:
                 logger.error(f"Failed to send re-engagement to user {user_id}: {e}")
                 continue
 
+        await db.commit()
         logger.info(f"Re-engagement sent to {sent_count} users")
         return sent_count
 

@@ -6,17 +6,17 @@ that can classify fish species from images.
 
 import asyncio
 import base64
-import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
 import httpx
+import structlog
 
 from app.config import get_settings
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class AIProviderType(str, Enum):

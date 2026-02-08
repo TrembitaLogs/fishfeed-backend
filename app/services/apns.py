@@ -4,11 +4,11 @@ This module provides APNs integration for sending push notifications
 to iOS devices via aioapns library with token-based authentication.
 """
 
-import logging
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+import structlog
 from aioapns import APNs, NotificationRequest, PushType
 from aioapns.common import APNS_RESPONSE_CODE
 from sqlalchemy import delete
@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models.notification import PushToken
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class APNsError(Exception):
@@ -278,7 +278,7 @@ async def remove_invalid_tokens(
             PushToken.token.in_(tokens_to_remove),
         )
         result = await db.execute(stmt)
-        await db.commit()
+        await db.flush()
         logger.info(f"Removed {result.rowcount} invalid APNs tokens for user {user_id}")  # type: ignore[attr-defined]
 
     return tokens_to_remove

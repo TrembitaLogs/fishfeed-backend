@@ -107,7 +107,7 @@ async def register_user(
         password_hash=hash_password(password),
     )
     db.add(user)
-    await db.commit()
+    await db.flush()
     await db.refresh(user)
 
     return user
@@ -143,7 +143,7 @@ async def login_user(
     if user.password_hash is None or not verify_password(password, user.password_hash):
         raise InvalidCredentialsError()
 
-    access_token = create_access_token(user.id)
+    access_token = create_access_token(user.id, token_version=user.token_version)
     refresh_token, jti = create_refresh_token(user.id)
 
     await redis.set(
@@ -209,7 +209,7 @@ async def refresh_tokens(
 
     await redis.delete(_redis_key(jti))
 
-    new_access_token = create_access_token(user.id)
+    new_access_token = create_access_token(user.id, token_version=user.token_version)
     new_refresh_token, new_jti = create_refresh_token(user.id)
 
     await redis.set(
@@ -369,18 +369,18 @@ async def oauth_login(
             email_verified=True,
         )
         db.add(user)
-        await db.commit()
+        await db.flush()
         await db.refresh(user)
     elif user.oauth_provider is None:
         # Link OAuth to existing email-based account
         user.oauth_provider = provider
         user.oauth_id = oauth_id
         user.email_verified = True
-        await db.commit()
+        await db.flush()
         await db.refresh(user)
 
     # Generate tokens
-    access_token = create_access_token(user.id)
+    access_token = create_access_token(user.id, token_version=user.token_version)
     refresh_token, jti = create_refresh_token(user.id)
 
     await redis.set(

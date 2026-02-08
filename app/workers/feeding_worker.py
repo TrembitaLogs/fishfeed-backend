@@ -26,6 +26,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, date, timedelta
 from typing import Any
 
+import structlog
 from apscheduler import AsyncScheduler, ConflictPolicy
 from apscheduler.datastores.sqlalchemy import SQLAlchemyDataStore
 from apscheduler.eventbrokers.asyncpg import AsyncpgEventBroker
@@ -41,7 +42,7 @@ from app.jobs.subscription_jobs import check_expired_subscriptions_job
 from app.models.gamification import Streak
 from app.services.notification import NotificationService
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 settings = get_settings()
 
 # Global scheduler instance
@@ -112,6 +113,7 @@ async def reset_stale_streaks_job() -> int:
                     f"Failed to send streak lost notification to user {user_id}: {e}"
                 )
 
+        await db.commit()
         logger.info(f"Reset {len(affected)} stale streaks")
         return len(affected)
 

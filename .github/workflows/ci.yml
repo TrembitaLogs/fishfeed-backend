@@ -42,7 +42,7 @@ jobs:
     env:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/fishfeed_test
       REDIS_URL: redis://localhost:6379/0
-      JWT_SECRET_KEY: test-secret-key-for-ci
+      JWT_SECRET_KEY: test-secret-key-for-ci-minimum-32-chars
       JWT_ALGORITHM: HS256
       ENVIRONMENT: test
 

@@ -11,12 +11,14 @@ from app.config import get_settings
 
 def create_access_token(
     user_id: UUID,
+    token_version: int = 0,
     expires_delta: timedelta | None = None,
 ) -> str:
     """Create a JWT access token.
 
     Args:
         user_id: User's unique identifier.
+        token_version: User's token version for invalidation on password change.
         expires_delta: Optional custom expiration time.
 
     Returns:
@@ -32,6 +34,7 @@ def create_access_token(
         "exp": now + expires_delta,
         "iat": now,
         "type": "access",
+        "tv": token_version,
     }
     return str(jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM))
 

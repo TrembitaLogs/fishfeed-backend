@@ -3,14 +3,14 @@
 import base64
 import hashlib
 import io
-import logging
 
+import structlog
 from fastapi import UploadFile
 from PIL import Image
 
 from app.config import get_settings
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}

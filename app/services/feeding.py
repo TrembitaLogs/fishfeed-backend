@@ -1,10 +1,10 @@
 """Feeding service with business logic for feeding schedules and logs."""
 
-import logging
 from datetime import date, datetime, timedelta
 from datetime import time as dt_time
 from uuid import UUID
 
+import structlog
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +17,7 @@ from app.schemas.feeding import FeedingLogCreate, ScheduleCreate, ScheduleUpdate
 from app.services.aquarium import check_access
 from app.services.gamification import check_achievements, update_streak
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Predefined time distributions for common feeding frequencies
 DEFAULT_TIMES: dict[int, list[str]] = {
@@ -158,7 +158,6 @@ async def generate_schedule(
         await db.flush()
         for schedule in created_schedules:
             await db.refresh(schedule)
-        await db.commit()
 
     logger.info(
         f"Generated {len(created_schedules)} new schedules for aquarium"
@@ -227,7 +226,7 @@ async def create_schedule(
         created_by_user_id=user_id,
     )
     db.add(schedule)
-    await db.commit()
+    await db.flush()
     await db.refresh(schedule)
 
     logger.info(f"Created schedule '{schedule.id}' for aquarium '{aquarium_id}'")
@@ -272,7 +271,7 @@ async def update_schedule(
     for field, value in update_data.items():
         setattr(schedule, field, value)
 
-    await db.commit()
+    await db.flush()
     await db.refresh(schedule)
 
     logger.info(f"Updated schedule '{schedule_id}'")
@@ -299,7 +298,7 @@ async def delete_schedule(
         raise ScheduleNotFoundError(schedule_id)
 
     await db.delete(schedule)
-    await db.commit()
+    await db.flush()
 
     logger.info(f"Deleted schedule '{schedule_id}'")
 
@@ -354,13 +353,13 @@ async def create_feeding_log(
         device_id=data.device_id,
         notes=data.notes,
     )
-    db.add(log)
-
     try:
-        await db.flush()
+        # Use savepoint so IntegrityError only rolls back this insert,
+        # not the entire transaction (other data created earlier stays intact).
+        async with db.begin_nested():
+            db.add(log)
+            await db.flush()
     except IntegrityError:
-        await db.rollback()
-
         # Fetch existing log with user info for conflict response
         existing_stmt = (
             select(FeedingLog)
@@ -380,7 +379,7 @@ async def create_feeding_log(
         )
         raise FeedingLogConflictError(existing_log, user_name) from None
 
-    await db.commit()
+    await db.flush()
     await db.refresh(log, ["acted_by_user"])
 
     # Post-create side effects for 'fed' action

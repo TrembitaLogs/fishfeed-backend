@@ -1,12 +1,12 @@
 """Gamification service for streak tracking, freeze management, and achievements."""
 
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, timedelta
 from datetime import datetime as dt
 from uuid import UUID
 
+import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,7 +16,7 @@ from app.models.fish import Fish
 from app.models.gamification import Achievement, Streak
 from app.schemas.gamification import AchievementType
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 # ============================================================================
@@ -460,7 +460,7 @@ async def check_achievements(db: AsyncSession, user_id: UUID) -> list[Achievemen
             )
 
     if newly_unlocked:
-        await db.commit()
+        await db.flush()
         for achievement in newly_unlocked:
             await db.refresh(achievement)
 

@@ -5,10 +5,10 @@ to users via FCM (Android) and APNs (iOS) with preferences checking,
 throttling, quiet hours enforcement, and delivery logging.
 """
 
-import logging
 from typing import Any
 from uuid import UUID
 
+import structlog
 from redis.asyncio import Redis
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -25,7 +25,7 @@ from app.services.fcm import FCMClient, FCMUnavailableError, get_fcm_client
 from app.services.fcm import remove_invalid_tokens as remove_invalid_fcm_tokens
 from app.services.notification_throttle import ThrottleManager
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Mapping of notification types to preference fields
 NOTIFICATION_TYPE_TO_PREFERENCE = {
@@ -122,7 +122,7 @@ class NotificationService:
             )
         )
         await self.db.execute(stmt)
-        await self.db.commit()
+        await self.db.flush()
         logger.info(f"Registered {platform} push token for user {user_id}")
 
     async def unregister_push_token(
@@ -144,7 +144,7 @@ class NotificationService:
             PushToken.token == token,
         )
         result = await self.db.execute(stmt)
-        await self.db.commit()
+        await self.db.flush()
 
         if result.rowcount > 0:  # type: ignore[attr-defined]
             logger.info(f"Unregistered push token for user {user_id}")
@@ -223,7 +223,7 @@ class NotificationService:
                 if hasattr(preferences, field):
                     setattr(preferences, field, value)
 
-        await self.db.commit()
+        await self.db.flush()
         await self.db.refresh(preferences)
 
         return await self.get_user_preferences(user_id)
@@ -300,7 +300,7 @@ class NotificationService:
             error_code=error_code,
         )
         self.db.add(log_entry)
-        await self.db.commit()
+        await self.db.flush()
 
     async def send_push(
         self,

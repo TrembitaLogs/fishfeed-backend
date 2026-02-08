@@ -1,9 +1,9 @@
 """Fish service with business logic for fish management in aquariums."""
 
-import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
+import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -14,7 +14,7 @@ from app.schemas.fish import FishCreate, FishUpdate
 from app.services.aquarium import check_access, get_aquarium
 from app.services.gamification import check_achievements
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class FishError(Exception):
@@ -82,7 +82,7 @@ async def add_fish(
         added_via=data.added_via,
     )
     db.add(fish)
-    await db.commit()
+    await db.flush()
     await db.refresh(fish)
 
     # Load species relationship
@@ -203,7 +203,7 @@ async def update_fish(
         setattr(fish, field, value)
 
     # updated_at is handled by TimestampMixin onupdate
-    await db.commit()
+    await db.flush()
     await db.refresh(fish)
 
     # Reload species relationship
@@ -236,8 +236,6 @@ async def remove_fish(
     # Soft delete the fish
     fish.deleted_at = datetime.now(UTC)
     await db.flush()
-
-    await db.commit()
 
     logger.info(f"Soft deleted fish '{fish_id}' by user '{user_id}'")
 

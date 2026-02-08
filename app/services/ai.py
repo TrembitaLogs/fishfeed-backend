@@ -4,10 +4,10 @@ This module provides the main business logic for AI-powered fish species
 recognition, including scan limits, deduplication, and result logging.
 """
 
-import logging
 import time
 from uuid import UUID
 
+import structlog
 from fastapi import UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,7 +30,7 @@ from app.services.image_processing import (
 )
 from app.services.storage import S3StorageService, StorageError, get_storage_service
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class AIServiceError(Exception):
@@ -355,7 +355,7 @@ async def scan_image(
         user.free_ai_scans_remaining -= 1
         scans_remaining = user.free_ai_scans_remaining
 
-    await db.commit()
+    await db.flush()
     await db.refresh(scan)
 
     logger.info(
@@ -411,7 +411,7 @@ async def confirm_species(
     scan.confirmed_species_id = species_id
     scan.was_corrected = scan.detected_species_id != species_id
 
-    await db.commit()
+    await db.flush()
 
     logger.info(
         f"Scan {scan_id} confirmed by user {user_id}: "

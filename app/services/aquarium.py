@@ -1,9 +1,9 @@
 """Aquarium service with business logic for aquarium management."""
 
-import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
+import structlog
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -13,7 +13,7 @@ from app.models.fish import Fish
 from app.schemas.aquarium import AquariumCreate, AquariumUpdate
 from app.services.gamification import check_achievements
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class AquariumError(Exception):
@@ -126,7 +126,7 @@ async def create_aquarium(
     )
     db.add(member)
 
-    await db.commit()
+    await db.flush()
     await db.refresh(aquarium)
 
     logger.info(f"Created aquarium '{aquarium.id}' for user '{user_id}'")
@@ -264,7 +264,7 @@ async def update_aquarium(
     for field, value in update_data.items():
         setattr(aquarium, field, value)
 
-    await db.commit()
+    await db.flush()
     await db.refresh(aquarium)
 
     logger.info(f"Updated aquarium '{aquarium_id}' by user '{user_id}'")
@@ -311,7 +311,7 @@ async def delete_aquarium(
     for fish in fish_list:
         fish.deleted_at = now
 
-    await db.commit()
+    await db.flush()
 
     logger.info(
         f"Soft deleted aquarium '{aquarium_id}' and {len(fish_list)} fish "

@@ -8,7 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-EntityType = Literal["aquarium", "fish", "feeding_log", "schedule", "streak", "achievement", "progress"]
+EntityType = Literal["aquarium", "fish", "feeding_log", "schedule", "streak", "achievement", "progress", "user_profile"]
 OperationType = Literal["create", "update", "delete"]
 
 
@@ -70,6 +70,7 @@ class ServerState(BaseModel):
     streaks: list[dict[str, Any]] = Field(default_factory=list, description="List of user streak entities")
     achievements: list[dict[str, Any]] = Field(default_factory=list, description="List of user achievement entities")
     progress: list[dict[str, Any]] = Field(default_factory=list, description="List of user progress entities")
+    user_profile: dict[str, Any] | None = Field(default=None, description="User profile data (singleton per user)")
     deleted: DeletedEntities = Field(
         default_factory=DeletedEntities, description="Deleted entity IDs for delta sync (soft-deleted entities only)"
     )

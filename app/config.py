@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,8 +27,16 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
 
+    # CORS
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:8080",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8080",
+    ]
+
     # JWT
-    JWT_SECRET_KEY: str = "your-secret-key-change-in-production"
+    JWT_SECRET_KEY: str = ""
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
@@ -55,6 +64,9 @@ class Settings(BaseSettings):
     REDIS_KEY_PREFIX: str = "fishfeed:"
     FREE_USER_HOURLY_SCAN_LIMIT: int = 10
 
+    # Trusted reverse proxy IPs (only trust X-Forwarded-For from these)
+    TRUSTED_PROXIES: list[str] = ["127.0.0.1", "::1"]
+
     # Global Rate Limiting (middleware)
     RATE_LIMIT_USER_PER_MIN: int = 100  # Per authenticated user
     RATE_LIMIT_IP_PER_MIN: int = 1000  # Per IP address
@@ -62,6 +74,8 @@ class Settings(BaseSettings):
     RATE_LIMIT_ANALYTICS_BATCH_PER_MIN: int = 10  # /analytics/events/batch endpoint
     RATE_LIMIT_WINDOW_SECONDS: int = 60  # Sliding window size
     RATE_LIMIT_ENABLED: bool = True  # Enable/disable rate limiting
+    RATE_LIMIT_LOGIN_PER_MIN: int = 5  # Per IP for /auth/login
+    RATE_LIMIT_REGISTER_PER_MIN: int = 3  # Per IP for /auth/register
 
     # Request limits (Slowloris protection)
     MAX_REQUEST_BODY_SIZE_MB: int = 10  # Max request body size
@@ -125,6 +139,15 @@ class Settings(BaseSettings):
     ANALYTICS_CLEANUP_BATCH_SIZE: int = 1000  # Batch size for cleanup operations
     ANALYTICS_CLEANUP_HOUR: int = 3  # UTC hour for daily cleanup job
     ANALYTICS_CLEANUP_MINUTE: int = 0  # Minute for daily cleanup job
+
+    @model_validator(mode="after")
+    def validate_jwt_secret_key(self) -> Settings:
+        """Ensure JWT_SECRET_KEY is set and has sufficient length."""
+        if not self.JWT_SECRET_KEY:
+            raise ValueError("JWT_SECRET_KEY must be set via environment variable or .env file")
+        if len(self.JWT_SECRET_KEY) < 32:
+            raise ValueError("JWT_SECRET_KEY must be at least 32 characters long")
+        return self
 
 
 @lru_cache

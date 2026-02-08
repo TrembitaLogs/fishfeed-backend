@@ -1,11 +1,11 @@
-"""Sync service with business logic for offline-first data synchronization."""
+"""Sync change application: entity-specific change handlers and orchestration."""
 
-import logging
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, or_, select, update
+import structlog
+from sqlalchemy import and_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.aquarium import Aquarium, AquariumMember
@@ -13,359 +13,12 @@ from app.models.feeding import FeedingLog, FeedingSchedule
 from app.models.fish import Fish
 from app.models.gamification import Achievement, Streak, UserProgress
 from app.models.user import User
-from app.schemas.sync import (
-    ChangeItem,
-    ConflictItem,
-    DeletedEntities,
-    EntityType,
-    ServerState,
-    SyncRequest,
-    SyncResponse,
-)
+from app.schemas.sync import ChangeItem, ConflictItem
 from app.services import feeding as feeding_service
 
-logger = logging.getLogger(__name__)
+from .utils import _entity_to_dict, _group_changes_by_entity_type, resolve_conflict
 
-
-class SyncError(Exception):
-    """Base exception for sync errors."""
-
-    def __init__(self, message: str, status_code: int = 400):
-        self.message = message
-        self.status_code = status_code
-        super().__init__(message)
-
-
-class SyncValidationError(SyncError):
-    """Raised when sync request validation fails."""
-
-    def __init__(self, message: str):
-        super().__init__(message, status_code=400)
-
-
-class SyncAccessDeniedError(SyncError):
-    """Raised when user doesn't have access to synced entities."""
-
-    def __init__(self, entity_type: str, entity_id: UUID):
-        super().__init__(f"Access denied to {entity_type} '{entity_id}'", status_code=403)
-
-
-async def _get_user_aquarium_ids(
-    db: AsyncSession,
-    user_id: UUID,
-    include_deleted: bool = False,
-) -> set[UUID]:
-    """Get all aquarium IDs accessible to user.
-
-    Args:
-        db: Database session.
-        user_id: User ID.
-        include_deleted: If True, include soft-deleted aquariums (for delta sync).
-
-    Returns:
-        Set of aquarium IDs where user is owner or member.
-    """
-    stmt = (
-        select(Aquarium.id)
-        .distinct()
-        .outerjoin(AquariumMember, Aquarium.id == AquariumMember.aquarium_id)
-        .where(
-            or_(
-                Aquarium.owner_id == user_id,
-                AquariumMember.user_id == user_id,
-            ),
-        )
-    )
-
-    if not include_deleted:
-        stmt = stmt.where(Aquarium.deleted_at.is_(None))
-
-    result = await db.execute(stmt)
-    return set(result.scalars().all())
-
-
-async def _validate_entity_ownership(
-    db: AsyncSession,
-    user_id: UUID,
-    changes: list[ChangeItem],
-) -> None:
-    """Validate that all entities in changes belong to user's aquariums.
-
-    For create operations, validates the aquarium_id in data.
-    For update/delete operations, validates existing entity ownership.
-
-    Args:
-        db: Database session.
-        user_id: User ID.
-        changes: List of change items to validate.
-
-    Raises:
-        SyncAccessDeniedError: If user doesn't have access to an entity.
-        SyncValidationError: If validation data is missing.
-    """
-    if not changes:
-        return
-
-    # Collect aquarium IDs being created in this batch so that fish/schedule
-    # creates referencing a new aquarium from the same batch pass validation.
-    pending_aquarium_ids = {
-        change.entity_id
-        for change in changes
-        if change.entity_type == "aquarium" and change.operation == "create"
-    }
-
-    user_aquarium_ids = await _get_user_aquarium_ids(db, user_id)
-    user_aquarium_ids |= pending_aquarium_ids
-
-    for change in changes:
-        if change.entity_type == "aquarium":
-            # For aquariums, check if it's in user's accessible aquariums
-            if change.operation == "create":
-                # New aquarium will be owned by user, always allowed
-                continue
-            # For update/delete, aquarium must be in user's list
-            if change.entity_id not in user_aquarium_ids:
-                raise SyncAccessDeniedError("aquarium", change.entity_id)
-
-        elif change.entity_type == "fish":
-            if change.operation == "create":
-                # For create, check aquarium_id in data
-                aquarium_id = change.data.get("aquarium_id")
-                if not aquarium_id:
-                    raise SyncValidationError(f"Missing aquarium_id for fish create: {change.entity_id}")
-                try:
-                    aquarium_uuid = UUID(str(aquarium_id))
-                except (ValueError, TypeError):
-                    raise SyncValidationError(f"Invalid aquarium_id format for fish: {change.entity_id}") from None
-                if aquarium_uuid not in user_aquarium_ids:
-                    raise SyncAccessDeniedError("aquarium", aquarium_uuid)
-            else:
-                # For update/delete, check existing fish ownership
-                stmt = select(Fish.aquarium_id).where(Fish.id == change.entity_id)
-                result = await db.execute(stmt)
-                aquarium_id = result.scalar_one_or_none()
-                if aquarium_id is None:
-                    # Entity doesn't exist - will be handled by apply_changes
-                    continue
-                if aquarium_id not in user_aquarium_ids:
-                    raise SyncAccessDeniedError("fish", change.entity_id)
-
-        elif change.entity_type == "feeding_log":
-            if change.operation == "create":
-                # For create, check aquarium_id in data
-                aquarium_id = change.data.get("aquarium_id")
-                if not aquarium_id:
-                    raise SyncValidationError(f"Missing aquarium_id for event create: {change.entity_id}")
-                try:
-                    aquarium_uuid = UUID(str(aquarium_id))
-                except (ValueError, TypeError):
-                    raise SyncValidationError(f"Invalid aquarium_id format for event: {change.entity_id}") from None
-                if aquarium_uuid not in user_aquarium_ids:
-                    raise SyncAccessDeniedError("aquarium", aquarium_uuid)
-            else:
-                # For update/delete, check existing event ownership
-                stmt = select(FeedingLog.aquarium_id).where(FeedingLog.id == change.entity_id)
-                result = await db.execute(stmt)
-                aquarium_id = result.scalar_one_or_none()
-                if aquarium_id is None:
-                    # Entity doesn't exist - will be handled by apply_changes
-                    continue
-                if aquarium_id not in user_aquarium_ids:
-                    raise SyncAccessDeniedError("feeding_log", change.entity_id)
-
-        elif change.entity_type == "schedule":
-            if change.operation == "create":
-                # For create, check aquarium_id in data
-                aquarium_id = change.data.get("aquarium_id")
-                if not aquarium_id:
-                    raise SyncValidationError(f"Missing aquarium_id for schedule create: {change.entity_id}")
-                try:
-                    aquarium_uuid = UUID(str(aquarium_id))
-                except (ValueError, TypeError):
-                    raise SyncValidationError(f"Invalid aquarium_id format for schedule: {change.entity_id}") from None
-                if aquarium_uuid not in user_aquarium_ids:
-                    raise SyncAccessDeniedError("aquarium", aquarium_uuid)
-            else:
-                # For update/delete, check existing schedule ownership
-                stmt = select(FeedingSchedule.aquarium_id).where(FeedingSchedule.id == change.entity_id)
-                result = await db.execute(stmt)
-                aquarium_id = result.scalar_one_or_none()
-                if aquarium_id is None:
-                    # Entity doesn't exist - will be handled by apply_changes
-                    continue
-                if aquarium_id not in user_aquarium_ids:
-                    raise SyncAccessDeniedError("schedule", change.entity_id)
-
-        elif change.entity_type in ("streak", "achievement", "progress"):
-            # User-scoped entities - always allowed for the authenticated user
-            # The apply_*_change functions will enforce that they can only
-            # modify their own records by using user_id from the session
-            continue
-
-
-def _generate_sync_token() -> str:
-    """Generate a unique sync token.
-
-    Uses combination of timestamp and UUID for uniqueness.
-
-    Returns:
-        Sync token string.
-    """
-    now = datetime.now(UTC)
-    timestamp = now.strftime("%Y%m%d%H%M%S%f")
-    unique_id = uuid4().hex[:8]
-    return f"{timestamp}-{unique_id}"
-
-
-def resolve_conflict(
-    server_updated_at: datetime,
-    client_updated_at: datetime,
-) -> str:
-    """Determine winner based on timestamp comparison (last-write-wins).
-
-    Args:
-        server_updated_at: Server entity's updated_at timestamp.
-        client_updated_at: Client's updated_at timestamp.
-
-    Returns:
-        'client' if client timestamp is newer, 'server' otherwise.
-        When timestamps are equal, server wins for determinism.
-    """
-    # Normalize both datetimes to UTC for comparison
-    # Handle both timezone-aware and timezone-naive datetimes
-    server_ts = server_updated_at
-    client_ts = client_updated_at
-
-    if server_ts.tzinfo is None:
-        server_ts = server_ts.replace(tzinfo=UTC)
-    if client_ts.tzinfo is None:
-        client_ts = client_ts.replace(tzinfo=UTC)
-
-    if client_ts > server_ts:
-        return "client"
-    return "server"
-
-
-def _entity_to_dict(
-    entity: Aquarium | Fish | FeedingLog | FeedingSchedule | Streak | Achievement | UserProgress,
-) -> dict[str, Any]:
-    """Convert entity to dictionary for conflict reporting.
-
-    Args:
-        entity: Database entity.
-
-    Returns:
-        Dictionary representation of entity.
-    """
-    result: dict[str, Any] = {}
-
-    if isinstance(entity, Aquarium):
-        result = {
-            "id": str(entity.id),
-            "owner_id": str(entity.owner_id),
-            "name": entity.name,
-            "created_at": entity.created_at.isoformat() if entity.created_at else None,
-            "updated_at": entity.updated_at.isoformat() if entity.updated_at else None,
-            "deleted_at": entity.deleted_at.isoformat() if entity.deleted_at else None,
-        }
-    elif isinstance(entity, Fish):
-        result = {
-            "id": str(entity.id),
-            "aquarium_id": str(entity.aquarium_id),
-            "species_id": entity.species_id,
-            "quantity": entity.quantity,
-            "custom_name": entity.custom_name,
-            "added_via": entity.added_via,
-            "created_at": entity.created_at.isoformat() if entity.created_at else None,
-            "updated_at": entity.updated_at.isoformat() if entity.updated_at else None,
-            "deleted_at": entity.deleted_at.isoformat() if entity.deleted_at else None,
-        }
-    elif isinstance(entity, FeedingLog):
-        result = {
-            "id": str(entity.id),
-            "schedule_id": str(entity.schedule_id),
-            "fish_id": str(entity.fish_id),
-            "aquarium_id": str(entity.aquarium_id),
-            "scheduled_for": entity.scheduled_for.isoformat() if entity.scheduled_for else None,
-            "action": entity.action,
-            "acted_at": entity.acted_at.isoformat() if entity.acted_at else None,
-            "acted_by_user_id": str(entity.acted_by_user_id),
-            "device_id": str(entity.device_id),
-            "notes": entity.notes,
-            "created_at": entity.created_at.isoformat() if entity.created_at else None,
-        }
-    elif isinstance(entity, FeedingSchedule):
-        result = {
-            "id": str(entity.id),
-            "aquarium_id": str(entity.aquarium_id),
-            "fish_id": str(entity.fish_id),
-            "time": entity.time.strftime("%H:%M") if entity.time else None,
-            "interval_days": entity.interval_days,
-            "anchor_date": entity.anchor_date.isoformat() if entity.anchor_date else None,
-            "food_type": entity.food_type,
-            "portion_hint": entity.portion_hint,
-            "active": entity.active,
-            "created_by_user_id": str(entity.created_by_user_id) if entity.created_by_user_id else None,
-            "created_at": entity.created_at.isoformat() if entity.created_at else None,
-            "updated_at": entity.updated_at.isoformat() if entity.updated_at else None,
-        }
-    elif isinstance(entity, Streak):
-        result = {
-            "id": str(entity.user_id),  # user_id is the primary key for streaks
-            "user_id": str(entity.user_id),
-            "current_streak": entity.current_streak,
-            "best_streak": entity.best_streak,
-            "freeze_available": entity.freeze_available,
-            "freeze_used_this_period": entity.freeze_used_this_period,
-            "period_start": entity.period_start.isoformat() if entity.period_start else None,
-            "last_feed_date": entity.last_feed_date.isoformat() if entity.last_feed_date else None,
-            "updated_at": entity.updated_at.isoformat() if entity.updated_at else None,
-        }
-    elif isinstance(entity, Achievement):
-        result = {
-            "id": str(entity.id),
-            "user_id": str(entity.user_id),
-            "achievement_type": entity.achievement_type,
-            "unlocked_at": entity.unlocked_at.isoformat() if entity.unlocked_at else None,
-            "shared_at": entity.shared_at.isoformat() if entity.shared_at else None,
-        }
-    elif isinstance(entity, UserProgress):
-        result = {
-            "id": str(entity.user_id),  # user_id is the primary key for progress
-            "user_id": str(entity.user_id),
-            "total_xp": entity.total_xp,
-            "level": entity.level,
-            "last_xp_awarded_at": (entity.last_xp_awarded_at.isoformat() if entity.last_xp_awarded_at else None),
-            "last_level_up_at": (entity.last_level_up_at.isoformat() if entity.last_level_up_at else None),
-            "updated_at": entity.updated_at.isoformat() if entity.updated_at else None,
-        }
-
-    return result
-
-
-def _group_changes_by_entity_type(
-    changes: list[ChangeItem],
-) -> dict[EntityType, list[ChangeItem]]:
-    """Group changes by entity type for batch processing.
-
-    Args:
-        changes: List of change items.
-
-    Returns:
-        Dictionary mapping entity types to their changes.
-    """
-    grouped: dict[EntityType, list[ChangeItem]] = {
-        "aquarium": [],
-        "fish": [],
-        "feeding_log": [],
-        "schedule": [],
-        "streak": [],
-        "achievement": [],
-        "progress": [],
-    }
-    for change in changes:
-        grouped[change.entity_type].append(change)
-    return grouped
+logger = structlog.get_logger(__name__)
 
 
 async def _apply_aquarium_change(
@@ -1155,6 +808,48 @@ async def _apply_progress_change(
     return None
 
 
+async def _apply_user_profile_change(
+    db: AsyncSession,
+    user_id: UUID,
+    change: ChangeItem,
+) -> ConflictItem | None:
+    """Apply a user profile change. Only update operation is meaningful."""
+    stmt = select(User).where(User.id == user_id)
+    result = await db.execute(stmt)
+    existing = result.scalar_one_or_none()
+
+    if existing is None:
+        logger.debug(f"User {user_id} not found, skipping profile change")
+        return None
+
+    if change.operation in ("create", "update"):
+        winner = resolve_conflict(existing.updated_at, change.client_updated_at)
+        if winner == "server":
+            logger.debug(f"UPDATE conflict for user_profile {user_id}: server wins")
+            return ConflictItem(
+                entity_type="user_profile",
+                entity_id=change.entity_id,
+                client_data=change.data,
+                server_data=_entity_to_dict(existing),
+                client_updated_at=change.client_updated_at,
+                server_updated_at=existing.updated_at,
+                resolution="server_wins",
+            )
+        # Client wins - apply update
+        if "nickname" in change.data:
+            existing.nickname = change.data["nickname"]
+        if "avatar_url" in change.data:
+            existing.avatar_url = change.data["avatar_url"]
+        if "settings" in change.data:
+            existing.settings = change.data["settings"]
+        logger.debug(f"Updated user_profile for user {user_id}")
+
+    elif change.operation == "delete":
+        logger.debug(f"DELETE not supported for user_profile, ignoring {change.entity_id}")
+
+    return None
+
+
 async def apply_changes(
     db: AsyncSession,
     user_id: UUID,
@@ -1189,7 +884,8 @@ async def apply_changes(
         f"{len(grouped['schedule'])} schedules, "
         f"{len(grouped['streak'])} streaks, "
         f"{len(grouped['achievement'])} achievements, "
-        f"{len(grouped['progress'])} progress"
+        f"{len(grouped['progress'])} progress, "
+        f"{len(grouped['user_profile'])} user_profile"
     )
 
     # Process aquarium changes
@@ -1248,6 +944,12 @@ async def apply_changes(
         if conflict:
             conflicts.append(conflict)
 
+    # Process user_profile changes (user-scoped)
+    for change in grouped["user_profile"]:
+        conflict = await _apply_user_profile_change(db, user_id, change)
+        if conflict:
+            conflicts.append(conflict)
+
     # Flush to ensure all changes are applied
     await db.flush()
 
@@ -1273,6 +975,8 @@ async def _ensure_schedules_for_user(
         db: Database session.
         user_id: User ID.
     """
+    from .validation import _get_user_aquarium_ids
+
     # Get all user's aquarium IDs
     user_aquarium_ids = await _get_user_aquarium_ids(db, user_id)
     if not user_aquarium_ids:
@@ -1320,362 +1024,3 @@ async def _ensure_schedules_for_user(
             logger.debug(f"Generated schedules for aquarium {aquarium_id}")
         except Exception as e:
             logger.warning(f"Failed to generate schedules for aquarium {aquarium_id}: {e}")
-
-
-async def get_server_state(
-    db: AsyncSession,
-    user_id: UUID,
-    since: datetime | None,
-) -> ServerState:
-    """Get server state for user, optionally filtered by last sync time.
-
-    Implements delta sync: returns only entities changed after 'since' timestamp.
-    For initial sync (since=None), returns all active entities.
-
-    Args:
-        db: Database session.
-        user_id: User ID.
-        since: If provided, return only changes after this timestamp (delta sync).
-
-    Returns:
-        ServerState with aquariums, fish, events, and deleted entity IDs.
-    """
-    logger.debug(f"get_server_state for user {user_id}, since={since}")
-
-    # For delta sync, include deleted aquariums to track deletions
-    # For initial sync, only active aquariums
-    include_deleted = since is not None
-    user_aquarium_ids = await _get_user_aquarium_ids(db, user_id, include_deleted=include_deleted)
-
-    # Build queries based on delta sync or initial sync
-    aquariums_data: list[dict[str, Any]] = []
-    fish_data: list[dict[str, Any]] = []
-    events_data: list[dict[str, Any]] = []
-    schedules_data: list[dict[str, Any]] = []
-    streaks_data: list[dict[str, Any]] = []
-    achievements_data: list[dict[str, Any]] = []
-    progress_data: list[dict[str, Any]] = []
-    deleted = DeletedEntities()
-
-    # Query user-scoped entities (streaks, achievements, progress)
-    # These don't depend on aquariums
-    # Query streak
-    streak_stmt = select(Streak).where(Streak.user_id == user_id)
-    if since is not None:
-        streak_stmt = streak_stmt.where(Streak.updated_at >= since)
-    streak_result = await db.execute(streak_stmt)
-    for streak in streak_result.scalars().all():
-        streaks_data.append(_entity_to_dict(streak))
-
-    # Query achievements
-    achievement_stmt = select(Achievement).where(Achievement.user_id == user_id)
-    if since is not None:
-        achievement_stmt = achievement_stmt.where(Achievement.unlocked_at >= since)
-    achievement_result = await db.execute(achievement_stmt)
-    for achievement in achievement_result.scalars().all():
-        achievements_data.append(_entity_to_dict(achievement))
-
-    # Query progress
-    progress_stmt = select(UserProgress).where(UserProgress.user_id == user_id)
-    if since is not None:
-        progress_stmt = progress_stmt.where(UserProgress.updated_at >= since)
-    progress_result = await db.execute(progress_stmt)
-    for progress in progress_result.scalars().all():
-        progress_data.append(_entity_to_dict(progress))
-
-    if not user_aquarium_ids:
-        logger.debug(f"No aquariums found for user {user_id}")
-        return ServerState(
-            aquariums=[],
-            fish=[],
-            feeding_logs=[],
-            schedules=[],
-            streaks=streaks_data,
-            achievements=achievements_data,
-            progress=progress_data,
-            deleted=DeletedEntities(),
-        )
-
-    # Query aquariums
-    aquarium_stmt = select(Aquarium).where(Aquarium.id.in_(user_aquarium_ids))
-
-    if since is not None:
-        # Delta sync: get updated and deleted aquariums
-        # Active aquariums updated after 'since' (use >= for timing edge cases)
-        active_aquarium_stmt = aquarium_stmt.where(
-            Aquarium.deleted_at.is_(None),
-            Aquarium.updated_at >= since,
-        )
-        result = await db.execute(active_aquarium_stmt)
-        for aquarium in result.scalars().all():
-            aquariums_data.append(_entity_to_dict(aquarium))
-
-        # Deleted aquariums after 'since'
-        deleted_aquarium_stmt = aquarium_stmt.where(
-            Aquarium.deleted_at.is_not(None),
-            Aquarium.deleted_at >= since,
-        )
-        result = await db.execute(deleted_aquarium_stmt)
-        deleted.aquariums = [aq.id for aq in result.scalars().all()]
-    else:
-        # Initial sync: get all active aquariums
-        active_aquarium_stmt = aquarium_stmt.where(Aquarium.deleted_at.is_(None))
-        result = await db.execute(active_aquarium_stmt)
-        for aquarium in result.scalars().all():
-            aquariums_data.append(_entity_to_dict(aquarium))
-
-    # Query fish
-    fish_stmt = select(Fish).where(Fish.aquarium_id.in_(user_aquarium_ids))
-
-    if since is not None:
-        # Delta sync: get updated and deleted fish
-        active_fish_stmt = fish_stmt.where(
-            Fish.deleted_at.is_(None),
-            Fish.updated_at >= since,
-        )
-        result = await db.execute(active_fish_stmt)
-        for fish in result.scalars().all():
-            fish_data.append(_entity_to_dict(fish))
-
-        # Deleted fish after 'since'
-        deleted_fish_stmt = fish_stmt.where(
-            Fish.deleted_at.is_not(None),
-            Fish.deleted_at >= since,
-        )
-        result = await db.execute(deleted_fish_stmt)
-        deleted.fish = [f.id for f in result.scalars().all()]
-    else:
-        # Initial sync: get all active fish
-        active_fish_stmt = fish_stmt.where(Fish.deleted_at.is_(None))
-        result = await db.execute(active_fish_stmt)
-        for fish in result.scalars().all():
-            fish_data.append(_entity_to_dict(fish))
-
-    # Query feeding logs (FeedingLog has no soft-delete; use created_at for delta)
-    log_stmt = select(FeedingLog).where(FeedingLog.aquarium_id.in_(user_aquarium_ids))
-
-    if since is not None:
-        # Delta sync: get logs created after 'since'
-        log_stmt = log_stmt.where(FeedingLog.created_at >= since)
-
-    result = await db.execute(log_stmt)
-    for log in result.scalars().all():
-        events_data.append(_entity_to_dict(log))
-
-    # Query feeding schedules
-    schedule_stmt = select(FeedingSchedule).where(FeedingSchedule.aquarium_id.in_(user_aquarium_ids))
-
-    if since is not None:
-        # Delta sync: get active schedules updated after 'since'
-        active_schedule_stmt = schedule_stmt.where(
-            FeedingSchedule.active.is_(True),
-            FeedingSchedule.updated_at >= since,
-        )
-        result = await db.execute(active_schedule_stmt)
-        for schedule in result.scalars().all():
-            schedules_data.append(_entity_to_dict(schedule))
-
-        # Deactivated schedules after 'since' -> treat as deleted
-        inactive_schedule_stmt = schedule_stmt.where(
-            FeedingSchedule.active.is_(False),
-            FeedingSchedule.updated_at >= since,
-        )
-        result = await db.execute(inactive_schedule_stmt)
-        deleted.schedules = [s.id for s in result.scalars().all()]
-    else:
-        # Initial sync: get all active schedules
-        active_schedule_stmt = schedule_stmt.where(FeedingSchedule.active.is_(True))
-        result = await db.execute(active_schedule_stmt)
-        for schedule in result.scalars().all():
-            schedules_data.append(_entity_to_dict(schedule))
-
-    logger.debug(
-        f"get_server_state returning: "
-        f"{len(aquariums_data)} aquariums, {len(fish_data)} fish, "
-        f"{len(events_data)} events, {len(schedules_data)} schedules, "
-        f"{len(streaks_data)} streaks, {len(achievements_data)} achievements, "
-        f"{len(progress_data)} progress, "
-        f"{len(deleted.aquariums)} deleted aquariums, "
-        f"{len(deleted.fish)} deleted fish, "
-        f"{len(deleted.feeding_logs)} deleted events"
-    )
-
-    return ServerState(
-        aquariums=aquariums_data,
-        fish=fish_data,
-        feeding_logs=events_data,
-        schedules=schedules_data,
-        streaks=streaks_data,
-        achievements=achievements_data,
-        progress=progress_data,
-        deleted=deleted,
-    )
-
-
-def _apply_pagination(
-    server_state: ServerState,
-    page_size: int,
-    cursor: str | None,
-) -> tuple[ServerState, bool, str | None]:
-    """Apply pagination to server state.
-
-    Paginates across all entity types in order: aquariums, fish, events, schedules.
-    User-scoped entities (streaks, achievements, progress) are always included in full.
-    Uses cursor format: "entity_type:index" (e.g., "fish:50").
-
-    Args:
-        server_state: Full server state to paginate.
-        page_size: Maximum items per page.
-        cursor: Previous cursor for continuation, or None for first page.
-
-    Returns:
-        Tuple of (paginated_state, has_more, next_cursor).
-    """
-    # Combine all aquarium-scoped items for pagination
-    all_items: list[tuple[str, dict[str, Any]]] = []
-    for aquarium in server_state.aquariums:
-        all_items.append(("aquarium", aquarium))
-    for fish in server_state.fish:
-        all_items.append(("fish", fish))
-    for log in server_state.feeding_logs:
-        all_items.append(("feeding_log", log))
-    for schedule in server_state.schedules:
-        all_items.append(("schedule", schedule))
-
-    # Determine starting position from cursor
-    start_index = 0
-    if cursor:
-        try:
-            start_index = int(cursor)
-        except ValueError:
-            # Invalid cursor, start from beginning
-            start_index = 0
-
-    # Apply pagination
-    end_index = start_index + page_size
-    paginated_items = all_items[start_index:end_index]
-    has_more = end_index < len(all_items)
-    next_cursor = str(end_index) if has_more else None
-
-    # Reconstruct paginated server state
-    paginated_aquariums: list[dict[str, Any]] = []
-    paginated_fish: list[dict[str, Any]] = []
-    paginated_feeding_logs: list[dict[str, Any]] = []
-    paginated_schedules: list[dict[str, Any]] = []
-
-    for entity_type, data in paginated_items:
-        if entity_type == "aquarium":
-            paginated_aquariums.append(data)
-        elif entity_type == "fish":
-            paginated_fish.append(data)
-        elif entity_type == "feeding_log":
-            paginated_feeding_logs.append(data)
-        elif entity_type == "schedule":
-            paginated_schedules.append(data)
-
-    return (
-        ServerState(
-            aquariums=paginated_aquariums,
-            fish=paginated_fish,
-            feeding_logs=paginated_feeding_logs,
-            schedules=paginated_schedules,
-            # User-scoped entities are always included in full (not paginated)
-            streaks=server_state.streaks,
-            achievements=server_state.achievements,
-            progress=server_state.progress,
-            deleted=server_state.deleted,  # Deleted items are always included in full
-        ),
-        has_more,
-        next_cursor,
-    )
-
-
-async def process_sync(
-    db: AsyncSession,
-    user_id: UUID,
-    request: SyncRequest,
-) -> SyncResponse:
-    """Process sync request from client.
-
-    Orchestrates the entire sync process:
-    1. Validates entity ownership
-    2. Applies client changes with conflict resolution
-    3. Retrieves server state (delta or full)
-    4. Applies pagination to server state
-    5. Generates sync token
-
-    All changes are processed in a single transaction with rollback on error.
-
-    Args:
-        db: Database session.
-        user_id: User ID performing the sync.
-        request: Sync request with client changes.
-
-    Returns:
-        SyncResponse with server state, conflicts, sync token, and pagination info.
-
-    Raises:
-        SyncValidationError: If request validation fails.
-        SyncAccessDeniedError: If user doesn't have access to entities.
-    """
-    logger.info(
-        f"Processing sync for user {user_id}: "
-        f"{len(request.changes)} changes, last_sync_at={request.last_sync_at}, "
-        f"page_size={request.page_size}, cursor={request.cursor}"
-    )
-
-    try:
-        # Step 1: Validate entity ownership
-        await _validate_entity_ownership(db, user_id, request.changes)
-
-        # Step 2: Apply client changes and collect conflicts
-        conflicts = await apply_changes(db, user_id, request.changes)
-
-        # NOTE: No server-side schedule generation here.
-        # Schedules are created by the client (offline-first architecture).
-        # Server only stores what client sends via sync.
-
-        # Step 3: Get server state (delta sync if last_sync_at provided)
-        server_state = await get_server_state(db, user_id, request.last_sync_at)
-
-        # Step 4: Apply pagination
-        paginated_state, has_more, next_cursor = _apply_pagination(server_state, request.page_size, request.cursor)
-
-        # Step 5: Compute synced_ids (accepted changes without conflicts)
-        conflict_entity_ids = {c.entity_id for c in conflicts}
-        synced_ids = [
-            change.entity_id
-            for change in request.changes
-            if change.entity_id not in conflict_entity_ids
-        ]
-
-        # Step 6: Generate sync token
-        sync_token = _generate_sync_token()
-
-        # Commit all changes
-        await db.commit()
-
-        logger.info(
-            f"Sync completed for user {user_id}: "
-            f"{len(synced_ids)} synced, {len(conflicts)} conflicts, "
-            f"has_more={has_more}, token={sync_token}"
-        )
-
-        return SyncResponse(
-            server_state=paginated_state,
-            conflicts=conflicts,
-            synced_ids=synced_ids,
-            sync_token=sync_token,
-            has_more=has_more,
-            next_cursor=next_cursor,
-        )
-
-    except (SyncValidationError, SyncAccessDeniedError):
-        # Re-raise sync-specific errors
-        await db.rollback()
-        raise
-    except Exception as e:
-        # Rollback on any other error
-        await db.rollback()
-        logger.error(f"Sync failed for user {user_id}: {e}", exc_info=True)
-        raise SyncError(f"Sync processing failed: {e}") from e

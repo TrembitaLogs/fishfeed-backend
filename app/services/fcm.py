@@ -4,11 +4,11 @@ This module provides FCM integration for sending push notifications
 to Android devices via Firebase Admin SDK.
 """
 
-import logging
 from typing import Any
 from uuid import UUID
 
 import firebase_admin
+import structlog
 from firebase_admin import credentials, exceptions, messaging
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models.notification import PushToken
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class FCMError(Exception):
@@ -285,7 +285,7 @@ async def remove_invalid_tokens(
             PushToken.token.in_(tokens_to_remove),
         )
         result = await db.execute(stmt)
-        await db.commit()
+        await db.flush()
         logger.info(f"Removed {result.rowcount} invalid FCM tokens for user {user_id}")  # type: ignore[attr-defined]
 
     return tokens_to_remove

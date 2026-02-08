@@ -25,6 +25,7 @@ class TestGetCurrentUser:
         mock_user.id = user_id
         mock_user.email = "test@example.com"
         mock_user.deleted_at = None
+        mock_user.token_version = 0
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_user

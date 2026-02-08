@@ -59,7 +59,7 @@ async def register_push_token(
 
     result = await db.execute(stmt)
     push_token = result.scalar_one()
-    await db.commit()
+    await db.flush()
     await db.refresh(push_token)
 
     return PushTokenResponse.model_validate(push_token)
@@ -90,7 +90,7 @@ async def unregister_push_token(
     )
 
     result = await db.execute(stmt)
-    await db.commit()
+    await db.flush()
 
     if result.rowcount == 0:  # type: ignore[attr-defined]
         raise HTTPException(
@@ -195,7 +195,7 @@ async def update_notification_preferences(
             if value is not None:
                 setattr(preferences, field, value)
 
-    await db.commit()
+    await db.flush()
     await db.refresh(preferences)
 
     return NotificationPreferencesResponse.model_validate(preferences)

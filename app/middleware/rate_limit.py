@@ -50,8 +50,18 @@ class RateLimitInfo:
 class RateLimiter:
     """Redis-based rate limiter using sliding window algorithm.
 
-    Uses Redis INCR with EXPIRE for efficient rate limiting.
+    Uses an atomic Lua script for INCR+EXPIRE to avoid race conditions.
     Keys automatically expire after the window period.
+    """
+
+    # Lua script: atomically increment and set TTL on first creation.
+    # Returns the new count after increment.
+    _INCR_WITH_EXPIRE_SCRIPT = """
+    local current = redis.call('INCR', KEYS[1])
+    if current == 1 then
+        redis.call('EXPIRE', KEYS[1], ARGV[1])
+    end
+    return current
     """
 
     def __init__(self, redis_client: Redis) -> None:
@@ -62,6 +72,7 @@ class RateLimiter:
         """
         self._redis = redis_client
         self._settings = get_settings()
+        self._script = self._redis.register_script(self._INCR_WITH_EXPIRE_SCRIPT)
 
     def _get_key(self, identifier: str, key_type: str) -> str:
         """Generate Redis key for rate limiting.
@@ -121,12 +132,8 @@ class RateLimiter:
         window_seconds = self._settings.RATE_LIMIT_WINDOW_SECONDS
         reset_at = self._get_window_reset_timestamp()
 
-        # Atomic increment
-        current_count = await self._redis.incr(key)
-
-        # Set TTL on first request in window
-        if current_count == 1:
-            await self._redis.expire(key, window_seconds)
+        # Atomic increment + expire via Lua script (no race condition)
+        current_count = await self._script(keys=[key], args=[window_seconds])
 
         remaining = max(0, limit - current_count)
 
@@ -199,7 +206,11 @@ def _extract_user_id_from_request(request: Request) -> str | None:
 
 
 def _get_client_ip(request: Request) -> str:
-    """Extract client IP, handling proxies.
+    """Extract client IP, only trusting proxy headers from trusted proxies.
+
+    Only uses X-Forwarded-For / X-Real-IP if the direct connecting IP
+    is in TRUSTED_PROXIES. When trusted, uses the last IP in X-Forwarded-For
+    (the one appended by the trusted reverse proxy closest to the client).
 
     Args:
         request: FastAPI request object.
@@ -207,11 +218,22 @@ def _get_client_ip(request: Request) -> str:
     Returns:
         Client IP address.
     """
+    settings = get_settings()
+    direct_ip = request.client.host if request.client else "unknown"
+
+    # Only trust proxy headers if direct client is a trusted proxy
+    if direct_ip not in settings.TRUSTED_PROXIES:
+        return direct_ip
+
     # Check X-Forwarded-For for proxied requests
     forwarded_for = request.headers.get("X-Forwarded-For")
     if forwarded_for:
-        # First IP in the list is the original client
-        return forwarded_for.split(",")[0].strip()
+        # Use the rightmost IP that is NOT a trusted proxy.
+        # The rightmost entry is appended by the closest trusted proxy.
+        ips = [ip.strip() for ip in forwarded_for.split(",")]
+        for ip in reversed(ips):
+            if ip not in settings.TRUSTED_PROXIES:
+                return ip
 
     # Check X-Real-IP
     real_ip = request.headers.get("X-Real-IP")
@@ -219,7 +241,7 @@ def _get_client_ip(request: Request) -> str:
         return real_ip
 
     # Fall back to direct connection
-    return request.client.host if request.client else "unknown"
+    return direct_ip
 
 
 def _get_endpoint_limit(path: str) -> int | None:

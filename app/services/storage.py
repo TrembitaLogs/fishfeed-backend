@@ -4,11 +4,11 @@ This module provides async S3 operations for storing and retrieving
 fish scan images using Hetzner Object Storage (S3-compatible).
 """
 
-import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import aioboto3
+import structlog
 from botocore.exceptions import ClientError
 
 from app.config import get_settings
@@ -16,7 +16,7 @@ from app.config import get_settings
 if TYPE_CHECKING:
     from types_aiobotocore_s3 import S3Client as S3ClientType
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class StorageError(Exception):

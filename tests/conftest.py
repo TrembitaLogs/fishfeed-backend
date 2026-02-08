@@ -158,7 +158,14 @@ async def app(async_engine, redis_client) -> AsyncGenerator[FastAPI]:
 
     async def override_get_db() -> AsyncGenerator[AsyncSession]:
         async with async_session_maker() as session:
-            yield session
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+            finally:
+                await session.close()
 
     async def override_get_redis() -> AsyncGenerator[Redis]:
         yield redis_client
@@ -175,3 +182,16 @@ async def client(app: FastAPI) -> AsyncGenerator[AsyncClient]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+
+
+@pytest_asyncio.fixture(autouse=True, loop_scope="session")
+async def cleanup_auth_rate_limits(redis_client: Redis) -> AsyncGenerator[None]:
+    """Clear auth rate limit keys before each test to prevent cross-test interference."""
+    cursor = 0
+    while True:
+        cursor, keys = await redis_client.scan(cursor, match="fishfeed:rate_limit:auth_*")
+        if keys:
+            await redis_client.delete(*keys)
+        if cursor == 0:
+            break
+    yield

@@ -4,10 +4,10 @@ This module provides rate limiting and quiet hours functionality for
 push notifications to prevent spam and respect user preferences.
 """
 
-import logging
 from datetime import UTC, date, datetime, time, timezone
 from uuid import UUID
 
+import structlog
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models.notification import NotificationPreference
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 settings = get_settings()
 
 # Throttling constants

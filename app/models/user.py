@@ -80,6 +80,11 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
         default=False,
         nullable=False,
     )
+    token_version: Mapped[int] = mapped_column(
+        default=0,
+        nullable=False,
+        server_default="0",
+    )
 
     # Relationships
     refresh_tokens: Mapped[list[RefreshToken]] = relationship(

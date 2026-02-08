@@ -93,7 +93,7 @@ app.add_middleware(RateLimitMiddleware)  # Check rate limits before processing
 app.add_middleware(RequestTimeoutMiddleware)  # Timeout protection for request processing
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

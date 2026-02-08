@@ -3,12 +3,12 @@
 import asyncio
 import hashlib
 import json
-import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
 import httpx
+import structlog
 from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,7 +24,7 @@ from app.models.user import RefreshToken, User
 from app.schemas.analytics import DataExportResponse, EventRequest
 from app.services.storage import S3StorageService, StorageNotConfiguredError
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 MAX_BATCH_SIZE = 100
 
@@ -91,7 +91,7 @@ async def track_event(
     )
 
     db.add(analytics_event)
-    await db.commit()
+    await db.flush()
 
     logger.debug(
         f"Tracked event '{event.event_type}' for user '{user_id}'"
@@ -166,7 +166,7 @@ async def track_events_batch(
     # Bulk insert
     stmt = insert(AnalyticsEvent).values(event_records)
     await db.execute(stmt)
-    await db.commit()
+    await db.flush()
 
     logger.info(
         f"Tracked {len(events)} events in batch for user '{user_id}'"
@@ -724,10 +724,9 @@ async def delete_user_data(db: AsyncSession, user_id: UUID) -> None:
         )
         logger.debug(f"Deleted user record for {user_id}")
 
-        await db.commit()
+        await db.flush()
         logger.info(f"GDPR data deletion completed for user {user_id}")
 
     except Exception as e:
-        await db.rollback()
         logger.error(f"GDPR deletion failed for user {user_id}: {e}")
         raise GDPRError(f"Failed to delete user data: {e}") from None

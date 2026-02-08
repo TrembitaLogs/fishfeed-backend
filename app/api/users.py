@@ -87,7 +87,7 @@ async def update_current_user_profile(
         current_user.avatar_url = update_data["avatar_url"]
 
     if update_data:
-        await db.commit()
+        await db.flush()
         await db.refresh(current_user)
 
     streak = await get_or_create_streak(db, current_user.id)

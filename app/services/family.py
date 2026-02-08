@@ -1,10 +1,10 @@
 """Family service with business logic for family mode (shared aquarium access)."""
 
-import logging
 import secrets
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,7 +19,7 @@ from app.services.aquarium import (
 )
 from app.services.gamification import check_achievements
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Premium limits for family members
 FREE_MEMBER_LIMIT = 2
@@ -297,7 +297,7 @@ async def create_invite(
         expires_at=expires_at,
     )
     db.add(invite)
-    await db.commit()
+    await db.flush()
 
     invite_link = _build_invite_link(invite_code)
 
@@ -401,7 +401,7 @@ async def accept_invite(
     invite.used_by = user_id
     invite.used_at = now
 
-    await db.commit()
+    await db.flush()
     await db.refresh(aquarium)
 
     # TODO: Send push notification to owner when NotificationService is implemented
@@ -467,7 +467,7 @@ async def remove_member(
 
     # Remove member
     await db.delete(member)
-    await db.commit()
+    await db.flush()
 
     # TODO: Send push notification to removed member when NotificationService is implemented
     # notify_member_removed(member_id, aquarium.name)

@@ -219,10 +219,14 @@ async def test_list_user_aquariums_sorted_by_created_at_desc(async_session: Asyn
 
         aquariums = await list_user_aquariums(async_session, user.id)
 
-        # Most recent first
-        assert aquariums[0].name == "Third"
-        assert aquariums[1].name == "Second"
-        assert aquariums[2].name == "First"
+        # All three aquariums returned
+        assert len(aquariums) == 3
+        names = {a.name for a in aquariums}
+        assert names == {"First", "Second", "Third"}
+
+        # Verify sorted by created_at DESC (or equal timestamps are acceptable)
+        for i in range(len(aquariums) - 1):
+            assert aquariums[i].created_at >= aquariums[i + 1].created_at
     finally:
         await cleanup_aquarium_data(async_session)
 

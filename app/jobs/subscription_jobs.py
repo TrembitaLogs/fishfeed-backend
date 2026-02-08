@@ -6,10 +6,10 @@ This module provides scheduled jobs for:
 - Sending push notifications about subscription expiry
 """
 
-import logging
 from datetime import UTC, datetime
 from uuid import UUID
 
+import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,7 +22,7 @@ from app.schemas.purchase import FREE_USER_LIMITS
 from app.services.notification import NotificationService
 from app.services.purchase import revert_to_free
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 settings = get_settings()
 
 

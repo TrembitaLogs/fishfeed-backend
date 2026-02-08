@@ -1,12 +1,12 @@
 """Premium subscription feature gates and user limits management."""
 
 import json
-import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from functools import wraps
 from typing import ParamSpec, TypeVar
 
+import structlog
 from fastapi import HTTPException, status
 from redis.asyncio import Redis
 
@@ -17,7 +17,7 @@ from app.schemas.purchase import (
     UserLimits,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Redis cache settings
 PREMIUM_CACHE_TTL_SECONDS = 300  # 5 minutes

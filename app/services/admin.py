@@ -267,7 +267,7 @@ async def ban_user(db: AsyncSession, redis: Redis, user_id: UUID) -> None:
     """
     user = await _get_user_or_404(db, user_id)
     user.deleted_at = datetime.now(UTC)
-    await db.commit()
+    await db.flush()
     await _invalidate_refresh_tokens(redis, user_id)
 
 
@@ -283,7 +283,7 @@ async def unban_user(db: AsyncSession, user_id: UUID) -> None:
     """
     user = await _get_user_or_404(db, user_id)
     user.deleted_at = None
-    await db.commit()
+    await db.flush()
 
 
 async def reset_ai_scans(db: AsyncSession, user_id: UUID) -> None:
@@ -298,7 +298,7 @@ async def reset_ai_scans(db: AsyncSession, user_id: UUID) -> None:
     """
     user = await _get_user_or_404(db, user_id)
     user.free_ai_scans_remaining = DEFAULT_FREE_AI_SCANS
-    await db.commit()
+    await db.flush()
 
 
 async def grant_premium(db: AsyncSession, user_id: UUID, days: int) -> None:
@@ -315,7 +315,7 @@ async def grant_premium(db: AsyncSession, user_id: UUID, days: int) -> None:
     user = await _get_user_or_404(db, user_id)
     user.subscription_status = "premium"
     user.subscription_expires_at = datetime.now(UTC) + timedelta(days=days)
-    await db.commit()
+    await db.flush()
 
 
 async def update_subscription(
@@ -341,6 +341,6 @@ async def update_subscription(
     user = await _get_user_or_404(db, user_id)
     user.subscription_status = status
     user.subscription_expires_at = expires_at
-    await db.commit()
+    await db.flush()
     await db.refresh(user)
     return user

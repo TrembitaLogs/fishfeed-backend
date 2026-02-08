@@ -138,8 +138,6 @@ async def use_streak_freeze(
             detail="No freeze days available",
         )
 
-    await db.commit()
-
     streak = await get_or_create_streak(db, current_user.id)
 
     return StreakResponse(
@@ -190,7 +188,6 @@ async def share_user_achievement(
 
     # Share the achievement
     shared = await share_achievement(db, current_user.id, achievement_id)
-    await db.commit()
 
     if shared is None:
         raise HTTPException(

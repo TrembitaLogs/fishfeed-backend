@@ -20,10 +20,18 @@ async_session_maker = async_sessionmaker(
 
 
 async def get_db() -> AsyncGenerator[AsyncSession]:
-    """FastAPI dependency for database sessions."""
+    """FastAPI dependency for database sessions.
+
+    Commits the transaction after the request handler completes successfully.
+    Rolls back on exception. Services should use flush() for intermediate writes.
+    """
     async with async_session_maker() as session:
         try:
             yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
         finally:
             await session.close()
 

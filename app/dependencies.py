@@ -62,6 +62,11 @@ async def get_current_user(
     if user is None:
         raise credentials_exception
 
+    # Validate token version to ensure token was not invalidated by password change
+    token_version = payload.get("tv", 0)
+    if token_version != user.token_version:
+        raise credentials_exception
+
     return user
 
 
