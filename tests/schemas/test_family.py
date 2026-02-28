@@ -26,14 +26,14 @@ class TestFamilyMemberResponse:
         response = FamilyMemberResponse(
             user_id=user_id,
             nickname="John",
-            avatar_url="https://example.com/avatar.png",
+            avatar_key="avatars/550e8400-e29b-41d4-a716-446655440000/a1b2c3d4.webp",
             role="owner",
             joined_at=joined,
         )
 
         assert response.user_id == user_id
         assert response.nickname == "John"
-        assert response.avatar_url == "https://example.com/avatar.png"
+        assert response.avatar_key == "avatars/550e8400-e29b-41d4-a716-446655440000/a1b2c3d4.webp"
         assert response.role == "owner"
         assert response.joined_at == joined
 
@@ -68,14 +68,14 @@ class TestFamilyMemberResponse:
         )
         assert response.nickname is None
 
-    def test_optional_avatar_url(self):
-        """Test that avatar_url is optional."""
+    def test_optional_avatar_key(self):
+        """Test that avatar_key is optional."""
         response = FamilyMemberResponse(
             user_id=uuid4(),
             role="member",
             joined_at=datetime.now(UTC),
         )
-        assert response.avatar_url is None
+        assert response.avatar_key is None
 
     def test_from_attributes(self):
         """Test FamilyMemberResponse can be created from ORM-like object."""
@@ -84,7 +84,7 @@ class TestFamilyMemberResponse:
             def __init__(self):
                 self.user_id = uuid4()
                 self.nickname = "TestUser"
-                self.avatar_url = None
+                self.avatar_key = None
                 self.role = "member"
                 self.joined_at = datetime.now(UTC)
 

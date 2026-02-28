@@ -9,6 +9,7 @@ from app.api.feeding import router as feeding_router
 from app.api.fish import router as fish_router
 from app.api.gamification import router as gamification_router
 from app.api.health import router as health_router
+from app.api.images import router as images_router
 from app.api.purchase import router as purchase_router
 from app.api.push import router as push_router
 from app.api.releases import router as releases_router
@@ -31,6 +32,7 @@ __all__ = [
     "push_router",
     "gamification_router",
     "health_router",
+    "images_router",
     "purchase_router",
     "releases_router",
     "users_router",

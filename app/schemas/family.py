@@ -14,7 +14,7 @@ class FamilyMemberResponse(BaseModel):
 
     user_id: UUID
     nickname: str | None = None
-    avatar_url: str | None = None
+    avatar_key: str | None = None
     role: Literal["owner", "member"]
     joined_at: datetime
 

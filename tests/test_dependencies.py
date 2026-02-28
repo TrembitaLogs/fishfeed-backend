@@ -1,13 +1,18 @@
 """Tests for auth dependencies."""
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
 
-from app.dependencies import get_current_active_user, get_current_user, require_premium
+from app.dependencies import (
+    check_image_upload_rate_limit,
+    get_current_active_user,
+    get_current_user,
+    require_premium,
+)
 from app.models.user import User
 from app.utils.jwt import create_access_token, create_refresh_token
 
@@ -237,3 +242,110 @@ class TestRequirePremium:
         result = await require_premium(current_user=mock_user, redis=mock_redis)
 
         assert result == mock_user
+
+
+class TestCheckImageUploadRateLimit:
+    """Tests for check_image_upload_rate_limit dependency."""
+
+    def _make_user(self) -> MagicMock:
+        mock_user = MagicMock(spec=User)
+        mock_user.id = uuid4()
+        mock_user.deleted_at = None
+        return mock_user
+
+    def _make_redis(self, current_count: int, ttl: int = 45) -> AsyncMock:
+        mock_redis = AsyncMock()
+        mock_pipe = MagicMock()
+        mock_pipe.incr = MagicMock(return_value=mock_pipe)
+        mock_pipe.expire = MagicMock(return_value=mock_pipe)
+        mock_pipe.execute = AsyncMock(return_value=[current_count, True])
+        mock_redis.pipeline = MagicMock(return_value=mock_pipe)
+        mock_redis.ttl.return_value = ttl
+        return mock_redis
+
+    @pytest.mark.asyncio
+    async def test_first_request_passes(self):
+        """Test that first upload request passes rate limit check."""
+        user = self._make_user()
+        redis = self._make_redis(current_count=1)
+
+        result = await check_image_upload_rate_limit(current_user=user, redis=redis)
+
+        assert result is None
+        redis.pipeline.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_request_within_limit_passes(self):
+        """Test that requests within limit pass."""
+        user = self._make_user()
+        redis = self._make_redis(current_count=20)
+
+        result = await check_image_upload_rate_limit(current_user=user, redis=redis)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_request_exceeding_limit_raises_429(self):
+        """Test that exceeding rate limit raises HTTPException 429."""
+        user = self._make_user()
+        redis = self._make_redis(current_count=21, ttl=30)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await check_image_upload_rate_limit(current_user=user, redis=redis)
+
+        assert exc_info.value.status_code == 429
+        assert exc_info.value.detail == "Image upload rate limit exceeded"
+        assert exc_info.value.headers["Retry-After"] == "30"
+
+    @pytest.mark.asyncio
+    async def test_retry_after_header_minimum_1_second(self):
+        """Test that Retry-After header is at least 1 second."""
+        user = self._make_user()
+        redis = self._make_redis(current_count=21, ttl=-1)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await check_image_upload_rate_limit(current_user=user, redis=redis)
+
+        assert exc_info.value.headers["Retry-After"] == "1"
+
+    @pytest.mark.asyncio
+    async def test_pipeline_uses_correct_key(self):
+        """Test that Redis pipeline uses correct key with prefix."""
+        user = self._make_user()
+        redis = self._make_redis(current_count=1)
+
+        await check_image_upload_rate_limit(current_user=user, redis=redis)
+
+        pipe = redis.pipeline.return_value
+        expected_key = f"fishfeed:image_upload:{user.id}"
+        pipe.incr.assert_called_once_with(expected_key)
+        pipe.expire.assert_called_once_with(expected_key, 60)
+
+    @pytest.mark.asyncio
+    async def test_applies_to_all_users_equally(self):
+        """Test that rate limit applies to all users (no premium bypass)."""
+        user = self._make_user()
+        user.subscription_status = "premium"
+        redis = self._make_redis(current_count=21, ttl=30)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await check_image_upload_rate_limit(current_user=user, redis=redis)
+
+        assert exc_info.value.status_code == 429
+
+    @pytest.mark.asyncio
+    async def test_custom_rate_limit_setting(self):
+        """Test that rate limit respects RATE_LIMIT_IMAGE_UPLOAD_PER_MIN setting."""
+        user = self._make_user()
+        redis = self._make_redis(current_count=6)
+
+        with patch("app.dependencies.get_settings") as mock_get_settings:
+            mock_settings = MagicMock()
+            mock_settings.REDIS_KEY_PREFIX = "fishfeed:"
+            mock_settings.RATE_LIMIT_IMAGE_UPLOAD_PER_MIN = 5
+            mock_get_settings.return_value = mock_settings
+
+            with pytest.raises(HTTPException) as exc_info:
+                await check_image_upload_rate_limit(current_user=user, redis=redis)
+
+            assert exc_info.value.status_code == 429

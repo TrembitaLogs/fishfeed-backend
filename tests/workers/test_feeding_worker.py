@@ -278,6 +278,8 @@ async def test_run_once_runs_all_jobs():
         patch("app.workers.feeding_worker.check_expired_subscriptions_job", new_callable=AsyncMock, return_value=0),
         patch("app.workers.feeding_worker.analytics_cleanup_job", new_callable=AsyncMock, return_value=0),
         patch("app.workers.feeding_worker.reset_stale_streaks_job", new_callable=AsyncMock, return_value=0) as mock_reset,
+        patch("app.workers.feeding_worker.image_cleanup_job", new_callable=AsyncMock, return_value={}),
+        patch("app.workers.feeding_worker.s3_reconciliation_job", new_callable=AsyncMock, return_value={}),
     ):
         await run_once()
         mock_reset.assert_called_once()
@@ -294,6 +296,62 @@ async def test_run_once_runs_specific_job():
     ):
         await run_once(job_name="reset_stale_streaks")
         mock_reset.assert_called_once()
+        mock_weekly.assert_not_called()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_run_once_image_cleanup_job():
+    """Test run_once executes only image_cleanup when specified."""
+    from app.workers.feeding_worker import run_once
+
+    with (
+        patch(
+            "app.workers.feeding_worker.image_cleanup_job",
+            new_callable=AsyncMock,
+            return_value={"job": "image_cleanup", "total_deleted_s3": 0},
+        ) as mock_cleanup,
+        patch(
+            "app.workers.feeding_worker.s3_reconciliation_job",
+            new_callable=AsyncMock,
+            return_value={},
+        ) as mock_reconciliation,
+        patch(
+            "app.workers.feeding_worker.weekly_summary_job",
+            new_callable=AsyncMock,
+            return_value=0,
+        ) as mock_weekly,
+    ):
+        await run_once(job_name="image_cleanup")
+        mock_cleanup.assert_called_once()
+        mock_reconciliation.assert_not_called()
+        mock_weekly.assert_not_called()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_run_once_s3_reconciliation_job():
+    """Test run_once executes only s3_reconciliation when specified."""
+    from app.workers.feeding_worker import run_once
+
+    with (
+        patch(
+            "app.workers.feeding_worker.s3_reconciliation_job",
+            new_callable=AsyncMock,
+            return_value={"job": "s3_reconciliation", "new_orphaned": 0},
+        ) as mock_reconciliation,
+        patch(
+            "app.workers.feeding_worker.image_cleanup_job",
+            new_callable=AsyncMock,
+            return_value={},
+        ) as mock_cleanup,
+        patch(
+            "app.workers.feeding_worker.weekly_summary_job",
+            new_callable=AsyncMock,
+            return_value=0,
+        ) as mock_weekly,
+    ):
+        await run_once(job_name="s3_reconciliation")
+        mock_reconciliation.assert_called_once()
+        mock_cleanup.assert_not_called()
         mock_weekly.assert_not_called()
 
 
@@ -336,17 +394,67 @@ async def test_start_scheduler_registers_all_jobs():
         ):
             await feeding_worker.start_scheduler()
 
-            # Should have 5 jobs registered
-            assert mock_scheduler.add_schedule.call_count == 5
+            # Should have 7 jobs registered
+            assert mock_scheduler.add_schedule.call_count == 7
 
-            # Verify reset_stale_streaks is among them
+            # Verify all expected jobs are registered
             job_ids = [
                 call.kwargs["id"]
                 for call in mock_scheduler.add_schedule.call_args_list
             ]
             assert "reset_stale_streaks" in job_ids
+            assert "image_cleanup" in job_ids
+            assert "s3_reconciliation" in job_ids
 
             mock_scheduler.start_in_background.assert_called_once()
+    finally:
+        feeding_worker._scheduler = original_scheduler
+        feeding_worker._shutdown_event = original_shutdown_event
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_start_scheduler_image_cleanup_cron_triggers():
+    """Test that image_cleanup and s3_reconciliation have correct cron triggers."""
+    from app.workers import feeding_worker
+
+    original_scheduler = feeding_worker._scheduler
+    original_shutdown_event = feeding_worker._shutdown_event
+
+    feeding_worker._scheduler = None
+    feeding_worker._shutdown_event = None
+
+    try:
+        mock_scheduler = MagicMock()
+        mock_scheduler.__aenter__ = AsyncMock(return_value=mock_scheduler)
+        mock_scheduler.__aexit__ = AsyncMock(return_value=None)
+        mock_scheduler.add_schedule = AsyncMock()
+        mock_scheduler.start_in_background = AsyncMock()
+
+        with (
+            patch.object(
+                feeding_worker, "AsyncScheduler", return_value=mock_scheduler
+            ),
+            patch.object(feeding_worker, "SQLAlchemyDataStore"),
+            patch.object(feeding_worker, "AsyncpgEventBroker"),
+        ):
+            await feeding_worker.start_scheduler()
+
+            # Build a map of job_id → trigger for easy lookup
+            schedule_calls = {
+                call.kwargs["id"]: call.args[1]
+                for call in mock_scheduler.add_schedule.call_args_list
+            }
+
+            # image_cleanup: daily at 04:00 UTC
+            cleanup_trigger = schedule_calls["image_cleanup"]
+            assert cleanup_trigger.hour == 4
+            assert cleanup_trigger.minute == 0
+
+            # s3_reconciliation: weekly Sunday at 05:00 UTC
+            recon_trigger = schedule_calls["s3_reconciliation"]
+            assert recon_trigger.day_of_week == "sun"
+            assert recon_trigger.hour == 5
+            assert recon_trigger.minute == 0
     finally:
         feeding_worker._scheduler = original_scheduler
         feeding_worker._shutdown_event = original_shutdown_event

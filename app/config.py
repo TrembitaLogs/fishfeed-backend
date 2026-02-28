@@ -52,6 +52,14 @@ class Settings(BaseSettings):
     MAX_IMAGE_SIZE_MB: int = 10
     AI_IMAGE_SIZE: int = 512
 
+    # Image Upload Limits (per entity type)
+    AVATAR_MAX_SIZE_MB: int = 2
+    AVATAR_MAX_DIMENSION: int = 512
+    AQUARIUM_PHOTO_MAX_SIZE_MB: int = 5
+    AQUARIUM_PHOTO_MAX_DIMENSION: int = 2048
+    FISH_PHOTO_MAX_SIZE_MB: int = 5
+    FISH_PHOTO_MAX_DIMENSION: int = 2048
+
     # AI Provider Configuration
     AI_PROVIDER: str = "google_vision"  # google_vision | replicate
     GOOGLE_CLOUD_PROJECT: str | None = None
@@ -63,6 +71,7 @@ class Settings(BaseSettings):
     # Rate Limiting
     REDIS_KEY_PREFIX: str = "fishfeed:"
     FREE_USER_HOURLY_SCAN_LIMIT: int = 10
+    RATE_LIMIT_IMAGE_UPLOAD_PER_MIN: int = 20
 
     # Trusted reverse proxy IPs (only trust X-Forwarded-For from these)
     TRUSTED_PROXIES: list[str] = ["127.0.0.1", "::1"]
@@ -86,8 +95,12 @@ class Settings(BaseSettings):
     S3_ACCESS_KEY: str | None = None
     S3_SECRET_KEY: str | None = None
     S3_BUCKET_NAME: str = "fishfeed-scans"
+    S3_IMAGES_BUCKET_NAME: str = "fishfeed-images"
     S3_REGION: str = "eu-central"
     S3_RETENTION_DAYS: int = 30
+    # Separate endpoint for presigned URLs, accessible outside Docker network.
+    # Dev: http://localhost:9000 (MinIO port mapped to host). Prod: None (uses S3_ENDPOINT_URL).
+    S3_PRESIGNED_ENDPOINT_URL: str | None = None
 
     # FCM (Firebase Cloud Messaging)
     FCM_PROJECT_ID: str | None = None

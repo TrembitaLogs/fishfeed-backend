@@ -49,7 +49,7 @@ async def get_current_user_profile(
         id=current_user.id,
         email=current_user.email,
         display_name=current_user.nickname,
-        avatar_url=current_user.avatar_url,
+        avatar_key=current_user.avatar_key,
         created_at=current_user.created_at,
         subscription_status=current_user.subscription_status,
         subscription_expires_at=current_user.subscription_expires_at,
@@ -83,8 +83,8 @@ async def update_current_user_profile(
     if "display_name" in update_data:
         current_user.nickname = update_data["display_name"]
 
-    if "avatar_url" in update_data:
-        current_user.avatar_url = update_data["avatar_url"]
+    if "avatar_key" in update_data:
+        current_user.avatar_key = update_data["avatar_key"]
 
     if update_data:
         await db.flush()
@@ -99,7 +99,7 @@ async def update_current_user_profile(
         id=current_user.id,
         email=current_user.email,
         display_name=current_user.nickname,
-        avatar_url=current_user.avatar_url,
+        avatar_key=current_user.avatar_key,
         created_at=current_user.created_at,
         subscription_status=current_user.subscription_status,
         subscription_expires_at=current_user.subscription_expires_at,

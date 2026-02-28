@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.aquarium import Aquarium, AquariumMember
 from app.models.feeding import FeedingLog, FeedingSchedule
 from app.models.fish import Fish
+from app.models.orphaned_image import OrphanedImage
 from app.models.species import Species
 from app.models.user import User
 from app.schemas.sync import ChangeItem, SyncRequest
@@ -23,6 +24,7 @@ from app.services.sync import (
 
 async def cleanup_sync_test_data(session: AsyncSession) -> None:
     """Helper to cleanup sync test data."""
+    await session.execute(text("DELETE FROM orphaned_images"))
     await session.execute(text("DELETE FROM feeding_logs"))
     await session.execute(text("DELETE FROM feeding_schedules"))
     await session.execute(text("DELETE FROM fish"))
@@ -969,6 +971,120 @@ async def test_entity_to_dict_feeding_schedule(
         await cleanup_sync_test_data(async_session)
 
 
+@pytest.mark.asyncio(loop_scope="session")
+async def test_entity_to_dict_aquarium_with_photo_key(
+    async_session: AsyncSession,
+):
+    """Test _entity_to_dict includes photo_key for Aquarium."""
+    from app.services.sync import _entity_to_dict
+
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        aquarium.photo_key = "aquariums/abc/f7a3b2c1.webp"
+        await async_session.commit()
+        await async_session.refresh(aquarium)
+
+        result = _entity_to_dict(aquarium)
+
+        assert result["id"] == str(aquarium.id)
+        assert result["owner_id"] == str(user.id)
+        assert result["name"] == "Test Aquarium"
+        assert result["photo_key"] == "aquariums/abc/f7a3b2c1.webp"
+        assert "updated_at" in result
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_entity_to_dict_aquarium_without_photo_key(
+    async_session: AsyncSession,
+):
+    """Test _entity_to_dict includes photo_key as None when not set."""
+    from app.services.sync import _entity_to_dict
+
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+
+        result = _entity_to_dict(aquarium)
+
+        assert result["id"] == str(aquarium.id)
+        assert result["photo_key"] is None
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_entity_to_dict_fish_with_photo_key(
+    async_session: AsyncSession,
+):
+    """Test _entity_to_dict includes photo_key for Fish."""
+    from app.services.sync import _entity_to_dict
+
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        fish = await create_test_fish(async_session, aquarium.id)
+        fish.photo_key = "fish/def/c4e82a1b.webp"
+        await async_session.commit()
+        await async_session.refresh(fish)
+
+        result = _entity_to_dict(fish)
+
+        assert result["id"] == str(fish.id)
+        assert result["aquarium_id"] == str(aquarium.id)
+        assert result["photo_key"] == "fish/def/c4e82a1b.webp"
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_entity_to_dict_user_with_avatar_key(
+    async_session: AsyncSession,
+):
+    """Test _entity_to_dict includes avatar_key (not avatar_url) for User."""
+    from app.services.sync import _entity_to_dict
+
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        user.avatar_key = "avatars/ghi/a1b2c3d4.webp"
+        await async_session.commit()
+        await async_session.refresh(user)
+
+        result = _entity_to_dict(user)
+
+        assert result["id"] == str(user.id)
+        assert result["avatar_key"] == "avatars/ghi/a1b2c3d4.webp"
+        assert "avatar_url" not in result
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_entity_to_dict_user_without_avatar_key(
+    async_session: AsyncSession,
+):
+    """Test _entity_to_dict includes avatar_key as None when not set."""
+    from app.services.sync import _entity_to_dict
+
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+
+        result = _entity_to_dict(user)
+
+        assert result["id"] == str(user.id)
+        assert result["avatar_key"] is None
+        assert "avatar_url" not in result
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
 # ============================================================================
 # get_server_state tests
 # ============================================================================
@@ -1865,3 +1981,617 @@ class TestSyncedIds:
             assert response.conflicts[0].entity_id == fish.id
         finally:
             await cleanup_sync_test_data(async_session)
+
+
+# ============================================================================
+# photo_key orphaned tracking & validation tests (task 6.2)
+# ============================================================================
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_aquarium_photo_key_update_creates_orphaned_image(
+    async_session: AsyncSession,
+):
+    """Replacing aquarium photo_key saves old key in orphaned_images."""
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        old_key = "aquariums/abc/11111111.webp"
+        aquarium.photo_key = old_key
+        await async_session.commit()
+        await async_session.refresh(aquarium)
+
+        new_key = "aquariums/abc/22222222.webp"
+        change = ChangeItem(
+            entity_type="aquarium",
+            entity_id=aquarium.id,
+            operation="update",
+            data={"photo_key": new_key},
+            client_updated_at=aquarium.updated_at + timedelta(hours=1),
+        )
+        response = await process_sync(
+            async_session, user.id, SyncRequest(changes=[change]),
+        )
+
+        assert response.conflicts == []
+        await async_session.refresh(aquarium)
+        assert aquarium.photo_key == new_key
+
+        stmt = select(OrphanedImage).where(OrphanedImage.old_key == old_key)
+        orphan = (await async_session.execute(stmt)).scalar_one_or_none()
+        assert orphan is not None
+        assert orphan.entity_type == "aquarium"
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_aquarium_photo_key_null_creates_orphaned_image(
+    async_session: AsyncSession,
+):
+    """Setting photo_key to null (delete photo) saves old key in orphaned_images."""
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        old_key = "aquariums/abc/33333333.webp"
+        aquarium.photo_key = old_key
+        await async_session.commit()
+        await async_session.refresh(aquarium)
+
+        change = ChangeItem(
+            entity_type="aquarium",
+            entity_id=aquarium.id,
+            operation="update",
+            data={"photo_key": None},
+            client_updated_at=aquarium.updated_at + timedelta(hours=1),
+        )
+        response = await process_sync(
+            async_session, user.id, SyncRequest(changes=[change]),
+        )
+
+        assert response.conflicts == []
+        await async_session.refresh(aquarium)
+        assert aquarium.photo_key is None
+
+        stmt = select(OrphanedImage).where(OrphanedImage.old_key == old_key)
+        orphan = (await async_session.execute(stmt)).scalar_one_or_none()
+        assert orphan is not None
+        assert orphan.entity_type == "aquarium"
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_new_aquarium_with_photo_key_no_orphaned(
+    async_session: AsyncSession,
+):
+    """Creating a new aquarium with photo_key does not create orphaned record."""
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        new_id = uuid.uuid4()
+        photo_key = "aquariums/abc/44444444.webp"
+
+        change = ChangeItem(
+            entity_type="aquarium",
+            entity_id=new_id,
+            operation="create",
+            data={"name": "New Aquarium", "photo_key": photo_key},
+            client_updated_at=datetime.now(UTC),
+        )
+        response = await process_sync(
+            async_session, user.id, SyncRequest(changes=[change]),
+        )
+
+        assert response.conflicts == []
+
+        stmt = select(Aquarium).where(Aquarium.id == new_id)
+        aquarium = (await async_session.execute(stmt)).scalar_one()
+        assert aquarium.photo_key == photo_key
+
+        orphan_count = (
+            await async_session.execute(
+                select(OrphanedImage).where(OrphanedImage.old_key == photo_key),
+            )
+        ).scalar_one_or_none()
+        assert orphan_count is None
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_same_photo_key_no_orphaned_duplicate(
+    async_session: AsyncSession,
+):
+    """Setting same photo_key does not create orphaned record."""
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        same_key = "aquariums/abc/55555555.webp"
+        aquarium.photo_key = same_key
+        await async_session.commit()
+        await async_session.refresh(aquarium)
+
+        change = ChangeItem(
+            entity_type="aquarium",
+            entity_id=aquarium.id,
+            operation="update",
+            data={"photo_key": same_key},
+            client_updated_at=aquarium.updated_at + timedelta(hours=1),
+        )
+        await process_sync(
+            async_session, user.id, SyncRequest(changes=[change]),
+        )
+
+        orphan_count = len(
+            (await async_session.execute(select(OrphanedImage))).scalars().all()
+        )
+        assert orphan_count == 0
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_invalid_aquarium_photo_key_ignored(
+    async_session: AsyncSession,
+):
+    """Invalid photo_key format is ignored and not applied."""
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        original_key = "aquariums/abc/66666666.webp"
+        aquarium.photo_key = original_key
+        await async_session.commit()
+        await async_session.refresh(aquarium)
+
+        # Attempt various invalid keys
+        invalid_keys = [
+            "../../etc/passwd",                    # path traversal
+            "fish/abc/11111111.webp",              # cross-type (fish/ in aquarium)
+            "aquariums/../fish/abc/11111111.webp", # path traversal with prefix
+            "https://evil.com/photo.webp",         # URL injection
+            "aquariums/abc/UPPER.webp",            # uppercase not matching [0-9a-f]
+        ]
+        for invalid_key in invalid_keys:
+            change = ChangeItem(
+                entity_type="aquarium",
+                entity_id=aquarium.id,
+                operation="update",
+                data={"photo_key": invalid_key},
+                client_updated_at=aquarium.updated_at + timedelta(hours=1),
+            )
+            await process_sync(
+                async_session, user.id, SyncRequest(changes=[change]),
+            )
+
+        await async_session.refresh(aquarium)
+        assert aquarium.photo_key == original_key
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_fish_photo_key_update_creates_orphaned_image(
+    async_session: AsyncSession,
+):
+    """Replacing fish photo_key saves old key in orphaned_images."""
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        fish = await create_test_fish(async_session, aquarium.id)
+        old_key = "fish/abc/77777777.webp"
+        fish.photo_key = old_key
+        await async_session.commit()
+        await async_session.refresh(fish)
+
+        new_key = "fish/abc/88888888.webp"
+        change = ChangeItem(
+            entity_type="fish",
+            entity_id=fish.id,
+            operation="update",
+            data={"photo_key": new_key},
+            client_updated_at=fish.updated_at + timedelta(hours=1),
+        )
+        response = await process_sync(
+            async_session, user.id, SyncRequest(changes=[change]),
+        )
+
+        assert response.conflicts == []
+        await async_session.refresh(fish)
+        assert fish.photo_key == new_key
+
+        stmt = select(OrphanedImage).where(OrphanedImage.old_key == old_key)
+        orphan = (await async_session.execute(stmt)).scalar_one_or_none()
+        assert orphan is not None
+        assert orphan.entity_type == "fish"
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_invalid_fish_photo_key_cross_type_rejected(
+    async_session: AsyncSession,
+):
+    """Fish change with aquariums/ prefix in photo_key is rejected."""
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        fish = await create_test_fish(async_session, aquarium.id)
+
+        change = ChangeItem(
+            entity_type="fish",
+            entity_id=fish.id,
+            operation="update",
+            data={"photo_key": "aquariums/abc/99999999.webp"},
+            client_updated_at=fish.updated_at + timedelta(hours=1),
+        )
+        await process_sync(
+            async_session, user.id, SyncRequest(changes=[change]),
+        )
+
+        await async_session.refresh(fish)
+        assert fish.photo_key is None  # not applied
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+# ============================================================================
+# avatar_key orphaned tracking & validation tests (task 6.3)
+# ============================================================================
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_user_avatar_key_update_creates_orphaned_image(
+    async_session: AsyncSession,
+):
+    """Replacing avatar_key saves old key in orphaned_images."""
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        old_key = "avatars/abc/aaaaaaaa.webp"
+        user.avatar_key = old_key
+        await async_session.commit()
+        await async_session.refresh(user)
+
+        new_key = "avatars/abc/bbbbbbbb.webp"
+        change = ChangeItem(
+            entity_type="user_profile",
+            entity_id=user.id,
+            operation="update",
+            data={"avatar_key": new_key},
+            client_updated_at=user.updated_at + timedelta(hours=1),
+        )
+        response = await process_sync(
+            async_session, user.id, SyncRequest(changes=[change]),
+        )
+
+        assert response.conflicts == []
+        await async_session.refresh(user)
+        assert user.avatar_key == new_key
+
+        stmt = select(OrphanedImage).where(OrphanedImage.old_key == old_key)
+        orphan = (await async_session.execute(stmt)).scalar_one_or_none()
+        assert orphan is not None
+        assert orphan.entity_type == "avatar"
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_user_avatar_key_null_creates_orphaned_image(
+    async_session: AsyncSession,
+):
+    """Setting avatar_key to null saves old key in orphaned_images."""
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        old_key = "avatars/abc/cccccccc.webp"
+        user.avatar_key = old_key
+        await async_session.commit()
+        await async_session.refresh(user)
+
+        change = ChangeItem(
+            entity_type="user_profile",
+            entity_id=user.id,
+            operation="update",
+            data={"avatar_key": None},
+            client_updated_at=user.updated_at + timedelta(hours=1),
+        )
+        response = await process_sync(
+            async_session, user.id, SyncRequest(changes=[change]),
+        )
+
+        assert response.conflicts == []
+        await async_session.refresh(user)
+        assert user.avatar_key is None
+
+        stmt = select(OrphanedImage).where(OrphanedImage.old_key == old_key)
+        orphan = (await async_session.execute(stmt)).scalar_one_or_none()
+        assert orphan is not None
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_user_avatar_url_field_not_accepted(
+    async_session: AsyncSession,
+):
+    """Sync with avatar_url (old field name) does not update avatar_key."""
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+
+        change = ChangeItem(
+            entity_type="user_profile",
+            entity_id=user.id,
+            operation="update",
+            data={"avatar_url": "https://example.com/avatar.jpg"},
+            client_updated_at=user.updated_at + timedelta(hours=1),
+        )
+        await process_sync(
+            async_session, user.id, SyncRequest(changes=[change]),
+        )
+
+        await async_session.refresh(user)
+        assert user.avatar_key is None  # avatar_url is not processed
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_user_avatar_key_lww_server_wins(
+    async_session: AsyncSession,
+):
+    """LWW conflict - server newer timestamp wins, avatar_key not changed."""
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        server_key = "avatars/abc/dddddddd.webp"
+        user.avatar_key = server_key
+        await async_session.commit()
+        await async_session.refresh(user)
+
+        change = ChangeItem(
+            entity_type="user_profile",
+            entity_id=user.id,
+            operation="update",
+            data={"avatar_key": "avatars/abc/eeeeeeee.webp"},
+            client_updated_at=user.updated_at - timedelta(hours=1),  # older
+        )
+        response = await process_sync(
+            async_session, user.id, SyncRequest(changes=[change]),
+        )
+
+        assert len(response.conflicts) == 1
+        assert response.conflicts[0].resolution == "server_wins"
+        await async_session.refresh(user)
+        assert user.avatar_key == server_key
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_invalid_avatar_key_ignored(
+    async_session: AsyncSession,
+):
+    """Invalid avatar_key format is ignored and not applied."""
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        original_key = "avatars/abc/ffffffff.webp"
+        user.avatar_key = original_key
+        await async_session.commit()
+        await async_session.refresh(user)
+
+        invalid_keys = [
+            "../../etc/passwd",                     # path traversal
+            "aquariums/abc/11111111.webp",           # cross-type (aquariums/ in avatar)
+            "fish/abc/11111111.webp",                # cross-type (fish/ in avatar)
+            "avatars/../etc/passwd",                 # path traversal with prefix
+            "https://evil.com/avatar.webp",          # URL injection
+        ]
+        for invalid_key in invalid_keys:
+            change = ChangeItem(
+                entity_type="user_profile",
+                entity_id=user.id,
+                operation="update",
+                data={"avatar_key": invalid_key},
+                client_updated_at=user.updated_at + timedelta(hours=1),
+            )
+            await process_sync(
+                async_session, user.id, SyncRequest(changes=[change]),
+            )
+
+        await async_session.refresh(user)
+        assert user.avatar_key == original_key  # unchanged
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+# ============================================================================
+# LWW conflicts with photo_key & edge cases (task 6.4)
+# ============================================================================
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_aquarium_photo_key_lww_server_wins_no_orphaned(
+    async_session: AsyncSession,
+):
+    """LWW: server has newer photo_key — client change rejected, no orphaned created."""
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        server_key = "aquariums/abc/aaa11111.webp"
+        aquarium.photo_key = server_key
+        await async_session.commit()
+        await async_session.refresh(aquarium)
+
+        change = ChangeItem(
+            entity_type="aquarium",
+            entity_id=aquarium.id,
+            operation="update",
+            data={"photo_key": "aquariums/abc/bbb22222.webp"},
+            client_updated_at=aquarium.updated_at - timedelta(hours=1),  # older
+        )
+        response = await process_sync(
+            async_session, user.id, SyncRequest(changes=[change]),
+        )
+
+        assert len(response.conflicts) == 1
+        assert response.conflicts[0].resolution == "server_wins"
+        await async_session.refresh(aquarium)
+        assert aquarium.photo_key == server_key
+
+        # No orphaned records should be created when server wins
+        orphan_count = len(
+            (await async_session.execute(select(OrphanedImage))).scalars().all()
+        )
+        assert orphan_count == 0
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_photo_key_empty_string_rejected(
+    async_session: AsyncSession,
+):
+    """Empty string photo_key is rejected by regex validation."""
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        original_key = "aquariums/abc/ccc33333.webp"
+        aquarium.photo_key = original_key
+        await async_session.commit()
+        await async_session.refresh(aquarium)
+
+        change = ChangeItem(
+            entity_type="aquarium",
+            entity_id=aquarium.id,
+            operation="update",
+            data={"photo_key": ""},
+            client_updated_at=aquarium.updated_at + timedelta(hours=1),
+        )
+        await process_sync(
+            async_session, user.id, SyncRequest(changes=[change]),
+        )
+
+        await async_session.refresh(aquarium)
+        assert aquarium.photo_key == original_key  # not changed
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_concurrent_photo_key_updates_different_entities(
+    async_session: AsyncSession,
+):
+    """Concurrent photo_key updates for aquarium and fish in single sync batch."""
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        fish = await create_test_fish(async_session, aquarium.id)
+
+        old_aq_key = "aquariums/abc/ddd44444.webp"
+        old_fish_key = "fish/abc/eee55555.webp"
+        aquarium.photo_key = old_aq_key
+        fish.photo_key = old_fish_key
+        await async_session.commit()
+        await async_session.refresh(aquarium)
+        await async_session.refresh(fish)
+
+        new_aq_key = "aquariums/abc/fff66666.webp"
+        new_fish_key = "fish/abc/00077777.webp"
+        client_time = max(aquarium.updated_at, fish.updated_at) + timedelta(hours=1)
+
+        changes = [
+            ChangeItem(
+                entity_type="aquarium",
+                entity_id=aquarium.id,
+                operation="update",
+                data={"photo_key": new_aq_key},
+                client_updated_at=client_time,
+            ),
+            ChangeItem(
+                entity_type="fish",
+                entity_id=fish.id,
+                operation="update",
+                data={"photo_key": new_fish_key},
+                client_updated_at=client_time,
+            ),
+        ]
+        response = await process_sync(
+            async_session, user.id, SyncRequest(changes=changes),
+        )
+
+        assert response.conflicts == []
+
+        await async_session.refresh(aquarium)
+        await async_session.refresh(fish)
+        assert aquarium.photo_key == new_aq_key
+        assert fish.photo_key == new_fish_key
+
+        # Both old keys should be in orphaned_images
+        orphans = (await async_session.execute(select(OrphanedImage))).scalars().all()
+        orphan_keys = {o.old_key for o in orphans}
+        assert old_aq_key in orphan_keys
+        assert old_fish_key in orphan_keys
+    finally:
+        await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_full_sync_roundtrip_with_photo_key(
+    async_session: AsyncSession,
+):
+    """Full sync integration: create aquarium, update with photo_key, verify in server state."""
+    from app.services.sync import get_server_state
+
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+
+        # Step 1: create aquarium via sync
+        aq_id = uuid.uuid4()
+        create_change = ChangeItem(
+            entity_type="aquarium",
+            entity_id=aq_id,
+            operation="create",
+            data={"name": "Photo Aquarium"},
+            client_updated_at=datetime.now(UTC),
+        )
+        await process_sync(
+            async_session, user.id, SyncRequest(changes=[create_change]),
+        )
+
+        # Step 2: update with photo_key via sync
+        stmt = select(Aquarium).where(Aquarium.id == aq_id)
+        aquarium = (await async_session.execute(stmt)).scalar_one()
+        photo_key = "aquariums/abc/aabb1122.webp"
+        update_change = ChangeItem(
+            entity_type="aquarium",
+            entity_id=aq_id,
+            operation="update",
+            data={"photo_key": photo_key},
+            client_updated_at=aquarium.updated_at + timedelta(hours=1),
+        )
+        await process_sync(
+            async_session, user.id, SyncRequest(changes=[update_change]),
+        )
+
+        # Step 3: verify photo_key appears in server state
+        server_state = await get_server_state(async_session, user.id, since=None)
+        aq_dicts = server_state.aquariums
+        matching = [a for a in aq_dicts if a["id"] == str(aq_id)]
+        assert len(matching) == 1
+        assert matching[0]["photo_key"] == photo_key
+    finally:
+        await cleanup_sync_test_data(async_session)

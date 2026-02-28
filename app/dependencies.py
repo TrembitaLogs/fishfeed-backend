@@ -10,6 +10,7 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.database import get_db
 from app.models.user import User
 from app.redis import get_redis
@@ -190,9 +191,46 @@ async def check_ai_scan_rate_limit(
     return result
 
 
+async def check_image_upload_rate_limit(
+    current_user: Annotated[User, Depends(get_current_active_user)],
+    redis: Annotated[Redis, Depends(get_redis)],
+) -> None:
+    """Check image upload rate limit before processing.
+
+    Enforces per-user rate limiting for image uploads (20/min by default).
+    Unlike AI scan rate limit, this applies equally to all users
+    (no premium bypass).
+
+    Args:
+        current_user: Active authenticated user.
+        redis: Redis client for rate limit tracking.
+
+    Raises:
+        HTTPException: 429 Too Many Requests if rate limit exceeded.
+    """
+    settings = get_settings()
+    key = f"{settings.REDIS_KEY_PREFIX}image_upload:{current_user.id}"
+
+    pipe = redis.pipeline()
+    pipe.incr(key)
+    pipe.expire(key, 60)
+    results = await pipe.execute()
+    current = results[0]
+
+    if current > settings.RATE_LIMIT_IMAGE_UPLOAD_PER_MIN:
+        ttl = await redis.ttl(key)
+        retry_after = max(1, ttl)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Image upload rate limit exceeded",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
 # Type aliases for cleaner endpoint signatures
 CurrentUser = Annotated[User, Depends(get_current_user)]
 CurrentActiveUser = Annotated[User, Depends(get_current_active_user)]
 CurrentAdmin = Annotated[User, Depends(require_admin)]
 CurrentPremiumUser = Annotated[User, Depends(require_premium)]
 RateLimitCheck = Annotated[RateLimitResult, Depends(check_ai_scan_rate_limit)]
+ImageUploadRateLimitCheck = Annotated[None, Depends(check_image_upload_rate_limit)]

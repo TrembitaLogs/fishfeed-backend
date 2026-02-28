@@ -116,10 +116,19 @@ async def test_scan_with_base64_image(
             predictions=[Prediction(label="Goldfish", confidence=0.95)]
         )
 
-        with patch(
-            "app.services.ai.classify_with_fallback",
-            new_callable=AsyncMock,
-            return_value=mock_result,
+        mock_storage = AsyncMock()
+        mock_storage.upload_image = AsyncMock(return_value="scans/test.webp")
+
+        with (
+            patch(
+                "app.services.ai.classify_with_fallback",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ),
+            patch(
+                "app.services.ai.get_storage_service",
+                return_value=mock_storage,
+            ),
         ):
             # 1x1 PNG image
             image_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="

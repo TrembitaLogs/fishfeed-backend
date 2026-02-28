@@ -16,6 +16,7 @@ from app.schemas.species import (
     SpeciesSearchQuery,
     SpeciesUpdate,
 )
+from app.services.image_service import batch_generate_presigned_urls
 from app.utils.cache import (
     TTL_SPECIES_DETAIL,
     TTL_SPECIES_LIST,
@@ -83,6 +84,38 @@ POPULAR_SPECIES_IDS = [
 ]
 
 
+async def _resolve_species_image_urls(
+    species_list: list[SpeciesResponse],
+) -> list[SpeciesResponse]:
+    """Replace S3 keys in image_url with presigned URLs.
+
+    Species images are stored as S3 keys (e.g., 'species/betta/photo.webp').
+    This function generates presigned GET URLs so clients can display them.
+
+    Args:
+        species_list: List of SpeciesResponse with S3 keys in image_url.
+
+    Returns:
+        List of SpeciesResponse with presigned URLs in image_url.
+    """
+    keys = [s.image_url for s in species_list if s.image_url]
+    if not keys:
+        return species_list
+
+    try:
+        url_map = await batch_generate_presigned_urls(keys)
+    except Exception:
+        logger.warning("failed_to_generate_species_image_urls", count=len(keys))
+        return species_list
+
+    return [
+        s.model_copy(update={"image_url": url_map[s.image_url]})
+        if s.image_url and s.image_url in url_map
+        else s
+        for s in species_list
+    ]
+
+
 async def list_species(
     db: AsyncSession,
     page: int = 1,
@@ -112,7 +145,9 @@ async def list_species(
             cached = await redis.get(cache_key)
             if cached:
                 logger.debug(f"Cache hit for {cache_key}")
-                return SpeciesListResponse.model_validate_json(cached)
+                response = SpeciesListResponse.model_validate_json(cached)
+                response.items = await _resolve_species_image_urls(response.items)
+                return response
         except RedisError as e:
             logger.warning(f"Redis error on get: {e}")
 
@@ -146,7 +181,7 @@ async def list_species(
         per_page=per_page,
     )
 
-    # Store in cache
+    # Store in cache (with S3 keys, not presigned URLs)
     if redis is not None:
         try:
             await redis.set(cache_key, response.model_dump_json(), ex=TTL_SPECIES_LIST)
@@ -154,6 +189,8 @@ async def list_species(
         except RedisError as e:
             logger.warning(f"Redis error on set: {e}")
 
+    # Resolve S3 keys to presigned URLs before returning
+    response.items = await _resolve_species_image_urls(response.items)
     return response
 
 
@@ -206,7 +243,9 @@ async def get_species_cached(
             cached = await redis.get(cache_key)
             if cached:
                 logger.debug(f"Cache hit for {cache_key}")
-                return SpeciesResponse.model_validate_json(cached)
+                response = SpeciesResponse.model_validate_json(cached)
+                resolved = await _resolve_species_image_urls([response])
+                return resolved[0]
         except RedisError as e:
             logger.warning(f"Redis error on get: {e}")
 
@@ -214,7 +253,7 @@ async def get_species_cached(
     species = await get_species(db, species_id)
     response = SpeciesResponse.model_validate(species)
 
-    # Store in cache
+    # Store in cache (with S3 keys, not presigned URLs)
     if redis is not None:
         try:
             await redis.set(cache_key, response.model_dump_json(), ex=TTL_SPECIES_DETAIL)
@@ -222,7 +261,9 @@ async def get_species_cached(
         except RedisError as e:
             logger.warning(f"Redis error on set: {e}")
 
-    return response
+    # Resolve S3 keys to presigned URLs before returning
+    resolved = await _resolve_species_image_urls([response])
+    return resolved[0]
 
 
 async def search_species(
@@ -259,7 +300,8 @@ async def search_species(
             if cached:
                 logger.debug(f"Cache hit for {cache_key}")
                 cached_list = json.loads(cached)
-                return [SpeciesResponse.model_validate(item) for item in cached_list]
+                response_list = [SpeciesResponse.model_validate(item) for item in cached_list]
+                return await _resolve_species_image_urls(response_list)
         except RedisError as e:
             logger.warning(f"Redis error on get: {e}")
 
@@ -300,7 +342,7 @@ async def search_species(
 
     response_list = [SpeciesResponse.model_validate(s) for s in species_list]
 
-    # Store in cache
+    # Store in cache (with S3 keys, not presigned URLs)
     if redis is not None:
         try:
             cache_data = json.dumps([r.model_dump(mode="json") for r in response_list])
@@ -309,7 +351,8 @@ async def search_species(
         except RedisError as e:
             logger.warning(f"Redis error on set: {e}")
 
-    return response_list
+    # Resolve S3 keys to presigned URLs before returning
+    return await _resolve_species_image_urls(response_list)
 
 
 async def get_popular_species(
@@ -338,7 +381,8 @@ async def get_popular_species(
             if cached:
                 logger.debug(f"Cache hit for {cache_key}")
                 cached_list = json.loads(cached)
-                return [SpeciesResponse.model_validate(item) for item in cached_list]
+                response_list = [SpeciesResponse.model_validate(item) for item in cached_list]
+                return await _resolve_species_image_urls(response_list)
         except RedisError as e:
             logger.warning(f"Redis error on get: {e}")
 
@@ -354,7 +398,7 @@ async def get_popular_species(
     species_list = list(result.scalars().all())
     response_list = [SpeciesResponse.model_validate(s) for s in species_list]
 
-    # Store in cache
+    # Store in cache (with S3 keys, not presigned URLs)
     if redis is not None:
         try:
             cache_data = json.dumps([r.model_dump(mode="json") for r in response_list])
@@ -363,7 +407,8 @@ async def get_popular_species(
         except RedisError as e:
             logger.warning(f"Redis error on set: {e}")
 
-    return response_list
+    # Resolve S3 keys to presigned URLs before returning
+    return await _resolve_species_image_urls(response_list)
 
 
 async def invalidate_species_cache(

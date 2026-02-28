@@ -353,7 +353,7 @@ async def _collect_user_data(
             "id": str(user.id),
             "email": user.email,
             "nickname": user.nickname,
-            "avatar_url": user.avatar_url,
+            "avatar_key": user.avatar_key,
             "email_verified": user.email_verified,
             "subscription_status": user.subscription_status,
             "subscription_expires_at": (

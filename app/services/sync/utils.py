@@ -73,6 +73,7 @@ def _entity_to_dict(
             "id": str(entity.id),
             "owner_id": str(entity.owner_id),
             "name": entity.name,
+            "photo_key": entity.photo_key,
             "created_at": entity.created_at.isoformat() if entity.created_at else None,
             "updated_at": entity.updated_at.isoformat() if entity.updated_at else None,
             "deleted_at": entity.deleted_at.isoformat() if entity.deleted_at else None,
@@ -85,6 +86,7 @@ def _entity_to_dict(
             "quantity": entity.quantity,
             "custom_name": entity.custom_name,
             "added_via": entity.added_via,
+            "photo_key": entity.photo_key,
             "created_at": entity.created_at.isoformat() if entity.created_at else None,
             "updated_at": entity.updated_at.isoformat() if entity.updated_at else None,
             "deleted_at": entity.deleted_at.isoformat() if entity.deleted_at else None,
@@ -153,7 +155,7 @@ def _entity_to_dict(
             "id": str(entity.id),
             "email": entity.email,
             "nickname": entity.nickname,
-            "avatar_url": entity.avatar_url,
+            "avatar_key": entity.avatar_key,
             "subscription_status": entity.subscription_status,
             "subscription_expires_at": (
                 entity.subscription_expires_at.isoformat() if entity.subscription_expires_at else None

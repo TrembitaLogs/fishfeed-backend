@@ -37,7 +37,7 @@ class TestGetUserProfile:
         assert "id" in data
         assert data["email"] == email
         assert "display_name" in data
-        assert "avatar_url" in data
+        assert "avatar_key" in data
         assert "created_at" in data
         assert "subscription_status" in data
         assert "subscription_expires_at" in data
@@ -123,8 +123,8 @@ class TestUpdateUserProfile:
         )
         assert get_response.json()["display_name"] == "NewDisplayName"
 
-    async def test_update_avatar_url(self, client: AsyncClient):
-        """Test that PUT /users/me updates avatar_url."""
+    async def test_update_avatar_key(self, client: AsyncClient):
+        """Test that PUT /users/me updates avatar_key."""
         email = f"update_avatar_{uuid4().hex[:8]}@example.com"
         register_response = await client.post(
             "/api/v1/auth/register",
@@ -132,29 +132,29 @@ class TestUpdateUserProfile:
         )
         access_token = register_response.json()["access_token"]
 
-        avatar_url = "https://example.com/avatar.png"
+        avatar_key = "avatars/550e8400-e29b-41d4-a716-446655440000/f7a3b2c1.webp"
         update_response = await client.put(
             "/api/v1/users/me",
-            json={"avatar_url": avatar_url},
+            json={"avatar_key": avatar_key},
             headers={"Authorization": f"Bearer {access_token}"},
         )
 
         assert update_response.status_code == 200
-        assert update_response.json()["avatar_url"] == avatar_url
+        assert update_response.json()["avatar_key"] == avatar_key
 
-    async def test_update_avatar_url_invalid_returns_422(self, client: AsyncClient):
-        """Test that invalid avatar_url (not http/https) returns 422."""
-        email = f"invalid_avatar_{uuid4().hex[:8]}@example.com"
+    async def test_update_avatar_key_too_long_returns_422(self, client: AsyncClient):
+        """Test that avatar_key exceeding max_length (500) returns 422."""
+        email = f"long_avatar_{uuid4().hex[:8]}@example.com"
         register_response = await client.post(
             "/api/v1/auth/register",
             json={"email": email, "password": "SecurePass123"},
         )
         access_token = register_response.json()["access_token"]
 
-        # Try to set invalid URL (not http/https)
+        long_key = "a" * 501
         response = await client.put(
             "/api/v1/users/me",
-            json={"avatar_url": "ftp://example.com/avatar.png"},
+            json={"avatar_key": long_key},
             headers={"Authorization": f"Bearer {access_token}"},
         )
 
@@ -196,7 +196,7 @@ class TestUpdateUserProfile:
         assert response.status_code == 422
 
     async def test_update_allows_null_values(self, client: AsyncClient):
-        """Test that PUT /users/me allows setting display_name and avatar_url to null."""
+        """Test that PUT /users/me allows setting display_name and avatar_key to null."""
         email = f"null_values_{uuid4().hex[:8]}@example.com"
         register_response = await client.post(
             "/api/v1/auth/register",
@@ -209,7 +209,7 @@ class TestUpdateUserProfile:
             "/api/v1/users/me",
             json={
                 "display_name": "TestName",
-                "avatar_url": "https://example.com/avatar.png",
+                "avatar_key": "avatars/550e8400-e29b-41d4-a716-446655440000/a1b2c3d4.webp",
             },
             headers={"Authorization": f"Bearer {access_token}"},
         )
@@ -217,14 +217,14 @@ class TestUpdateUserProfile:
         # Then set to null
         response = await client.put(
             "/api/v1/users/me",
-            json={"display_name": None, "avatar_url": None},
+            json={"display_name": None, "avatar_key": None},
             headers={"Authorization": f"Bearer {access_token}"},
         )
 
         assert response.status_code == 200
         data = response.json()
         assert data["display_name"] is None
-        assert data["avatar_url"] is None
+        assert data["avatar_key"] is None
 
 
 @pytest.mark.asyncio(loop_scope="session")

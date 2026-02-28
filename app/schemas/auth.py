@@ -50,7 +50,11 @@ class UserResponse(BaseModel):
 
     id: UUID
     email: str
+    display_name: str | None = None
+    avatar_key: str | None = None
     created_at: datetime
+    subscription_status: str = "free"
+    free_ai_scans_remaining: int = 5
 
 
 class TokenResponse(BaseModel):

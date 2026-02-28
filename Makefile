@@ -1,4 +1,4 @@
-.PHONY: up down logs test lint migrate makemigrations shell seed-species seed-species-dry-run seed-species-clear
+.PHONY: up down logs test test-images lint migrate makemigrations shell seed-species seed-species-dry-run seed-species-clear
 
 up:
 	docker-compose up -d
@@ -11,6 +11,9 @@ logs:
 
 test:
 	uv run pytest
+
+test-images:
+	uv run pytest tests/api/test_images.py tests/services/test_image_service.py tests/schemas/test_image.py tests/jobs/test_image_cleanup.py tests/e2e/test_image_sync.py -v
 
 lint:
 	uv run ruff check .

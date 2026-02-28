@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -50,8 +50,13 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
         String(50),
         nullable=True,
     )
-    avatar_url: Mapped[str | None] = mapped_column(
-        Text,
+
+    @property
+    def display_name(self) -> str | None:
+        """Alias for nickname used by Pydantic response schemas."""
+        return self.nickname
+    avatar_key: Mapped[str | None] = mapped_column(
+        String(500),
         nullable=True,
     )
     email_verified: Mapped[bool] = mapped_column(

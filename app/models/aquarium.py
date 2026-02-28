@@ -33,6 +33,10 @@ class Aquarium(Base, TimestampMixin, SoftDeleteMixin):
         String(100),
         nullable=False,
     )
+    photo_key: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+    )
 
     # Relationships
     owner: Mapped[User] = relationship(

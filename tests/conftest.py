@@ -17,6 +17,7 @@ from app.api import (
     fish_router,
     gamification_router,
     health_router,
+    images_router,
     purchase_router,
     push_router,
     releases_router,
@@ -146,6 +147,7 @@ async def app(async_engine, redis_client) -> AsyncGenerator[FastAPI]:
     api_v1.include_router(push_router)
     api_v1.include_router(ai_router)
     api_v1.include_router(gamification_router)
+    api_v1.include_router(images_router)
     api_v1.include_router(purchase_router)
     api_v1.include_router(admin_router)
     app.include_router(api_v1)

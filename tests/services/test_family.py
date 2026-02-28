@@ -47,7 +47,7 @@ async def create_test_user(
     email: str | None = None,
     subscription_status: str = "free",
     nickname: str | None = None,
-    avatar_url: str | None = None,
+    avatar_key: str | None = None,
 ) -> User:
     """Helper to create a test user."""
     user = User(
@@ -55,7 +55,7 @@ async def create_test_user(
         password_hash="hashed_password",
         subscription_status=subscription_status,
         nickname=nickname,
-        avatar_url=avatar_url,
+        avatar_key=avatar_key,
     )
     session.add(user)
     await session.commit()
@@ -98,7 +98,7 @@ async def test_get_family_members_returns_owner(async_session: AsyncSession):
             async_session,
             email="owner@example.com",
             nickname="OwnerNick",
-            avatar_url="https://example.com/avatar.png",
+            avatar_key="avatars/550e8400-e29b-41d4-a716-446655440000/a1b2c3d4.webp",
         )
         data = AquariumCreate(name="Test Aquarium")
         aquarium = await create_aquarium(async_session, owner.id, data)
@@ -109,7 +109,7 @@ async def test_get_family_members_returns_owner(async_session: AsyncSession):
         assert members[0].user_id == owner.id
         assert members[0].role == "owner"
         assert members[0].nickname == "OwnerNick"
-        assert members[0].avatar_url == "https://example.com/avatar.png"
+        assert members[0].avatar_key == "avatars/550e8400-e29b-41d4-a716-446655440000/a1b2c3d4.webp"
     finally:
         await cleanup_family_data(async_session)
 

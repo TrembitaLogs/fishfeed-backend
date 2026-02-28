@@ -29,7 +29,9 @@ services:
       - S3_ACCESS_KEY=${S3_ACCESS_KEY}
       - S3_SECRET_KEY=${S3_SECRET_KEY}
       - S3_BUCKET_NAME=${S3_BUCKET_NAME:-fishfeed-scans}
+      - S3_IMAGES_BUCKET_NAME=${S3_IMAGES_BUCKET_NAME:-fishfeed-images}
       - S3_REGION=${S3_REGION:-eu-central}
+      - S3_PRESIGNED_ENDPOINT_URL=${S3_PRESIGNED_ENDPOINT_URL:-}
       # FCM (Android Push)
       - FCM_PROJECT_ID=${FCM_PROJECT_ID:-}
       - FCM_CREDENTIALS_PATH=/app/secrets/firebase-credentials.json
@@ -98,6 +100,13 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - WORKER_ENABLED=true
       - ENVIRONMENT=production
+      # S3 Storage (needed for image cleanup jobs)
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL}
+      - S3_ACCESS_KEY=${S3_ACCESS_KEY}
+      - S3_SECRET_KEY=${S3_SECRET_KEY}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME:-fishfeed-scans}
+      - S3_IMAGES_BUCKET_NAME=${S3_IMAGES_BUCKET_NAME:-fishfeed-images}
+      - S3_REGION=${S3_REGION:-eu-central}
       # Sentry
       - SENTRY_DSN=${SENTRY_DSN:-}
       - SENTRY_TRACES_SAMPLE_RATE=${SENTRY_TRACES_SAMPLE_RATE:-0.1}

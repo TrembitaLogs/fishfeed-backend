@@ -223,7 +223,7 @@ async def get_family_members(
             AquariumMember.role,
             AquariumMember.joined_at,
             User.nickname,
-            User.avatar_url,
+            User.avatar_key,
         )
         .join(User, AquariumMember.user_id == User.id)
         .where(AquariumMember.aquarium_id == aquarium_id)
@@ -241,7 +241,7 @@ async def get_family_members(
         FamilyMemberResponse(
             user_id=row.user_id,
             nickname=row.nickname,
-            avatar_url=row.avatar_url,
+            avatar_key=row.avatar_key,
             role=row.role,
             joined_at=row.joined_at,
         )

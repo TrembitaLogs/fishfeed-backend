@@ -160,6 +160,9 @@ async def test_scan_image_success(async_session: AsyncSession):
             ]
         )
 
+        mock_storage = AsyncMock()
+        mock_storage.upload_image = AsyncMock(return_value="scans/test.webp")
+
         with patch(
             "app.services.ai.classify_with_fallback",
             new_callable=AsyncMock,
@@ -173,6 +176,7 @@ async def test_scan_image_success(async_session: AsyncSession):
                 async_session,
                 user.id,
                 image_base64=image_base64,
+                storage=mock_storage,
             )
 
         assert response.species_id == "goldfish"
@@ -195,13 +199,16 @@ async def test_scan_image_decreases_counter(async_session: AsyncSession):
             predictions=[Prediction(label="Goldfish", confidence=0.9)]
         )
 
+        mock_storage = AsyncMock()
+        mock_storage.upload_image = AsyncMock(return_value="scans/test.webp")
+
         with patch(
             "app.services.ai.classify_with_fallback",
             new_callable=AsyncMock,
             return_value=mock_result,
         ):
             image_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-            await scan_image(async_session, user.id, image_base64=image_base64)
+            await scan_image(async_session, user.id, image_base64=image_base64, storage=mock_storage)
 
         await async_session.refresh(user)
         assert user.free_ai_scans_remaining == 2
@@ -242,6 +249,9 @@ async def test_scan_image_premium_no_limit(async_session: AsyncSession):
             predictions=[Prediction(label="Goldfish", confidence=0.9)]
         )
 
+        mock_storage = AsyncMock()
+        mock_storage.upload_image = AsyncMock(return_value="scans/test.webp")
+
         with patch(
             "app.services.ai.classify_with_fallback",
             new_callable=AsyncMock,
@@ -252,6 +262,7 @@ async def test_scan_image_premium_no_limit(async_session: AsyncSession):
                 async_session,
                 user.id,
                 image_base64=image_base64,
+                storage=mock_storage,
             )
 
         assert response.scans_remaining == 0  # -1 is converted to 0 in response
@@ -274,6 +285,9 @@ async def test_scan_image_deduplication(async_session: AsyncSession):
 
         image_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 
+        mock_storage = AsyncMock()
+        mock_storage.upload_image = AsyncMock(return_value="scans/test.webp")
+
         with patch(
             "app.services.ai.classify_with_fallback",
             new_callable=AsyncMock,
@@ -284,12 +298,14 @@ async def test_scan_image_deduplication(async_session: AsyncSession):
                 async_session,
                 user.id,
                 image_base64=image_base64,
+                storage=mock_storage,
             )
             # Second scan with same image
             response2 = await scan_image(
                 async_session,
                 user.id,
                 image_base64=image_base64,
+                storage=mock_storage,
             )
 
         # AI should only be called once
@@ -312,6 +328,9 @@ async def test_scan_image_no_species_match(async_session: AsyncSession):
             predictions=[Prediction(label="Unknown Fish", confidence=0.9)]
         )
 
+        mock_storage = AsyncMock()
+        mock_storage.upload_image = AsyncMock(return_value="scans/test.webp")
+
         with patch(
             "app.services.ai.classify_with_fallback",
             new_callable=AsyncMock,
@@ -322,6 +341,7 @@ async def test_scan_image_no_species_match(async_session: AsyncSession):
                 async_session,
                 user.id,
                 image_base64=image_base64,
+                storage=mock_storage,
             )
 
         assert response.species_id is None
@@ -359,6 +379,9 @@ async def test_scan_image_logs_to_ai_scans(async_session: AsyncSession):
             predictions=[Prediction(label="Goldfish", confidence=0.9)]
         )
 
+        mock_storage = AsyncMock()
+        mock_storage.upload_image = AsyncMock(return_value="scans/test.webp")
+
         with patch(
             "app.services.ai.classify_with_fallback",
             new_callable=AsyncMock,
@@ -369,6 +392,7 @@ async def test_scan_image_logs_to_ai_scans(async_session: AsyncSession):
                 async_session,
                 user.id,
                 image_base64=image_base64,
+                storage=mock_storage,
             )
 
         # Verify scan was logged

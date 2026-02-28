@@ -6,6 +6,7 @@ from app.models.feeding import FeedingLog, FeedingSchedule
 from app.models.fish import Fish
 from app.models.gamification import Achievement, Streak, UserProgress
 from app.models.notification import NotificationPreference, PushToken
+from app.models.orphaned_image import OrphanedImage
 from app.models.purchase import WebhookTransaction
 from app.models.species import Species
 from app.models.user import RefreshToken, User
@@ -31,4 +32,5 @@ __all__ = [
     "PushToken",
     "NotificationPreference",
     "WebhookTransaction",
+    "OrphanedImage",
 ]

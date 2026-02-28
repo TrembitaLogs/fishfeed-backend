@@ -1,5 +1,6 @@
 """Sync change application: entity-specific change handlers and orchestration."""
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -15,10 +16,40 @@ from app.models.gamification import Achievement, Streak, UserProgress
 from app.models.user import User
 from app.schemas.sync import ChangeItem, ConflictItem
 from app.services import feeding as feeding_service
+from app.services.image_service import register_orphaned
 
 from .utils import _entity_to_dict, _group_changes_by_entity_type, resolve_conflict
 
 logger = structlog.get_logger(__name__)
+
+# Entity-type-specific regex patterns for photo_key validation.
+# Prevents injection and cross-type key substitution through sync payload.
+_PHOTO_KEY_PATTERNS: dict[str, re.Pattern[str]] = {
+    "aquarium": re.compile(r"^aquariums/[0-9a-f-]+/[0-9a-f]+\.webp$"),
+    "fish": re.compile(r"^fish/[0-9a-f-]+/[0-9a-f]+\.webp$"),
+    "avatar": re.compile(r"^avatars/[0-9a-f-]+/[0-9a-f]+\.webp$"),
+}
+
+
+def _validate_photo_key(photo_key: str | None, entity_type: str) -> bool:
+    """Validate photo_key format against entity-type-specific regex.
+
+    None is always valid (means photo deletion).
+    Non-null values must match the pattern for the given entity type.
+
+    Args:
+        photo_key: S3 object key or None.
+        entity_type: One of "aquarium", "fish".
+
+    Returns:
+        True if the key is valid or None.
+    """
+    if photo_key is None:
+        return True
+    pattern = _PHOTO_KEY_PATTERNS.get(entity_type)
+    if pattern is None:
+        return False
+    return bool(pattern.match(photo_key))
 
 
 async def _apply_aquarium_change(
@@ -58,13 +89,36 @@ async def _apply_aquarium_change(
             # Client wins - update existing
             if "name" in change.data:
                 existing.name = change.data["name"]
+            if "photo_key" in change.data:
+                new_key = change.data["photo_key"]
+                if _validate_photo_key(new_key, "aquarium"):
+                    if existing.photo_key and existing.photo_key != new_key:
+                        await register_orphaned(db, existing.photo_key, "aquarium")
+                    existing.photo_key = new_key
+                else:
+                    logger.warning(
+                        "invalid_photo_key_ignored",
+                        photo_key=new_key,
+                        entity_type="aquarium",
+                        entity_id=str(change.entity_id),
+                    )
             logger.debug(f"CREATE->UPDATE aquarium {change.entity_id}: client wins")
         else:
             # Create new aquarium
+            photo_key = change.data.get("photo_key")
+            if photo_key is not None and not _validate_photo_key(photo_key, "aquarium"):
+                logger.warning(
+                    "invalid_photo_key_ignored",
+                    photo_key=photo_key,
+                    entity_type="aquarium",
+                    entity_id=str(change.entity_id),
+                )
+                photo_key = None
             aquarium = Aquarium(
                 id=change.entity_id,
                 owner_id=user_id,
                 name=change.data.get("name", "Unnamed Aquarium"),
+                photo_key=photo_key,
             )
             db.add(aquarium)
             # Also add owner as member
@@ -101,6 +155,19 @@ async def _apply_aquarium_change(
         # Client wins - apply update
         if "name" in change.data:
             existing.name = change.data["name"]
+        if "photo_key" in change.data:
+            new_key = change.data["photo_key"]
+            if _validate_photo_key(new_key, "aquarium"):
+                if existing.photo_key and existing.photo_key != new_key:
+                    await register_orphaned(db, existing.photo_key, "aquarium")
+                existing.photo_key = new_key
+            else:
+                logger.warning(
+                    "invalid_photo_key_ignored",
+                    photo_key=new_key,
+                    entity_type="aquarium",
+                    entity_id=str(change.entity_id),
+                )
         logger.debug(f"Updated aquarium {change.entity_id}")
 
     elif change.operation == "delete":
@@ -173,12 +240,35 @@ async def _apply_fish_change(
                 existing.custom_name = change.data["custom_name"]
             if "species_id" in change.data:
                 existing.species_id = change.data["species_id"]
+            if "photo_key" in change.data:
+                new_key = change.data["photo_key"]
+                if _validate_photo_key(new_key, "fish"):
+                    if existing.photo_key and existing.photo_key != new_key:
+                        await register_orphaned(db, existing.photo_key, "fish")
+                    existing.photo_key = new_key
+                else:
+                    logger.warning(
+                        "invalid_photo_key_ignored",
+                        photo_key=new_key,
+                        entity_type="fish",
+                        entity_id=str(change.entity_id),
+                    )
             logger.debug(f"CREATE->UPDATE fish {change.entity_id}: client wins")
         else:
             # Create new fish
             aquarium_id = change.data.get("aquarium_id")
             if aquarium_id:
                 aquarium_id = UUID(str(aquarium_id))
+
+            photo_key = change.data.get("photo_key")
+            if photo_key is not None and not _validate_photo_key(photo_key, "fish"):
+                logger.warning(
+                    "invalid_photo_key_ignored",
+                    photo_key=photo_key,
+                    entity_type="fish",
+                    entity_id=str(change.entity_id),
+                )
+                photo_key = None
 
             fish = Fish(
                 id=change.entity_id,
@@ -187,6 +277,7 @@ async def _apply_fish_change(
                 quantity=change.data.get("quantity", 1),
                 custom_name=change.data.get("custom_name"),
                 added_via=change.data.get("added_via", "sync"),
+                photo_key=photo_key,
             )
             db.add(fish)
             logger.debug(f"Created fish {change.entity_id}")
@@ -220,6 +311,19 @@ async def _apply_fish_change(
             existing.custom_name = change.data["custom_name"]
         if "species_id" in change.data:
             existing.species_id = change.data["species_id"]
+        if "photo_key" in change.data:
+            new_key = change.data["photo_key"]
+            if _validate_photo_key(new_key, "fish"):
+                if existing.photo_key and existing.photo_key != new_key:
+                    await register_orphaned(db, existing.photo_key, "fish")
+                existing.photo_key = new_key
+            else:
+                logger.warning(
+                    "invalid_photo_key_ignored",
+                    photo_key=new_key,
+                    entity_type="fish",
+                    entity_id=str(change.entity_id),
+                )
         logger.debug(f"Updated fish {change.entity_id}")
 
     elif change.operation == "delete":
@@ -838,8 +942,19 @@ async def _apply_user_profile_change(
         # Client wins - apply update
         if "nickname" in change.data:
             existing.nickname = change.data["nickname"]
-        if "avatar_url" in change.data:
-            existing.avatar_url = change.data["avatar_url"]
+        if "avatar_key" in change.data:
+            new_key = change.data["avatar_key"]
+            if _validate_photo_key(new_key, "avatar"):
+                if existing.avatar_key and existing.avatar_key != new_key:
+                    await register_orphaned(db, existing.avatar_key, "avatar")
+                existing.avatar_key = new_key
+            else:
+                logger.warning(
+                    "invalid_avatar_key_ignored",
+                    avatar_key=new_key,
+                    entity_type="avatar",
+                    entity_id=str(user_id),
+                )
         if "settings" in change.data:
             existing.settings = change.data["settings"]
         logger.debug(f"Updated user_profile for user {user_id}")

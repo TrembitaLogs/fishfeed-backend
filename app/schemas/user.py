@@ -1,10 +1,9 @@
 """Pydantic schemas for user profile endpoints."""
 
-import re
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.gamification import StreakResponse
 
@@ -19,7 +18,7 @@ class UserProfileResponse(BaseModel):
     display_name: str | None = Field(
         default=None, description="User display name (nickname)"
     )
-    avatar_url: str | None = Field(default=None, description="URL to user avatar image")
+    avatar_key: str | None = Field(default=None, description="S3 object key for user avatar image")
     created_at: datetime
     subscription_status: str = Field(
         default="free", description="Subscription status (free/premium)"
@@ -41,31 +40,6 @@ class UserProfileUpdateRequest(BaseModel):
     display_name: str | None = Field(
         default=None, max_length=50, description="User display name"
     )
-    avatar_url: str | None = Field(
-        default=None, max_length=2048, description="URL to user avatar image"
+    avatar_key: str | None = Field(
+        default=None, max_length=500, description="S3 object key for user avatar image"
     )
-
-    @field_validator("avatar_url")
-    @classmethod
-    def validate_avatar_url(cls, v: str | None) -> str | None:
-        """Validate that avatar_url is a valid HTTP/HTTPS URL."""
-        if v is None:
-            return v
-
-        if v == "":
-            return None
-
-        url_pattern = re.compile(
-            r"^https?://"  # http:// or https://
-            r"(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|"  # domain
-            r"localhost|"  # localhost
-            r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"  # or IP
-            r"(?::\d+)?"  # optional port
-            r"(?:/?|[/?]\S+)$",
-            re.IGNORECASE,
-        )
-
-        if not url_pattern.match(v):
-            raise ValueError("avatar_url must be a valid HTTP or HTTPS URL")
-
-        return v

@@ -6,6 +6,8 @@ This module provides scheduled jobs for:
 - Subscription expiry checks
 - Analytics cleanup
 - Stale streak reset (daily at 02:00 UTC)
+- Image cleanup: orphaned images garbage collection (daily at 04:00 UTC)
+- S3 reconciliation: find unreferenced S3 objects (weekly Sunday at 05:00 UTC)
 
 Usage:
     # Run as standalone worker
@@ -37,6 +39,7 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.database import async_session_maker, engine
 from app.jobs.analytics_cleanup import analytics_cleanup_job
+from app.jobs.image_cleanup import image_cleanup_job, s3_reconciliation_job
 from app.jobs.notification_jobs import re_engagement_job, weekly_summary_job
 from app.jobs.subscription_jobs import check_expired_subscriptions_job
 from app.models.gamification import Streak
@@ -55,6 +58,8 @@ JOB_RE_ENGAGEMENT = "re_engagement"
 JOB_CHECK_EXPIRED_SUBSCRIPTIONS = "check_expired_subscriptions"
 JOB_ANALYTICS_CLEANUP = "analytics_cleanup"
 JOB_RESET_STALE_STREAKS = "reset_stale_streaks"
+JOB_IMAGE_CLEANUP = "image_cleanup"
+JOB_S3_RECONCILIATION = "s3_reconciliation"
 
 
 async def reset_stale_streaks_job() -> int:
@@ -227,6 +232,24 @@ async def start_scheduler() -> AsyncScheduler:
     )
     logger.info(f"Added job '{JOB_RESET_STALE_STREAKS}' (daily at 02:00 UTC)")
 
+    # Job 6: Image cleanup - delete orphaned images older than 7 days (daily at 04:00 UTC)
+    await _scheduler.add_schedule(
+        image_cleanup_job,
+        CronTrigger(hour=4, minute=0, timezone=UTC),
+        id=JOB_IMAGE_CLEANUP,
+        conflict_policy=ConflictPolicy.replace,
+    )
+    logger.info(f"Added job '{JOB_IMAGE_CLEANUP}' (daily at 04:00 UTC)")
+
+    # Job 7: S3 reconciliation - find unreferenced objects (weekly Sunday at 05:00 UTC)
+    await _scheduler.add_schedule(
+        s3_reconciliation_job,
+        CronTrigger(day_of_week="sun", hour=5, minute=0, timezone=UTC),
+        id=JOB_S3_RECONCILIATION,
+        conflict_policy=ConflictPolicy.replace,
+    )
+    logger.info(f"Added job '{JOB_S3_RECONCILIATION}' (weekly on Sunday at 05:00 UTC)")
+
     # Start processing schedules in background
     await _scheduler.start_in_background()
 
@@ -263,7 +286,9 @@ async def run_once(job_name: str | None = None) -> None:
     Args:
         job_name: Optional specific job to run. If None, runs all jobs.
                   Valid values: 'weekly_summary', 're_engagement',
-                               'check_subscriptions', 'analytics_cleanup'
+                               'check_subscriptions', 'analytics_cleanup',
+                               'reset_stale_streaks', 'image_cleanup',
+                               's3_reconciliation'
     """
     logger.info(f"Running jobs once (job_name={job_name})")
 
@@ -274,6 +299,8 @@ async def run_once(job_name: str | None = None) -> None:
         "check_subscriptions": ("check_expired_subscriptions", check_expired_subscriptions_job),
         "analytics_cleanup": ("analytics_cleanup", analytics_cleanup_job),
         "reset_stale_streaks": ("reset_stale_streaks", reset_stale_streaks_job),
+        "image_cleanup": ("image_cleanup", image_cleanup_job),
+        "s3_reconciliation": ("s3_reconciliation", s3_reconciliation_job),
     }
 
     jobs_to_run: list[tuple[str, JobFunc]]
@@ -338,6 +365,8 @@ def main() -> None:
             "check_subscriptions",
             "analytics_cleanup",
             "reset_stale_streaks",
+            "image_cleanup",
+            "s3_reconciliation",
         ],
         help="Specific job to run (only with --run-once)",
     )
