@@ -118,6 +118,10 @@ class Settings(BaseSettings):
     REVENUECAT_API_KEY: str | None = None  # RevenueCat public API key
     REVENUECAT_WEBHOOK_SECRET: str | None = None  # Webhook signature verification secret
 
+    # Admin Panel (static credentials for SQLAdmin)
+    ADMIN_USERNAME: str = ""
+    ADMIN_PASSWORD: str = ""
+
     # Worker settings
     WORKER_ENABLED: bool = True
     WORKER_CREATE_EVENTS_HOUR: int = 23  # UTC hour for daily event creation

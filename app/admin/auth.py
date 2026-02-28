@@ -1,46 +1,44 @@
-"""Admin authentication backend using cookie-based sessions."""
+"""Admin authentication backend using static env-based credentials."""
+
+import hmac
 
 from sqladmin.authentication import AuthenticationBackend
-from sqlalchemy import select
 from starlette.requests import Request
 
-from app.database import async_session_maker
-from app.models.user import User
-from app.utils.password import verify_password
+from app.config import get_settings
 
 
 class AdminAuth(AuthenticationBackend):
-    """Cookie-based session authentication for the SQLAdmin panel."""
+    """Cookie-based session authentication for the SQLAdmin panel.
+
+    Credentials are configured via ADMIN_USERNAME / ADMIN_PASSWORD env vars.
+    If either is empty, admin login is disabled.
+    """
 
     async def login(self, request: Request) -> bool:
         """Validate admin credentials from the login form.
 
-        SQLAdmin sends form fields "username" (email) and "password".
+        SQLAdmin sends form fields "username" and "password".
         Returns True on success (sets session), False to re-show login form.
         """
+        settings = get_settings()
+        if not settings.ADMIN_USERNAME or not settings.ADMIN_PASSWORD:
+            return False
+
         form = await request.form()
-        email = form.get("username")
-        password = form.get("password")
+        username = form.get("username", "")
+        password = form.get("password", "")
 
-        if not email or not password:
+        if not username or not password:
             return False
 
-        async with async_session_maker() as db:
-            stmt = select(User).where(
-                User.email == email,
-                User.deleted_at.is_(None),
-            )
-            result = await db.execute(stmt)
-            user = result.scalar_one_or_none()
+        username_ok = hmac.compare_digest(str(username), settings.ADMIN_USERNAME)
+        password_ok = hmac.compare_digest(str(password), settings.ADMIN_PASSWORD)
 
-        if user is None or user.password_hash is None:
-            return False
-        if not verify_password(str(password), user.password_hash):
-            return False
-        if not user.is_admin:
+        if not username_ok or not password_ok:
             return False
 
-        request.session.update({"admin_user_id": str(user.id)})
+        request.session.update({"admin": True})
         return True
 
     async def logout(self, request: Request) -> bool:
@@ -49,21 +47,5 @@ class AdminAuth(AuthenticationBackend):
         return True
 
     async def authenticate(self, request: Request) -> bool:
-        """Check whether the current request has a valid admin session.
-
-        Called on every request to a protected admin page.
-        """
-        admin_user_id = request.session.get("admin_user_id")
-        if not admin_user_id:
-            return False
-
-        async with async_session_maker() as db:
-            stmt = select(User).where(
-                User.id == admin_user_id,
-                User.is_admin.is_(True),
-                User.deleted_at.is_(None),
-            )
-            result = await db.execute(stmt)
-            user = result.scalar_one_or_none()
-
-        return user is not None
+        """Check whether the current request has a valid admin session."""
+        return request.session.get("admin", False) is True

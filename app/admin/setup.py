@@ -42,7 +42,7 @@ def setup_admin(app: FastAPI) -> Admin:
         app=app,
         engine=engine,
         authentication_backend=authentication_backend,
-        title="FishFeed Admin",
+        title=f"FishFeed Admin v{settings.APP_VERSION}",
         templates_dir=templates_dir,
     )
 

@@ -1,4 +1,4 @@
-"""Integration tests for the admin panel (Phase 4 of task 17 test strategy).
+"""Integration tests for the admin panel.
 
 Covers:
 - SQLAdmin UI loads after authentication
@@ -7,43 +7,13 @@ Covers:
 """
 
 import uuid
-from contextlib import asynccontextmanager
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.user import User
-from app.utils.password import hash_password
-
+TEST_USERNAME = "admin"
 TEST_PASSWORD = "Admin$ecure123"
-
-
-async def _create_user(
-    session: AsyncSession,
-    *,
-    email: str | None = None,
-    is_admin: bool = True,
-) -> User:
-    """Insert a user and return it."""
-    user = User(
-        id=uuid.uuid4(),
-        email=email or f"integration-{uuid.uuid4().hex[:8]}@test.com",
-        password_hash=hash_password(TEST_PASSWORD),
-        is_admin=is_admin,
-    )
-    session.add(user)
-    await session.commit()
-    await session.refresh(user)
-    return user
-
-
-async def _cleanup(session: AsyncSession) -> None:
-    await session.execute(
-        text("DELETE FROM users WHERE email LIKE 'integration-%@test.com'")
-    )
-    await session.commit()
 
 
 # ─── SQLAdmin UI loads ────────────────────────────────────────────────
@@ -148,89 +118,66 @@ class TestAdminRouterPathsUnchanged:
 class TestSessionCookieAttributes:
     """Verify session cookie security attributes after admin login."""
 
-    async def test_session_cookie_has_httponly(
-        self,
-        admin_app,
-        async_session: AsyncSession,
-        async_engine,
-    ):
+    async def test_session_cookie_has_httponly(self, admin_app, monkeypatch):
         """Login should set a session cookie with the HttpOnly flag."""
-        user = await _create_user(async_session)
-        try:
+        monkeypatch.setattr("app.admin.auth.get_settings", lambda: _settings())
 
-            @asynccontextmanager
-            async def _session_factory():
-                yield async_session
-
-            with pytest.MonkeyPatch.context() as mp:
-                mp.setattr(
-                    "app.admin.auth.async_session_maker", _session_factory
-                )
-                transport = ASGITransport(app=admin_app)
-                async with AsyncClient(
-                    transport=transport, base_url="http://test"
-                ) as client:
-                    response = await client.post(
-                        "/admin/login",
-                        data={
-                            "username": user.email,
-                            "password": TEST_PASSWORD,
-                        },
-                        follow_redirects=False,
-                    )
-
-            # Successful login redirects to the admin dashboard
-            assert response.status_code in (301, 302, 303, 307)
-
-            set_cookie = response.headers.get("set-cookie", "")
-            assert set_cookie, "Expected Set-Cookie header after login"
-
-            set_cookie_lower = set_cookie.lower()
-            assert "httponly" in set_cookie_lower, (
-                f"Session cookie must be HttpOnly. Got: {set_cookie}"
+        transport = ASGITransport(app=admin_app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/admin/login",
+                data={"username": TEST_USERNAME, "password": TEST_PASSWORD},
+                follow_redirects=False,
             )
-        finally:
-            await _cleanup(async_session)
 
-    async def test_session_cookie_has_samesite(
-        self,
-        admin_app,
-        async_session: AsyncSession,
-        async_engine,
-    ):
+        assert response.status_code in (301, 302, 303, 307)
+
+        set_cookie = response.headers.get("set-cookie", "")
+        assert set_cookie, "Expected Set-Cookie header after login"
+
+        set_cookie_lower = set_cookie.lower()
+        assert "httponly" in set_cookie_lower, (
+            f"Session cookie must be HttpOnly. Got: {set_cookie}"
+        )
+
+    async def test_session_cookie_has_samesite(self, admin_app, monkeypatch):
         """Login should set a session cookie with the SameSite attribute."""
-        user = await _create_user(async_session)
-        try:
+        monkeypatch.setattr("app.admin.auth.get_settings", lambda: _settings())
 
-            @asynccontextmanager
-            async def _session_factory():
-                yield async_session
-
-            with pytest.MonkeyPatch.context() as mp:
-                mp.setattr(
-                    "app.admin.auth.async_session_maker", _session_factory
-                )
-                transport = ASGITransport(app=admin_app)
-                async with AsyncClient(
-                    transport=transport, base_url="http://test"
-                ) as client:
-                    response = await client.post(
-                        "/admin/login",
-                        data={
-                            "username": user.email,
-                            "password": TEST_PASSWORD,
-                        },
-                        follow_redirects=False,
-                    )
-
-            assert response.status_code in (301, 302, 303, 307)
-
-            set_cookie = response.headers.get("set-cookie", "")
-            assert set_cookie, "Expected Set-Cookie header after login"
-
-            set_cookie_lower = set_cookie.lower()
-            assert "samesite=" in set_cookie_lower, (
-                f"Session cookie must have SameSite attribute. Got: {set_cookie}"
+        transport = ASGITransport(app=admin_app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/admin/login",
+                data={"username": TEST_USERNAME, "password": TEST_PASSWORD},
+                follow_redirects=False,
             )
-        finally:
-            await _cleanup(async_session)
+
+        assert response.status_code in (301, 302, 303, 307)
+
+        set_cookie = response.headers.get("set-cookie", "")
+        assert set_cookie, "Expected Set-Cookie header after login"
+
+        set_cookie_lower = set_cookie.lower()
+        assert "samesite=" in set_cookie_lower, (
+            f"Session cookie must have SameSite attribute. Got: {set_cookie}"
+        )
+
+
+# ─── Helpers ─────────────────────────────────────────────────────────
+
+
+class _FakeSettings:
+    def __init__(self, username: str, password: str):
+        self.ADMIN_USERNAME = username
+        self.ADMIN_PASSWORD = password
+
+
+def _settings(
+    username: str = TEST_USERNAME,
+    password: str = TEST_PASSWORD,
+) -> _FakeSettings:
+    return _FakeSettings(username=username, password=password)
