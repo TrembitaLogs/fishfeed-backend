@@ -89,6 +89,7 @@ def upgrade() -> None:
     # Step 2: Migrate completed feeding_events → feeding_logs
     # Only non-soft-deleted completed events with both schedule_id and fish_id present.
     # device_id is generated as uuid5 from event id (namespace = '6ba7b810-9dad-11d1-80b4-00c04fd430c8').
+    op.execute(sa.text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'))
     op.execute(
         sa.text("""
             INSERT INTO feeding_logs (
