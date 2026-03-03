@@ -45,6 +45,9 @@ services:
       # RevenueCat
       - REVENUECAT_API_KEY=${REVENUECAT_API_KEY:-}
       - REVENUECAT_WEBHOOK_SECRET=${REVENUECAT_WEBHOOK_SECRET:-}
+      # Admin Panel
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
     volumes:
       - ./secrets:/app/secrets:ro
       - ./mobile/releases:/app/mobile/releases:ro

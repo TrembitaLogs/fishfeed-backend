@@ -22,6 +22,9 @@ COPY app ./app
 COPY alembic.ini ./
 COPY alembic ./alembic
 
+# Copy seed / maintenance scripts
+COPY scripts ./scripts
+
 # Expose port
 EXPOSE 8000
 

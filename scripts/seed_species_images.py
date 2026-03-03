@@ -50,8 +50,9 @@ DB_URL = os.environ.get(
     "DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/fishfeed"
 )
 S3_ENDPOINT = os.environ.get("S3_ENDPOINT_URL", "http://localhost:9000")
-# For local script, use localhost instead of Docker internal hostname
-if "minio:9000" in S3_ENDPOINT:
+# When running locally (outside Docker), rewrite internal hostname to localhost.
+# Inside a container the hostname resolves fine, so skip the rewrite.
+if "minio:9000" in S3_ENDPOINT and not Path("/.dockerenv").exists():
     S3_ENDPOINT = S3_ENDPOINT.replace("minio:9000", "localhost:9000")
 S3_ACCESS_KEY = os.environ.get("S3_ACCESS_KEY", "minioadmin")
 S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY", "minioadmin")
