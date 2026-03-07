@@ -50,6 +50,10 @@ class Fish(Base, TimestampMixin, SoftDeleteMixin):
         String(500),
         nullable=True,
     )
+    notes: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+    )
 
     # Relationships
     aquarium: Mapped[Aquarium] = relationship(

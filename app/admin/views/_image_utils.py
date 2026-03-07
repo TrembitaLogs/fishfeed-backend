@@ -19,7 +19,7 @@ _upload_client: boto3.client | None = None
 def _get_presign_client() -> boto3.client:
     """Return a cached S3 client for presigned URL generation.
 
-    Uses S3_PRESIGNED_ENDPOINT_URL (localhost) so generated URLs are
+    Uses S3_ADMIN_PRESIGNED_ENDPOINT_URL (localhost) so generated URLs are
     accessible from the browser outside Docker.
     """
     global _presign_client  # noqa: PLW0603
@@ -27,7 +27,11 @@ def _get_presign_client() -> boto3.client:
         from app.config import get_settings
 
         settings = get_settings()
-        endpoint_url = settings.S3_PRESIGNED_ENDPOINT_URL or settings.S3_ENDPOINT_URL
+        endpoint_url = (
+            settings.S3_ADMIN_PRESIGNED_ENDPOINT_URL
+            or settings.S3_PRESIGNED_ENDPOINT_URL
+            or settings.S3_ENDPOINT_URL
+        )
         _presign_client = boto3.client(
             "s3",
             endpoint_url=endpoint_url,

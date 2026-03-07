@@ -14,7 +14,7 @@ import logging
 import sys
 from pathlib import Path
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -124,13 +124,15 @@ async def upsert_species_batch(
         )
 
     # PostgreSQL upsert (INSERT ... ON CONFLICT DO UPDATE)
+    # For image_url: only overwrite if the new value is not null (COALESCE),
+    # so seed_species_images.py values are preserved.
     stmt = insert(Species).values(values)
     stmt = stmt.on_conflict_do_update(
         index_elements=["id"],
         set_={
             "common_name": stmt.excluded.common_name,
             "scientific_name": stmt.excluded.scientific_name,
-            "image_url": stmt.excluded.image_url,
+            "image_url": func.coalesce(stmt.excluded.image_url, Species.image_url),
             "food_types": stmt.excluded.food_types,
             "feeding_frequency": stmt.excluded.feeding_frequency,
             "portion_hint": stmt.excluded.portion_hint,

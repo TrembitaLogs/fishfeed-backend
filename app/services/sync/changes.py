@@ -22,6 +22,26 @@ from .utils import _entity_to_dict, _group_changes_by_entity_type, resolve_confl
 
 logger = structlog.get_logger(__name__)
 
+VALID_WATER_TYPES = {"freshwater", "saltwater", "brackish"}
+
+
+def _validate_water_type(value: str | None) -> str | None:
+    """Validate and normalize water_type value.
+
+    Args:
+        value: Water type string or None.
+
+    Returns:
+        Validated water type, falling back to 'freshwater' if invalid.
+    """
+    if value is None:
+        return None
+    if value in VALID_WATER_TYPES:
+        return value
+    logger.warning(f"Invalid water_type '{value}', falling back to 'freshwater'")
+    return "freshwater"
+
+
 # Entity-type-specific regex patterns for photo_key validation.
 # Prevents injection and cross-type key substitution through sync payload.
 _PHOTO_KEY_PATTERNS: dict[str, re.Pattern[str]] = {
@@ -102,6 +122,14 @@ async def _apply_aquarium_change(
                         entity_type="aquarium",
                         entity_id=str(change.entity_id),
                     )
+            if "water_type" in change.data:
+                existing.water_type = _validate_water_type(change.data["water_type"])
+            if "capacity" in change.data:
+                cap = change.data["capacity"]
+                if cap is not None and (not isinstance(cap, (int, float)) or cap <= 0):
+                    logger.warning(f"Invalid capacity '{cap}', skipping")
+                else:
+                    existing.capacity = cap
             logger.debug(f"CREATE->UPDATE aquarium {change.entity_id}: client wins")
         else:
             # Create new aquarium
@@ -114,11 +142,19 @@ async def _apply_aquarium_change(
                     entity_id=str(change.entity_id),
                 )
                 photo_key = None
+            # Validate capacity: skip negative/zero values
+            capacity = change.data.get("capacity")
+            if capacity is not None and (not isinstance(capacity, (int, float)) or capacity <= 0):
+                logger.warning(f"Invalid capacity '{capacity}' on create, skipping")
+                capacity = None
+
             aquarium = Aquarium(
                 id=change.entity_id,
                 owner_id=user_id,
                 name=change.data.get("name", "Unnamed Aquarium"),
                 photo_key=photo_key,
+                water_type=_validate_water_type(change.data.get("water_type")),
+                capacity=capacity,
             )
             db.add(aquarium)
             # Also add owner as member
@@ -168,6 +204,14 @@ async def _apply_aquarium_change(
                     entity_type="aquarium",
                     entity_id=str(change.entity_id),
                 )
+        if "water_type" in change.data:
+            existing.water_type = _validate_water_type(change.data["water_type"])
+        if "capacity" in change.data:
+            cap = change.data["capacity"]
+            if cap is not None and (not isinstance(cap, (int, float)) or cap <= 0):
+                logger.warning(f"Invalid capacity '{cap}', skipping")
+            else:
+                existing.capacity = cap
         logger.debug(f"Updated aquarium {change.entity_id}")
 
     elif change.operation == "delete":
@@ -203,6 +247,7 @@ async def _apply_fish_change(
     db: AsyncSession,
     user_id: UUID,
     change: ChangeItem,
+    accessible_aquarium_ids: set[UUID] | None = None,
 ) -> ConflictItem | None:
     """Apply a single fish change.
 
@@ -210,6 +255,7 @@ async def _apply_fish_change(
         db: Database session.
         user_id: User ID applying the change.
         change: Change item to apply.
+        accessible_aquarium_ids: Set of aquarium IDs accessible to user (for move validation).
 
     Returns:
         ConflictItem if conflict detected, None otherwise.
@@ -240,6 +286,9 @@ async def _apply_fish_change(
                 existing.custom_name = change.data["custom_name"]
             if "species_id" in change.data:
                 existing.species_id = change.data["species_id"]
+            if "notes" in change.data:
+                notes = change.data["notes"]
+                existing.notes = notes[:500] if notes else notes
             if "photo_key" in change.data:
                 new_key = change.data["photo_key"]
                 if _validate_photo_key(new_key, "fish"):
@@ -270,6 +319,8 @@ async def _apply_fish_change(
                 )
                 photo_key = None
 
+            notes = change.data.get("notes")
+
             fish = Fish(
                 id=change.entity_id,
                 aquarium_id=aquarium_id,
@@ -278,6 +329,7 @@ async def _apply_fish_change(
                 custom_name=change.data.get("custom_name"),
                 added_via=change.data.get("added_via", "sync"),
                 photo_key=photo_key,
+                notes=notes[:500] if notes else notes,
             )
             db.add(fish)
             logger.debug(f"Created fish {change.entity_id}")
@@ -305,14 +357,45 @@ async def _apply_fish_change(
             )
 
         # Client wins - apply update
-        if "quantity" in change.data:
-            existing.quantity = change.data["quantity"]
-        if "custom_name" in change.data:
-            existing.custom_name = change.data["custom_name"]
-        if "species_id" in change.data:
-            existing.species_id = change.data["species_id"]
-        if "photo_key" in change.data:
-            new_key = change.data["photo_key"]
+        data = change.data
+        if "quantity" in data:
+            existing.quantity = data["quantity"]
+        if "custom_name" in data:
+            existing.custom_name = data["custom_name"]
+        if "species_id" in data:
+            existing.species_id = data["species_id"]
+        if "notes" in data:
+            notes = data["notes"]
+            existing.notes = notes[:500] if notes else notes
+        if "aquarium_id" in data:
+            new_aquarium_id = UUID(str(data["aquarium_id"])) if data["aquarium_id"] else None
+            if new_aquarium_id and new_aquarium_id != existing.aquarium_id:
+                # Validate target aquarium exists, not deleted, and user has access
+                target_stmt = select(Aquarium).where(Aquarium.id == new_aquarium_id)
+                target_result = await db.execute(target_stmt)
+                target_aquarium = target_result.scalar_one_or_none()
+                ids_to_check = accessible_aquarium_ids or set()
+                if (
+                    target_aquarium is not None
+                    and target_aquarium.deleted_at is None
+                    and new_aquarium_id in ids_to_check
+                ):
+                    existing.aquarium_id = new_aquarium_id
+                    # Atomically update all fish's feeding schedules to new aquarium
+                    await db.execute(
+                        update(FeedingSchedule)
+                        .where(FeedingSchedule.fish_id == existing.id)
+                        .values(aquarium_id=new_aquarium_id)
+                    )
+                else:
+                    logger.warning(
+                        "fish_move_skipped",
+                        fish_id=str(change.entity_id),
+                        target_aquarium_id=str(new_aquarium_id),
+                        reason="target aquarium not found, deleted, or not accessible",
+                    )
+        if "photo_key" in data:
+            new_key = data["photo_key"]
             if _validate_photo_key(new_key, "fish"):
                 if existing.photo_key and existing.photo_key != new_key:
                     await register_orphaned(db, existing.photo_key, "fish")
@@ -1009,10 +1092,17 @@ async def apply_changes(
         if conflict:
             conflicts.append(conflict)
 
+    # Fetch accessible aquarium IDs for fish move validation
+    accessible_aquarium_ids: set[UUID] | None = None
+    if grouped["fish"]:
+        from .validation import _get_user_aquarium_ids
+
+        accessible_aquarium_ids = await _get_user_aquarium_ids(db, user_id)
+
     # Process fish changes and collect affected aquarium IDs
     affected_aquarium_ids: set[UUID] = set()
     for change in grouped["fish"]:
-        conflict = await _apply_fish_change(db, user_id, change)
+        conflict = await _apply_fish_change(db, user_id, change, accessible_aquarium_ids)
         if conflict:
             conflicts.append(conflict)
         else:

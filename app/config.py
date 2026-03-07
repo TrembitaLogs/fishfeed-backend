@@ -99,8 +99,11 @@ class Settings(BaseSettings):
     S3_REGION: str = "eu-central"
     S3_RETENTION_DAYS: int = 30
     # Separate endpoint for presigned URLs, accessible outside Docker network.
-    # Dev: http://localhost:9000 (MinIO port mapped to host). Prod: None (uses S3_ENDPOINT_URL).
+    # Dev: http://10.0.2.2:9000 (for Android emulator). Prod: None (uses S3_ENDPOINT_URL).
     S3_PRESIGNED_ENDPOINT_URL: str | None = None
+    # Presigned URL endpoint for admin panel (browser on host machine).
+    # Dev: http://localhost:9000. Falls back to S3_PRESIGNED_ENDPOINT_URL if not set.
+    S3_ADMIN_PRESIGNED_ENDPOINT_URL: str | None = None
 
     # FCM (Firebase Cloud Messaging)
     FCM_PROJECT_ID: str | None = None

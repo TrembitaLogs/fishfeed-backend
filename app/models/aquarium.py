@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy import DateTime, ForeignKey, Numeric, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -35,6 +35,15 @@ class Aquarium(Base, TimestampMixin, SoftDeleteMixin):
     )
     photo_key: Mapped[str | None] = mapped_column(
         String(500),
+        nullable=True,
+    )
+    water_type: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+        server_default="freshwater",
+    )
+    capacity: Mapped[float | None] = mapped_column(
+        Numeric(8, 2),
         nullable=True,
     )
 
