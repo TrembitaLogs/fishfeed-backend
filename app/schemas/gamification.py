@@ -26,8 +26,10 @@ class AchievementType(StrEnum):
     PERFECT_WEEK = "perfect_week"
     EARLY_BIRD = "early_bird"
     NIGHT_OWL = "night_owl"
+    FEEDING_50 = "feeding_50"
     FEEDING_100 = "feeding_100"
     FEEDING_500 = "feeding_500"
+    FEEDING_1000 = "feeding_1000"
 
     # Fish achievements
     FIRST_FISH = "first_fish"

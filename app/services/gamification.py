@@ -87,6 +87,11 @@ ACHIEVEMENT_DEFINITIONS: list[AchievementDefinition] = [
         check_condition=lambda stats: stats.has_night_owl_feeding,
     ),
     AchievementDefinition(
+        achievement_type=AchievementType.FEEDING_50,
+        description="Complete 50 feedings",
+        check_condition=lambda stats: stats.total_feedings >= 50,
+    ),
+    AchievementDefinition(
         achievement_type=AchievementType.FEEDING_100,
         description="Complete 100 feedings",
         check_condition=lambda stats: stats.total_feedings >= 100,
@@ -95,6 +100,11 @@ ACHIEVEMENT_DEFINITIONS: list[AchievementDefinition] = [
         achievement_type=AchievementType.FEEDING_500,
         description="Complete 500 feedings",
         check_condition=lambda stats: stats.total_feedings >= 500,
+    ),
+    AchievementDefinition(
+        achievement_type=AchievementType.FEEDING_1000,
+        description="Complete 1000 feedings",
+        check_condition=lambda stats: stats.total_feedings >= 1000,
     ),
     # Fish achievements
     AchievementDefinition(

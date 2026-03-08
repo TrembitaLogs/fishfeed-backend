@@ -28,8 +28,10 @@ class TestAchievementType:
             "perfect_week",
             "early_bird",
             "night_owl",
+            "feeding_50",
             "feeding_100",
             "feeding_500",
+            "feeding_1000",
             "first_fish",
             "fish_collector_10",
             "fish_collector_50",
@@ -44,7 +46,7 @@ class TestAchievementType:
         ]
 
         actual_types = [t.value for t in AchievementType]
-        assert len(actual_types) == 20
+        assert len(actual_types) == 22
         for expected in expected_types:
             assert expected in actual_types
 
