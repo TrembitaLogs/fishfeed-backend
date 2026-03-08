@@ -11,7 +11,6 @@ from sqlalchemy.orm import selectinload
 from app.models.aquarium import Aquarium, AquariumMember
 from app.models.fish import Fish
 from app.schemas.aquarium import AquariumCreate, AquariumUpdate
-from app.services.gamification import check_achievements
 
 logger = structlog.get_logger(__name__)
 
@@ -130,12 +129,6 @@ async def create_aquarium(
     await db.refresh(aquarium)
 
     logger.info(f"Created aquarium '{aquarium.id}' for user '{user_id}'")
-
-    # Check achievements for user
-    try:
-        await check_achievements(db, user_id)
-    except Exception as e:
-        logger.error(f"Failed to check achievements after creating aquarium: {e}")
 
     return aquarium
 

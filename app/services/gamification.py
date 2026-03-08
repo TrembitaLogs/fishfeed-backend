@@ -72,6 +72,11 @@ ACHIEVEMENT_DEFINITIONS: list[AchievementDefinition] = [
         check_condition=lambda stats: stats.best_streak >= 100,
     ),
     AchievementDefinition(
+        achievement_type=AchievementType.STREAK_365,
+        description="Maintain a 365-day feeding streak",
+        check_condition=lambda stats: stats.best_streak >= 365,
+    ),
+    AchievementDefinition(
         achievement_type=AchievementType.PERFECT_WEEK,
         description="Feed your fish every day for a week",
         check_condition=lambda stats: stats.best_streak >= 7,
@@ -126,6 +131,11 @@ ACHIEVEMENT_DEFINITIONS: list[AchievementDefinition] = [
         achievement_type=AchievementType.SPECIES_EXPLORER_5,
         description="Own 5 different species",
         check_condition=lambda stats: stats.unique_species_count >= 5,
+    ),
+    AchievementDefinition(
+        achievement_type=AchievementType.SPECIES_EXPLORER_10,
+        description="Own 10 different species",
+        check_condition=lambda stats: stats.unique_species_count >= 10,
     ),
     AchievementDefinition(
         achievement_type=AchievementType.SPECIES_EXPLORER_20,

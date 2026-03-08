@@ -128,32 +128,6 @@ class TestGetAchievements:
 
 
 @pytest.mark.asyncio(loop_scope="session")
-class TestUseStreakFreeze:
-    """Tests for POST /users/me/streak/freeze endpoint."""
-
-    async def test_use_freeze_returns_400_when_no_freeze_available(
-        self, client: AsyncClient
-    ):
-        """Test that freeze endpoint returns 400 when no freeze available."""
-        tokens = await register_and_login(client, "freeze_none@example.com")
-        access_token = tokens["access_token"]
-
-        # New users start with 0 freeze days
-        response = await client.post(
-            "/api/v1/users/me/streak/freeze",
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-
-        assert response.status_code == 400
-        assert "no freeze" in response.json()["detail"].lower()
-
-    async def test_use_freeze_requires_auth(self, client: AsyncClient):
-        """Test that freeze endpoint requires authentication."""
-        response = await client.post("/api/v1/users/me/streak/freeze")
-        assert response.status_code == 401
-
-
-@pytest.mark.asyncio(loop_scope="session")
 class TestShareAchievement:
     """Tests for POST /achievements/{achievement_id}/share endpoint."""
 

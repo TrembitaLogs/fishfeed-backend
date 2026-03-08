@@ -5,7 +5,6 @@ This module provides scheduled jobs for:
 - Re-engagement notifications for inactive users (daily)
 - Subscription expiry checks
 - Analytics cleanup
-- Stale streak reset (daily at 02:00 UTC)
 - Image cleanup: orphaned images garbage collection (daily at 04:00 UTC)
 - S3 reconciliation: find unreferenced S3 objects (weekly Sunday at 05:00 UTC)
 
@@ -25,7 +24,7 @@ import asyncio
 import logging
 import signal
 from collections.abc import Awaitable, Callable
-from datetime import UTC, date, timedelta
+from datetime import UTC
 from typing import Any
 
 import structlog
@@ -34,16 +33,13 @@ from apscheduler.datastores.sqlalchemy import SQLAlchemyDataStore
 from apscheduler.eventbrokers.asyncpg import AsyncpgEventBroker
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy import select
 
 from app.config import get_settings
-from app.database import async_session_maker, engine
+from app.database import engine
 from app.jobs.analytics_cleanup import analytics_cleanup_job
 from app.jobs.image_cleanup import image_cleanup_job, s3_reconciliation_job
 from app.jobs.notification_jobs import re_engagement_job, weekly_summary_job
 from app.jobs.subscription_jobs import check_expired_subscriptions_job
-from app.models.gamification import Streak
-from app.services.notification import NotificationService
 
 logger = structlog.get_logger(__name__)
 settings = get_settings()
@@ -57,70 +53,8 @@ JOB_WEEKLY_SUMMARY = "weekly_summary"
 JOB_RE_ENGAGEMENT = "re_engagement"
 JOB_CHECK_EXPIRED_SUBSCRIPTIONS = "check_expired_subscriptions"
 JOB_ANALYTICS_CLEANUP = "analytics_cleanup"
-JOB_RESET_STALE_STREAKS = "reset_stale_streaks"
 JOB_IMAGE_CLEANUP = "image_cleanup"
 JOB_S3_RECONCILIATION = "s3_reconciliation"
-
-
-async def reset_stale_streaks_job() -> int:
-    """Reset streaks for users who missed feeding and have no freeze days.
-
-    Finds users whose last_feed_date is older than yesterday, have a positive
-    current_streak, and no freeze days available. Resets their streak to 0
-    and sends a push notification about the lost streak.
-
-    Returns:
-        Number of streaks reset.
-    """
-    logger.info("Starting reset_stale_streaks_job")
-
-    yesterday = date.today() - timedelta(days=1)
-
-    async with async_session_maker() as db:
-        stmt = select(Streak).where(
-            Streak.last_feed_date < yesterday,
-            Streak.current_streak > 0,
-            Streak.freeze_available <= 0,
-        )
-        result = await db.execute(stmt)
-        stale_streaks = list(result.scalars().all())
-
-        if not stale_streaks:
-            logger.info("No stale streaks found")
-            return 0
-
-        affected: list[tuple] = []
-        for streak in stale_streaks:
-            lost_streak = streak.current_streak
-            affected.append((streak.user_id, lost_streak))
-            streak.current_streak = 0
-
-        await db.commit()
-
-        notification_service = NotificationService(db)
-        for user_id, lost_streak in affected:
-            try:
-                await notification_service.send_push(
-                    user_id=user_id,
-                    title="Streak lost",
-                    body=(
-                        f"Your {lost_streak}-day streak has been reset. "
-                        "Feed your fish to start again!"
-                    ),
-                    data={
-                        "type": "streak_lost",
-                        "lost_streak": str(lost_streak),
-                    },
-                    notification_type="streak_lost",
-                )
-            except Exception as e:
-                logger.error(
-                    f"Failed to send streak lost notification to user {user_id}: {e}"
-                )
-
-        await db.commit()
-        logger.info(f"Reset {len(affected)} stale streaks")
-        return len(affected)
 
 
 def get_scheduler() -> AsyncScheduler | None:
@@ -223,16 +157,7 @@ async def start_scheduler() -> AsyncScheduler:
         f"(daily at {settings.ANALYTICS_CLEANUP_HOUR:02d}:{settings.ANALYTICS_CLEANUP_MINUTE:02d} UTC)"
     )
 
-    # Job 5: Reset stale streaks (daily at 02:00 UTC)
-    await _scheduler.add_schedule(
-        reset_stale_streaks_job,
-        CronTrigger(hour=2, minute=0, timezone=UTC),
-        id=JOB_RESET_STALE_STREAKS,
-        conflict_policy=ConflictPolicy.replace,
-    )
-    logger.info(f"Added job '{JOB_RESET_STALE_STREAKS}' (daily at 02:00 UTC)")
-
-    # Job 6: Image cleanup - delete orphaned images older than 7 days (daily at 04:00 UTC)
+    # Job 5: Image cleanup - delete orphaned images older than 7 days (daily at 04:00 UTC)
     await _scheduler.add_schedule(
         image_cleanup_job,
         CronTrigger(hour=4, minute=0, timezone=UTC),
@@ -241,7 +166,7 @@ async def start_scheduler() -> AsyncScheduler:
     )
     logger.info(f"Added job '{JOB_IMAGE_CLEANUP}' (daily at 04:00 UTC)")
 
-    # Job 7: S3 reconciliation - find unreferenced objects (weekly Sunday at 05:00 UTC)
+    # Job 6: S3 reconciliation - find unreferenced objects (weekly Sunday at 05:00 UTC)
     await _scheduler.add_schedule(
         s3_reconciliation_job,
         CronTrigger(day_of_week="sun", hour=5, minute=0, timezone=UTC),
@@ -287,8 +212,7 @@ async def run_once(job_name: str | None = None) -> None:
         job_name: Optional specific job to run. If None, runs all jobs.
                   Valid values: 'weekly_summary', 're_engagement',
                                'check_subscriptions', 'analytics_cleanup',
-                               'reset_stale_streaks', 'image_cleanup',
-                               's3_reconciliation'
+                               'image_cleanup', 's3_reconciliation'
     """
     logger.info(f"Running jobs once (job_name={job_name})")
 
@@ -298,7 +222,6 @@ async def run_once(job_name: str | None = None) -> None:
         "re_engagement": ("re_engagement", re_engagement_job),
         "check_subscriptions": ("check_expired_subscriptions", check_expired_subscriptions_job),
         "analytics_cleanup": ("analytics_cleanup", analytics_cleanup_job),
-        "reset_stale_streaks": ("reset_stale_streaks", reset_stale_streaks_job),
         "image_cleanup": ("image_cleanup", image_cleanup_job),
         "s3_reconciliation": ("s3_reconciliation", s3_reconciliation_job),
     }
@@ -364,7 +287,6 @@ def main() -> None:
             "re_engagement",
             "check_subscriptions",
             "analytics_cleanup",
-            "reset_stale_streaks",
             "image_cleanup",
             "s3_reconciliation",
         ],

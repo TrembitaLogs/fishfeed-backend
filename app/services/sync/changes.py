@@ -863,10 +863,11 @@ async def _apply_achievement_change(
     user_id: UUID,
     change: ChangeItem,
 ) -> ConflictItem | None:
-    """Apply a single achievement change.
+    """Apply a single achievement change from mobile client.
 
-    Achievements are typically created server-side when unlocked.
-    Client can report achievement unlocks for offline scenarios.
+    Mobile is the source of truth for achievements. Backend just stores them.
+    Lookup is by (user_id, achievement_type) to ensure idempotency regardless
+    of the entity_id format mobile sends.
 
     Args:
         db: Database session.
@@ -876,17 +877,23 @@ async def _apply_achievement_change(
     Returns:
         ConflictItem if conflict detected, None otherwise.
     """
-    stmt = select(Achievement).where(Achievement.id == change.entity_id)
+    achievement_type = change.data.get("achievement_type", "unknown")
+
+    # Look up by (user_id, achievement_type) for idempotency
+    stmt = select(Achievement).where(
+        and_(
+            Achievement.user_id == user_id,
+            Achievement.achievement_type == achievement_type,
+        )
+    )
     result = await db.execute(stmt)
     existing = result.scalar_one_or_none()
 
     if change.operation == "create":
         if existing is not None:
-            # Achievement already exists - no conflict, just skip
-            logger.debug(f"Achievement {change.entity_id} already exists, skipping")
+            logger.debug(f"Achievement {achievement_type} already exists for user {user_id}, skipping")
             return None
 
-        # Create new achievement
         unlocked_at = None
         if "unlocked_at" in change.data and change.data["unlocked_at"]:
             ua = change.data["unlocked_at"]
@@ -896,20 +903,19 @@ async def _apply_achievement_change(
                 unlocked_at = ua
 
         achievement = Achievement(
-            id=change.entity_id,
+            id=uuid4(),
             user_id=user_id,
-            achievement_type=change.data.get("achievement_type", "unknown"),
+            achievement_type=achievement_type,
             unlocked_at=unlocked_at or datetime.now(UTC),
         )
         db.add(achievement)
-        logger.debug(f"Created achievement {change.entity_id}")
+        logger.debug(f"Created achievement {achievement_type} for user {user_id}")
 
     elif change.operation == "update":
         if existing is None:
-            logger.debug(f"UPDATE skipped for non-existent achievement {change.entity_id}")
+            logger.debug(f"UPDATE skipped for non-existent achievement {achievement_type}")
             return None
 
-        # Achievements are mostly immutable, only shared_at can be updated
         if "shared_at" in change.data:
             sa = change.data["shared_at"]
             if sa:
@@ -919,11 +925,10 @@ async def _apply_achievement_change(
                     existing.shared_at = sa
             else:
                 existing.shared_at = None
-        logger.debug(f"Updated achievement {change.entity_id}")
+        logger.debug(f"Updated achievement {achievement_type} for user {user_id}")
 
-    # Delete operation not supported for achievements
     elif change.operation == "delete":
-        logger.debug(f"DELETE not supported for achievements, ignoring {change.entity_id}")
+        logger.debug("DELETE not supported for achievements, ignoring")
 
     return None
 

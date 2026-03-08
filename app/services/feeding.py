@@ -15,7 +15,6 @@ from app.models.feeding import FeedingLog, FeedingSchedule
 from app.models.fish import Fish
 from app.schemas.feeding import FeedingLogCreate, ScheduleCreate, ScheduleUpdate
 from app.services.aquarium import check_access
-from app.services.gamification import check_achievements, update_streak
 
 logger = structlog.get_logger(__name__)
 
@@ -384,12 +383,6 @@ async def create_feeding_log(
 
     # Post-create side effects for 'fed' action
     if data.action.value == "fed":
-        try:
-            await update_streak(db, user_id)
-            await check_achievements(db, user_id)
-        except Exception as e:
-            logger.error(f"Failed to update streak/achievements for user '{user_id}': {e}")
-
         try:
             await family_feeding_trigger(db, log.id, user_id)
         except Exception as e:

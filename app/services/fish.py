@@ -11,8 +11,7 @@ from sqlalchemy.orm import selectinload
 from app.models.fish import Fish
 from app.models.species import Species
 from app.schemas.fish import FishCreate, FishUpdate
-from app.services.aquarium import check_access, get_aquarium
-from app.services.gamification import check_achievements
+from app.services.aquarium import check_access
 
 logger = structlog.get_logger(__name__)
 
@@ -92,13 +91,6 @@ async def add_fish(
         f"Added fish '{fish.id}' (species: {data.species_id}, via: {data.added_via}) "
         f"to aquarium '{aquarium_id}' by user '{user_id}'"
     )
-
-    # Check achievements for aquarium owner
-    try:
-        aquarium = await get_aquarium(db, aquarium_id, user_id)
-        await check_achievements(db, aquarium.owner_id)
-    except Exception as e:
-        logger.error(f"Failed to check achievements after adding fish: {e}")
 
     return fish
 

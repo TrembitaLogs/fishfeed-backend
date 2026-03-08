@@ -25,6 +25,7 @@ class TestAchievementType:
             "streak_7",
             "streak_30",
             "streak_100",
+            "streak_365",
             "perfect_week",
             "early_bird",
             "night_owl",
@@ -36,6 +37,7 @@ class TestAchievementType:
             "fish_collector_10",
             "fish_collector_50",
             "species_explorer_5",
+            "species_explorer_10",
             "species_explorer_20",
             "first_aquarium",
             "aquarium_collector_3",
@@ -46,7 +48,7 @@ class TestAchievementType:
         ]
 
         actual_types = [t.value for t in AchievementType]
-        assert len(actual_types) == 22
+        assert len(actual_types) == 24
         for expected in expected_types:
             assert expected in actual_types
 

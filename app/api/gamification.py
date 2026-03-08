@@ -15,13 +15,10 @@ from app.schemas.gamification import (
     UserStatsResponse,
 )
 from app.services.gamification import (
-    StreakNotFoundError,
     get_achievement_by_id,
     get_achievements,
-    get_or_create_streak,
     get_user_stats,
     share_achievement,
-    use_freeze,
 )
 
 router = APIRouter(tags=["Gamification"])
@@ -102,50 +99,6 @@ async def get_user_achievements(
         )
         for a in sorted_achievements
     ]
-
-
-@router.post(
-    "/users/me/streak/freeze",
-    response_model=StreakResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Use streak freeze",
-    responses={
-        200: {"description": "Freeze used successfully"},
-        400: {"description": "No freeze days available"},
-        401: {"description": "Not authenticated"},
-    },
-)
-async def use_streak_freeze(
-    db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: CurrentActiveUser,
-) -> StreakResponse:
-    """Use a freeze day to preserve the current streak.
-
-    Decrements the available freeze count by 1. Returns 400 if no freeze days
-    are available or if user has no streak to freeze.
-    """
-    try:
-        success = await use_freeze(db, current_user.id)
-    except StreakNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No freeze days available",
-        ) from None
-
-    if not success:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No freeze days available",
-        )
-
-    streak = await get_or_create_streak(db, current_user.id)
-
-    return StreakResponse(
-        current_streak=streak.current_streak,
-        best_streak=streak.best_streak,
-        freeze_available=streak.freeze_available,
-        last_feed_date=streak.last_feed_date,
-    )
 
 
 @router.post(

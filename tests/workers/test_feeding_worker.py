@@ -1,7 +1,7 @@
 """Tests for feeding worker background jobs."""
 
 import uuid
-from datetime import date, timedelta
+from datetime import date
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -48,222 +48,6 @@ async def create_streak(
     return streak
 
 
-# reset_stale_streaks_job tests
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_reset_stale_streaks_resets_old_streaks(async_session: AsyncSession):
-    """Test that stale streaks are reset to 0 when no freeze is available."""
-    from app.workers.feeding_worker import reset_stale_streaks_job
-
-    user = await create_test_user(async_session)
-    two_days_ago = date.today() - timedelta(days=2)
-    streak = await create_streak(
-        async_session,
-        user.id,
-        current_streak=7,
-        last_feed_date=two_days_ago,
-        freeze_available=0,
-    )
-
-    class MockSessionContext:
-        async def __aenter__(self):
-            return async_session
-
-        async def __aexit__(self, *args):
-            pass
-
-    with (
-        patch(
-            "app.workers.feeding_worker.async_session_maker"
-        ) as mock_session_maker,
-        patch(
-            "app.workers.feeding_worker.NotificationService"
-        ) as mock_notification_cls,
-    ):
-        mock_session_maker.return_value = MockSessionContext()
-        mock_notification = MagicMock()
-        mock_notification.send_push = AsyncMock(return_value=True)
-        mock_notification_cls.return_value = mock_notification
-
-        count = await reset_stale_streaks_job()
-
-    assert count == 1
-
-    await async_session.refresh(streak)
-    assert streak.current_streak == 0
-    # best_streak should remain unchanged
-    assert streak.best_streak == 10
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_reset_stale_streaks_skips_users_with_freeze(async_session: AsyncSession):
-    """Test that users with freeze days available are not reset."""
-    from app.workers.feeding_worker import reset_stale_streaks_job
-
-    user = await create_test_user(async_session)
-    two_days_ago = date.today() - timedelta(days=2)
-    streak = await create_streak(
-        async_session,
-        user.id,
-        current_streak=5,
-        last_feed_date=two_days_ago,
-        freeze_available=1,
-    )
-
-    class MockSessionContext:
-        async def __aenter__(self):
-            return async_session
-
-        async def __aexit__(self, *args):
-            pass
-
-    with patch(
-        "app.workers.feeding_worker.async_session_maker"
-    ) as mock_session_maker:
-        mock_session_maker.return_value = MockSessionContext()
-
-        count = await reset_stale_streaks_job()
-
-    assert count == 0
-
-    await async_session.refresh(streak)
-    assert streak.current_streak == 5
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_reset_stale_streaks_skips_recent_feeds(async_session: AsyncSession):
-    """Test that users who fed yesterday are not reset."""
-    from app.workers.feeding_worker import reset_stale_streaks_job
-
-    user = await create_test_user(async_session)
-    yesterday = date.today() - timedelta(days=1)
-    streak = await create_streak(
-        async_session,
-        user.id,
-        current_streak=3,
-        last_feed_date=yesterday,
-        freeze_available=0,
-    )
-
-    class MockSessionContext:
-        async def __aenter__(self):
-            return async_session
-
-        async def __aexit__(self, *args):
-            pass
-
-    with patch(
-        "app.workers.feeding_worker.async_session_maker"
-    ) as mock_session_maker:
-        mock_session_maker.return_value = MockSessionContext()
-
-        count = await reset_stale_streaks_job()
-
-    assert count == 0
-
-    await async_session.refresh(streak)
-    assert streak.current_streak == 3
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_reset_stale_streaks_skips_already_zero(async_session: AsyncSession):
-    """Test that users with current_streak=0 are not processed."""
-    from app.workers.feeding_worker import reset_stale_streaks_job
-
-    user = await create_test_user(async_session)
-    old_date = date.today() - timedelta(days=10)
-    await create_streak(
-        async_session,
-        user.id,
-        current_streak=0,
-        last_feed_date=old_date,
-        freeze_available=0,
-    )
-
-    class MockSessionContext:
-        async def __aenter__(self):
-            return async_session
-
-        async def __aexit__(self, *args):
-            pass
-
-    with patch(
-        "app.workers.feeding_worker.async_session_maker"
-    ) as mock_session_maker:
-        mock_session_maker.return_value = MockSessionContext()
-
-        count = await reset_stale_streaks_job()
-
-    assert count == 0
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_reset_stale_streaks_sends_notification(async_session: AsyncSession):
-    """Test that push notification is sent when streak is reset."""
-    from app.workers.feeding_worker import reset_stale_streaks_job
-
-    user = await create_test_user(async_session)
-    two_days_ago = date.today() - timedelta(days=2)
-    await create_streak(
-        async_session,
-        user.id,
-        current_streak=12,
-        last_feed_date=two_days_ago,
-        freeze_available=0,
-    )
-
-    class MockSessionContext:
-        async def __aenter__(self):
-            return async_session
-
-        async def __aexit__(self, *args):
-            pass
-
-    with (
-        patch(
-            "app.workers.feeding_worker.async_session_maker"
-        ) as mock_session_maker,
-        patch(
-            "app.workers.feeding_worker.NotificationService"
-        ) as mock_notification_cls,
-    ):
-        mock_session_maker.return_value = MockSessionContext()
-        mock_notification = MagicMock()
-        mock_notification.send_push = AsyncMock(return_value=True)
-        mock_notification_cls.return_value = mock_notification
-
-        await reset_stale_streaks_job()
-
-    mock_notification.send_push.assert_called_once()
-    call_kwargs = mock_notification.send_push.call_args[1]
-    assert call_kwargs["user_id"] == user.id
-    assert "12" in call_kwargs["body"]
-    assert call_kwargs["notification_type"] == "streak_lost"
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_reset_stale_streaks_no_stale(async_session: AsyncSession):
-    """Test that job returns 0 when no stale streaks exist."""
-    from app.workers.feeding_worker import reset_stale_streaks_job
-
-    class MockSessionContext:
-        async def __aenter__(self):
-            return async_session
-
-        async def __aexit__(self, *args):
-            pass
-
-    with patch(
-        "app.workers.feeding_worker.async_session_maker"
-    ) as mock_session_maker:
-        mock_session_maker.return_value = MockSessionContext()
-
-        count = await reset_stale_streaks_job()
-
-    assert count == 0
-
-
 # run_once tests
 
 
@@ -276,13 +60,12 @@ async def test_run_once_runs_all_jobs():
         patch("app.workers.feeding_worker.weekly_summary_job", new_callable=AsyncMock, return_value=0),
         patch("app.workers.feeding_worker.re_engagement_job", new_callable=AsyncMock, return_value=0),
         patch("app.workers.feeding_worker.check_expired_subscriptions_job", new_callable=AsyncMock, return_value=0),
-        patch("app.workers.feeding_worker.analytics_cleanup_job", new_callable=AsyncMock, return_value=0),
-        patch("app.workers.feeding_worker.reset_stale_streaks_job", new_callable=AsyncMock, return_value=0) as mock_reset,
+        patch("app.workers.feeding_worker.analytics_cleanup_job", new_callable=AsyncMock, return_value=0) as mock_analytics,
         patch("app.workers.feeding_worker.image_cleanup_job", new_callable=AsyncMock, return_value={}),
         patch("app.workers.feeding_worker.s3_reconciliation_job", new_callable=AsyncMock, return_value={}),
     ):
         await run_once()
-        mock_reset.assert_called_once()
+        mock_analytics.assert_called_once()
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -292,10 +75,10 @@ async def test_run_once_runs_specific_job():
 
     with (
         patch("app.workers.feeding_worker.weekly_summary_job", new_callable=AsyncMock, return_value=0) as mock_weekly,
-        patch("app.workers.feeding_worker.reset_stale_streaks_job", new_callable=AsyncMock, return_value=0) as mock_reset,
+        patch("app.workers.feeding_worker.analytics_cleanup_job", new_callable=AsyncMock, return_value=0) as mock_analytics,
     ):
-        await run_once(job_name="reset_stale_streaks")
-        mock_reset.assert_called_once()
+        await run_once(job_name="analytics_cleanup")
+        mock_analytics.assert_called_once()
         mock_weekly.assert_not_called()
 
 
@@ -369,7 +152,7 @@ async def test_run_once_unknown_job():
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_start_scheduler_registers_all_jobs():
-    """Test that start_scheduler registers all expected jobs including reset_stale_streaks."""
+    """Test that start_scheduler registers all expected jobs."""
     from app.workers import feeding_worker
 
     original_scheduler = feeding_worker._scheduler
@@ -394,17 +177,17 @@ async def test_start_scheduler_registers_all_jobs():
         ):
             await feeding_worker.start_scheduler()
 
-            # Should have 7 jobs registered
-            assert mock_scheduler.add_schedule.call_count == 7
+            # Should have 6 jobs registered
+            assert mock_scheduler.add_schedule.call_count == 6
 
             # Verify all expected jobs are registered
             job_ids = [
                 call.kwargs["id"]
                 for call in mock_scheduler.add_schedule.call_args_list
             ]
-            assert "reset_stale_streaks" in job_ids
             assert "image_cleanup" in job_ids
             assert "s3_reconciliation" in job_ids
+            assert "reset_stale_streaks" not in job_ids
 
             mock_scheduler.start_in_background.assert_called_once()
     finally:

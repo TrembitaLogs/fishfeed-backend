@@ -23,6 +23,7 @@ class AchievementType(StrEnum):
     STREAK_7 = "streak_7"
     STREAK_30 = "streak_30"
     STREAK_100 = "streak_100"
+    STREAK_365 = "streak_365"
     PERFECT_WEEK = "perfect_week"
     EARLY_BIRD = "early_bird"
     NIGHT_OWL = "night_owl"
@@ -36,6 +37,7 @@ class AchievementType(StrEnum):
     FISH_COLLECTOR_10 = "fish_collector_10"
     FISH_COLLECTOR_50 = "fish_collector_50"
     SPECIES_EXPLORER_5 = "species_explorer_5"
+    SPECIES_EXPLORER_10 = "species_explorer_10"
     SPECIES_EXPLORER_20 = "species_explorer_20"
 
     # Aquarium achievements
