@@ -95,6 +95,10 @@ def _entity_to_dict(
             "deleted_at": entity.deleted_at.isoformat() if entity.deleted_at else None,
         }
     elif isinstance(entity, FeedingLog):
+        # Include acted_by_user_name for family mode display
+        acted_by_user_name: str | None = None
+        if hasattr(entity, "acted_by_user") and entity.acted_by_user is not None:
+            acted_by_user_name = entity.acted_by_user.nickname
         result = {
             "id": str(entity.id),
             "schedule_id": str(entity.schedule_id),
@@ -104,6 +108,7 @@ def _entity_to_dict(
             "action": entity.action,
             "acted_at": entity.acted_at.isoformat() if entity.acted_at else None,
             "acted_by_user_id": str(entity.acted_by_user_id),
+            "acted_by_user_name": acted_by_user_name,
             "device_id": str(entity.device_id),
             "notes": entity.notes,
             "created_at": entity.created_at.isoformat() if entity.created_at else None,

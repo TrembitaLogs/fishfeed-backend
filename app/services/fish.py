@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload
 from app.models.fish import Fish
 from app.models.species import Species
 from app.schemas.fish import FishCreate, FishUpdate
-from app.services.aquarium import check_access
+from app.services.aquarium import AquariumOwnerRequiredError, check_access
 
 logger = structlog.get_logger(__name__)
 
@@ -61,8 +61,10 @@ async def add_fish(
         AquariumAccessDeniedError: If user doesn't have access.
         SpeciesNotFoundError: If species_id doesn't exist.
     """
-    # Check access to aquarium (owner or member)
-    await check_access(db, aquarium_id, user_id)
+    # Only aquarium owner can add fish
+    aquarium, role = await check_access(db, aquarium_id, user_id)
+    if role != "owner":
+        raise AquariumOwnerRequiredError(aquarium_id)
 
     # Validate species exists
     species_stmt = select(Species).where(Species.id == data.species_id)
@@ -173,6 +175,8 @@ async def update_fish(
 ) -> Fish:
     """Update a fish. Partial update of quantity and custom_name.
 
+    Only aquarium owner can update fish.
+
     Args:
         db: Database session.
         fish_id: Fish ID.
@@ -185,9 +189,15 @@ async def update_fish(
     Raises:
         FishNotFoundError: If fish not found or deleted.
         AquariumAccessDeniedError: If user doesn't have access.
+        AquariumOwnerRequiredError: If user is not the owner.
     """
     # Get fish with access check
     fish = await get_fish(db, fish_id, user_id)
+
+    # Only owner can update fish
+    _, role = await check_access(db, fish.aquarium_id, user_id)
+    if role != "owner":
+        raise AquariumOwnerRequiredError(fish.aquarium_id)
 
     # Apply partial update
     update_data = data.model_dump(exclude_unset=True)
@@ -214,6 +224,8 @@ async def remove_fish(
 ) -> None:
     """Soft delete a fish and regenerate feeding schedule.
 
+    Only aquarium owner can delete fish.
+
     Args:
         db: Database session.
         fish_id: Fish ID.
@@ -222,9 +234,15 @@ async def remove_fish(
     Raises:
         FishNotFoundError: If fish not found or already deleted.
         AquariumAccessDeniedError: If user doesn't have access.
+        AquariumOwnerRequiredError: If user is not the owner.
     """
     # Get fish with access check
     fish = await get_fish(db, fish_id, user_id)
+
+    # Only owner can delete fish
+    _, role = await check_access(db, fish.aquarium_id, user_id)
+    if role != "owner":
+        raise AquariumOwnerRequiredError(fish.aquarium_id)
     # Soft delete the fish
     fish.deleted_at = datetime.now(UTC)
     await db.flush()

@@ -105,6 +105,16 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(releases_router)
 
+# Well-known endpoints (App Links / Universal Links)
+from app.api.well_known import router as well_known_router  # noqa: E402
+
+app.include_router(well_known_router)
+
+# Web endpoints (deep link landing pages)
+from app.api.web import router as web_router  # noqa: E402
+
+app.include_router(web_router)
+
 # All API routes under /api/v1
 api_v1 = APIRouter(prefix="/api/v1")
 api_v1.include_router(auth_router)

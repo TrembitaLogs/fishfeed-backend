@@ -7,6 +7,7 @@ from uuid import UUID
 import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from app.models.aquarium import Aquarium
 from app.models.feeding import FeedingLog, FeedingSchedule
@@ -162,7 +163,12 @@ async def get_server_state(
             fish_data.append(_entity_to_dict(fish))
 
     # Query feeding logs (FeedingLog has no soft-delete; use created_at for delta)
-    log_stmt = select(FeedingLog).where(FeedingLog.aquarium_id.in_(user_aquarium_ids))
+    # Eager-load acted_by_user so we can include nickname in the response
+    log_stmt = (
+        select(FeedingLog)
+        .options(joinedload(FeedingLog.acted_by_user))
+        .where(FeedingLog.aquarium_id.in_(user_aquarium_ids))
+    )
 
     if since is not None:
         # Delta sync: get logs created after 'since'

@@ -26,14 +26,14 @@ class TestFamilyMemberResponse:
         response = FamilyMemberResponse(
             user_id=user_id,
             nickname="John",
-            avatar_key="avatars/550e8400-e29b-41d4-a716-446655440000/a1b2c3d4.webp",
+            avatar_url="https://example.com/avatars/550e8400-e29b-41d4-a716-446655440000/a1b2c3d4.webp",
             role="owner",
             joined_at=joined,
         )
 
         assert response.user_id == user_id
         assert response.nickname == "John"
-        assert response.avatar_key == "avatars/550e8400-e29b-41d4-a716-446655440000/a1b2c3d4.webp"
+        assert response.avatar_url == "https://example.com/avatars/550e8400-e29b-41d4-a716-446655440000/a1b2c3d4.webp"
         assert response.role == "owner"
         assert response.joined_at == joined
 
@@ -68,14 +68,14 @@ class TestFamilyMemberResponse:
         )
         assert response.nickname is None
 
-    def test_optional_avatar_key(self):
-        """Test that avatar_key is optional."""
+    def test_optional_avatar_url(self):
+        """Test that avatar_url is optional."""
         response = FamilyMemberResponse(
             user_id=uuid4(),
             role="member",
             joined_at=datetime.now(UTC),
         )
-        assert response.avatar_key is None
+        assert response.avatar_url is None
 
     def test_from_attributes(self):
         """Test FamilyMemberResponse can be created from ORM-like object."""
@@ -84,7 +84,7 @@ class TestFamilyMemberResponse:
             def __init__(self):
                 self.user_id = uuid4()
                 self.nickname = "TestUser"
-                self.avatar_key = None
+                self.avatar_url = None
                 self.role = "member"
                 self.joined_at = datetime.now(UTC)
 
@@ -101,23 +101,27 @@ class TestInviteResponse:
 
     def test_valid_invite(self):
         """Test valid invite response."""
+        invite_id = uuid4()
         expires = datetime.now(UTC)
 
         response = InviteResponse(
+            id=invite_id,
             invite_code="ABC12345",
-            invite_link="fishfeed://invite/ABC12345",
+            invite_link="https://api.fishfeed.club/join/ABC12345",
             expires_at=expires,
         )
 
+        assert response.id == invite_id
         assert response.invite_code == "ABC12345"
-        assert response.invite_link == "fishfeed://invite/ABC12345"
+        assert response.invite_link == "https://api.fishfeed.club/join/ABC12345"
         assert response.expires_at == expires
 
     def test_invite_code_exactly_8_chars(self):
         """Test that invite_code must be exactly 8 characters."""
         response = InviteResponse(
+            id=uuid4(),
             invite_code="12345678",
-            invite_link="fishfeed://invite/12345678",
+            invite_link="https://api.fishfeed.club/join/12345678",
             expires_at=datetime.now(UTC),
         )
         assert len(response.invite_code) == 8
@@ -126,8 +130,9 @@ class TestInviteResponse:
         """Test that invite_code shorter than 8 characters is rejected."""
         with pytest.raises(ValidationError) as exc_info:
             InviteResponse(
+                id=uuid4(),
                 invite_code="ABC123",
-                invite_link="fishfeed://invite/ABC123",
+                invite_link="https://api.fishfeed.club/join/ABC123",
                 expires_at=datetime.now(UTC),
             )
 
@@ -140,8 +145,9 @@ class TestInviteResponse:
         """Test that invite_code longer than 8 characters is rejected."""
         with pytest.raises(ValidationError) as exc_info:
             InviteResponse(
+                id=uuid4(),
                 invite_code="ABC123456789",
-                invite_link="fishfeed://invite/ABC123456789",
+                invite_link="https://api.fishfeed.club/join/ABC123456789",
                 expires_at=datetime.now(UTC),
             )
 
@@ -156,12 +162,14 @@ class TestCreateInviteResponse:
 
     def test_valid_create_invite(self):
         """Test valid create invite response."""
+        invite_id = uuid4()
         aquarium_id = uuid4()
         expires = datetime.now(UTC)
 
         response = CreateInviteResponse(
+            id=invite_id,
             invite_code="ABCD1234",
-            invite_link="fishfeed://invite/ABCD1234",
+            invite_link="https://api.fishfeed.club/join/ABCD1234",
             expires_at=expires,
             aquarium_id=aquarium_id,
         )
@@ -173,8 +181,9 @@ class TestCreateInviteResponse:
         """Test that CreateInviteResponse inherits InviteResponse validation."""
         with pytest.raises(ValidationError) as exc_info:
             CreateInviteResponse(
+                id=uuid4(),
                 invite_code="SHORT",
-                invite_link="fishfeed://invite/SHORT",
+                invite_link="https://api.fishfeed.club/join/SHORT",
                 expires_at=datetime.now(UTC),
                 aquarium_id=uuid4(),
             )

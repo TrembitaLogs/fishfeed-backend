@@ -11,7 +11,7 @@ from app.models.fish import Fish
 from app.models.species import Species
 from app.models.user import User
 from app.schemas.fish import FishCreate, FishUpdate
-from app.services.aquarium import AquariumAccessDeniedError
+from app.services.aquarium import AquariumAccessDeniedError, AquariumOwnerRequiredError
 from app.services.fish import (
     FishNotFoundError,
     SpeciesNotFoundError,
@@ -188,8 +188,8 @@ async def test_add_fish_raises_403_for_non_member(async_session: AsyncSession):
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_add_fish_allows_member_access(async_session: AsyncSession):
-    """Test that add_fish allows members to add fish."""
+async def test_add_fish_rejects_member_access(async_session: AsyncSession):
+    """Test that add_fish rejects members (only owner can add fish)."""
     await cleanup_fish_data(async_session)
     try:
         owner = await create_test_user(async_session, "owner@example.com")
@@ -208,9 +208,8 @@ async def test_add_fish_allows_member_access(async_session: AsyncSession):
 
         data = FishCreate(species_id=species.id)
 
-        fish = await add_fish(async_session, aquarium.id, member_user.id, data)
-
-        assert fish.id is not None
+        with pytest.raises(AquariumOwnerRequiredError):
+            await add_fish(async_session, aquarium.id, member_user.id, data)
     finally:
         await cleanup_fish_data(async_session)
 

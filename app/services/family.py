@@ -11,13 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models.aquarium import Aquarium, AquariumMember, FamilyInvite
 from app.models.user import User
-from app.schemas.family import FamilyMemberResponse, InviteResponse
+from app.schemas.family import FamilyMemberResponse, InviteDetailResponse, InviteResponse
 from app.services.aquarium import (
     AquariumNotFoundError,
     AquariumOwnerRequiredError,
     check_access,
 )
 from app.services.gamification import check_achievements
+from app.services.image_service import generate_presigned_url
 
 logger = structlog.get_logger(__name__)
 
@@ -237,16 +238,29 @@ async def get_family_members(
     result = await db.execute(stmt)
     rows = result.all()
 
-    members = [
-        FamilyMemberResponse(
-            user_id=row.user_id,
-            nickname=row.nickname,
-            avatar_key=row.avatar_key,
-            role=row.role,
-            joined_at=row.joined_at,
+    # Resolve avatar_key → presigned URL for members that have avatars
+    members = []
+    for row in rows:
+        avatar_url = None
+        if row.avatar_key:
+            try:
+                avatar_url = await generate_presigned_url(row.avatar_key)
+            except Exception:
+                logger.warning(
+                    "failed_to_generate_avatar_url",
+                    user_id=str(row.user_id),
+                    avatar_key=row.avatar_key,
+                )
+
+        members.append(
+            FamilyMemberResponse(
+                user_id=row.user_id,
+                nickname=row.nickname,
+                avatar_url=avatar_url,
+                role=row.role,
+                joined_at=row.joined_at,
+            )
         )
-        for row in rows
-    ]
 
     logger.debug(f"Retrieved {len(members)} family members for aquarium '{aquarium_id}'")
     return members
@@ -307,6 +321,7 @@ async def create_invite(
     )
 
     return InviteResponse(
+        id=invite.id,
         invite_code=invite_code,
         invite_link=invite_link,
         expires_at=expires_at,
@@ -428,26 +443,27 @@ async def remove_member(
 ) -> None:
     """Remove a member from an aquarium.
 
-    Only the owner can remove members.
-    Owner cannot remove themselves.
+    Owner can remove any member. Members can remove themselves (leave).
+    Owner cannot be removed.
 
     Args:
         db: Database session.
         aquarium_id: Aquarium ID.
         member_id: User ID of the member to remove.
-        requesting_user_id: User ID making the request (must be owner).
+        requesting_user_id: User ID making the request (owner or self).
 
     Raises:
         AquariumNotFoundError: If aquarium not found.
         AquariumAccessDeniedError: If requesting user doesn't have access.
-        AquariumOwnerRequiredError: If requesting user is not owner.
+        AquariumOwnerRequiredError: If non-owner tries to remove another member.
         CannotRemoveOwnerError: If trying to remove the owner.
         MemberNotFoundError: If member is not found in the aquarium.
     """
-    # Check access and verify owner
+    # Check access
     aquarium, role = await check_access(db, aquarium_id, requesting_user_id)
 
-    if role != "owner":
+    # Non-owners can only remove themselves
+    if role != "owner" and member_id != requesting_user_id:
         raise AquariumOwnerRequiredError(aquarium_id)
 
     # Cannot remove owner
@@ -474,4 +490,101 @@ async def remove_member(
     logger.info(
         f"Owner '{requesting_user_id}' removed member '{member_id}' "
         f"from aquarium '{aquarium_id}'"
+    )
+
+
+async def get_invites(
+    db: AsyncSession,
+    aquarium_id: UUID,
+    user_id: UUID,
+) -> list[InviteDetailResponse]:
+    """Get active (unused, not expired) invites for an aquarium.
+
+    Only the owner can list invites.
+
+    Args:
+        db: Database session.
+        aquarium_id: Aquarium ID.
+        user_id: User ID (must be owner).
+
+    Returns:
+        List of active invites.
+
+    Raises:
+        AquariumNotFoundError: If aquarium not found.
+        AquariumOwnerRequiredError: If user is not owner.
+    """
+    aquarium, role = await check_access(db, aquarium_id, user_id)
+
+    if role != "owner":
+        raise AquariumOwnerRequiredError(aquarium_id)
+
+    now = datetime.now(UTC)
+    stmt = (
+        select(FamilyInvite)
+        .where(
+            FamilyInvite.aquarium_id == aquarium_id,
+            FamilyInvite.used_by.is_(None),
+            FamilyInvite.expires_at > now,
+        )
+        .order_by(FamilyInvite.created_at.desc())
+    )
+
+    result = await db.execute(stmt)
+    invites = result.scalars().all()
+
+    return [
+        InviteDetailResponse(
+            id=invite.id,
+            invite_code=invite.invite_code,
+            invite_link=_build_invite_link(invite.invite_code),
+            created_at=invite.created_at,
+            expires_at=invite.expires_at,
+        )
+        for invite in invites
+    ]
+
+
+async def cancel_invite(
+    db: AsyncSession,
+    aquarium_id: UUID,
+    invite_id: UUID,
+    user_id: UUID,
+) -> None:
+    """Cancel (delete) an invite.
+
+    Only the owner can cancel invites.
+
+    Args:
+        db: Database session.
+        aquarium_id: Aquarium ID.
+        invite_id: Invite ID.
+        user_id: User ID (must be owner).
+
+    Raises:
+        AquariumNotFoundError: If aquarium not found.
+        AquariumOwnerRequiredError: If user is not owner.
+        InviteNotFoundError: If invite not found.
+    """
+    aquarium, role = await check_access(db, aquarium_id, user_id)
+
+    if role != "owner":
+        raise AquariumOwnerRequiredError(aquarium_id)
+
+    stmt = select(FamilyInvite).where(
+        FamilyInvite.id == invite_id,
+        FamilyInvite.aquarium_id == aquarium_id,
+    )
+    result = await db.execute(stmt)
+    invite = result.scalar_one_or_none()
+
+    if invite is None:
+        raise InviteNotFoundError(str(invite_id))
+
+    await db.delete(invite)
+    await db.flush()
+
+    logger.info(
+        f"Owner '{user_id}' cancelled invite '{invite.invite_code}' "
+        f"for aquarium '{aquarium_id}'"
     )

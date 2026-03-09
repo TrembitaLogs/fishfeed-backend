@@ -46,7 +46,16 @@ class Settings(BaseSettings):
     APPLE_CLIENT_ID: str | None = None
 
     # Family Mode
-    INVITE_BASE_URL: str = "fishfeed://invite"
+    INVITE_BASE_URL: str = "https://api.fishfeed.club/join"
+
+    # App Links / Universal Links verification
+    APP_LINK_FINGERPRINTS: list[str] = [
+        # Release keystore
+        "92:C9:AF:3C:24:8B:D3:C8:1C:DE:B6:42:9B:BF:E4:CC:F5:9C:C5:02:6E:0A:A3:8F:ED:F4:87:B6:A2:C0:36:78",
+        # Debug keystore
+        "ED:E2:29:5D:7B:1F:30:8D:32:02:E0:6C:98:37:64:A8:66:45:5F:A5:A9:F4:15:26:DB:D8:8A:7C:25:6D:D7:4E",
+    ]
+    APPLE_TEAM_ID: str = ""
 
     # AI Image Processing
     MAX_IMAGE_SIZE_MB: int = 10

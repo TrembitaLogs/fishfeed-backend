@@ -12,6 +12,7 @@ from app.schemas.aquarium import AquariumResponse
 from app.schemas.family import (
     AcceptInviteRequest,
     FamilyListResponse,
+    InviteListResponse,
     InviteResponse,
 )
 from app.services.aquarium import (
@@ -27,8 +28,10 @@ from app.services.family import (
     MemberLimitExceededError,
     MemberNotFoundError,
     accept_invite,
+    cancel_invite,
     create_invite,
     get_family_members,
+    get_invites,
     remove_member,
 )
 
@@ -102,6 +105,70 @@ async def create_family_invite(
             status_code=e.status_code,
             detail=f"Member limit exceeded ({e.current}/{e.limit}). Upgrade to Premium for more members.",
         ) from None
+
+
+@router.get(
+    "/aquariums/{aquarium_id}/family/invites",
+    response_model=InviteListResponse,
+    summary="List active invites",
+    responses={
+        200: {"description": "List of active invites"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Owner required"},
+        404: {"description": "Aquarium not found"},
+    },
+)
+async def list_family_invites(
+    aquarium_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: CurrentActiveUser,
+) -> InviteListResponse:
+    """Get all active (unused, not expired) invites for an aquarium.
+
+    Only owner can list invites.
+    """
+    try:
+        invites = await get_invites(db, aquarium_id, current_user.id)
+        return InviteListResponse(aquarium_id=aquarium_id, invites=invites)
+    except AquariumNotFoundError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    except AquariumAccessDeniedError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    except AquariumOwnerRequiredError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+
+
+@router.delete(
+    "/aquariums/{aquarium_id}/family/invites/{invite_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Cancel invite",
+    responses={
+        204: {"description": "Invite cancelled"},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Owner required"},
+        404: {"description": "Aquarium or invite not found"},
+    },
+)
+async def cancel_family_invite(
+    aquarium_id: UUID,
+    invite_id: UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: CurrentActiveUser,
+) -> None:
+    """Cancel an active invite.
+
+    Only owner can cancel invites.
+    """
+    try:
+        await cancel_invite(db, aquarium_id, invite_id, current_user.id)
+    except AquariumNotFoundError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    except AquariumAccessDeniedError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    except AquariumOwnerRequiredError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    except InviteNotFoundError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message) from None
 
 
 @router.post(

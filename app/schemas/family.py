@@ -14,7 +14,7 @@ class FamilyMemberResponse(BaseModel):
 
     user_id: UUID
     nickname: str | None = None
-    avatar_key: str | None = None
+    avatar_url: str | None = None
     role: Literal["owner", "member"]
     joined_at: datetime
 
@@ -22,8 +22,19 @@ class FamilyMemberResponse(BaseModel):
 class InviteResponse(BaseModel):
     """Response schema for invite data."""
 
+    id: UUID
     invite_code: str = Field(min_length=8, max_length=8)
     invite_link: str
+    expires_at: datetime
+
+
+class InviteDetailResponse(BaseModel):
+    """Response schema for invite details (used in list)."""
+
+    id: UUID
+    invite_code: str
+    invite_link: str
+    created_at: datetime
     expires_at: datetime
 
 
@@ -54,3 +65,10 @@ class FamilyListResponse(BaseModel):
 
     aquarium_id: UUID
     members: list[FamilyMemberResponse] = Field(default_factory=list)
+
+
+class InviteListResponse(BaseModel):
+    """Response schema for invite list."""
+
+    aquarium_id: UUID
+    invites: list[InviteDetailResponse] = Field(default_factory=list)

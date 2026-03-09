@@ -593,17 +593,75 @@ class TestRemoveMember:
         )
         assert response.status_code == 401
 
-    async def test_member_cannot_remove_others(self, client: AsyncClient):
-        """Test that member cannot remove other members."""
+    async def test_member_can_leave(self, client: AsyncClient):
+        """Test that member can remove themselves (leave aquarium)."""
         email1 = f"remove-owner-{uuid.uuid4()}@example.com"
         email2 = f"remove-member1-{uuid.uuid4()}@example.com"
-        email3 = f"remove-member2-{uuid.uuid4()}@example.com"
+
+        tokens1 = await register_and_login(client, email1)
+        tokens2 = await register_and_login(client, email2)
+
+        # Create aquarium
+        create_response = await client.post(
+            "/api/v1/aquariums",
+            json={"name": "Leave Tank"},
+            headers=auth_headers(tokens1),
+        )
+        aquarium_id = create_response.json()["id"]
+
+        # Add member
+        invite_response = await client.post(
+            f"/api/v1/aquariums/{aquarium_id}/family/invite",
+            headers=auth_headers(tokens1),
+        )
+        invite_code = invite_response.json()["invite_code"]
+        await client.post(
+            "/api/v1/family/accept",
+            json={"invite_code": invite_code},
+            headers=auth_headers(tokens2),
+        )
+
+        # Get member's user_id
+        family_response = await client.get(
+            f"/api/v1/aquariums/{aquarium_id}/family",
+            headers=auth_headers(tokens1),
+        )
+        members = family_response.json()["members"]
+        member_user_id = next(m["user_id"] for m in members if m["role"] == "member")
+
+        # Member removes themselves (leave) - should succeed
+        response = await client.delete(
+            f"/api/v1/aquariums/{aquarium_id}/family/{member_user_id}",
+            headers=auth_headers(tokens2),
+        )
+
+        assert response.status_code == 204
+
+    async def test_member_cannot_remove_others(self, client: AsyncClient, async_engine):
+        """Test that member cannot remove other members."""
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+        email1 = f"remove-owner2-{uuid.uuid4()}@example.com"
+        email2 = f"remove-member2a-{uuid.uuid4()}@example.com"
+        email3 = f"remove-member2b-{uuid.uuid4()}@example.com"
 
         tokens1 = await register_and_login(client, email1)
         tokens2 = await register_and_login(client, email2)
         tokens3 = await register_and_login(client, email3)
 
-        # Create aquarium (as premium to allow 3 members)
+        # Set premium to allow 3 members
+        session_maker = async_sessionmaker(async_engine, class_=AsyncSession)
+        async with session_maker() as session:
+            await session.execute(
+                text(
+                    "UPDATE users SET subscription_status = 'premium' WHERE email = :email"
+                ),
+                {"email": email1},
+            )
+            await session.commit()
+
+        # Create aquarium
         create_response = await client.post(
             "/api/v1/aquariums",
             json={"name": "No Remove Tank"},
@@ -623,17 +681,29 @@ class TestRemoveMember:
             headers=auth_headers(tokens2),
         )
 
+        # Add second member
+        invite_response2 = await client.post(
+            f"/api/v1/aquariums/{aquarium_id}/family/invite",
+            headers=auth_headers(tokens1),
+        )
+        invite_code2 = invite_response2.json()["invite_code"]
+        await client.post(
+            "/api/v1/family/accept",
+            json={"invite_code": invite_code2},
+            headers=auth_headers(tokens3),
+        )
+
         # Get member2's user_id
         family_response = await client.get(
             f"/api/v1/aquariums/{aquarium_id}/family",
             headers=auth_headers(tokens1),
         )
         members = family_response.json()["members"]
-        member1_user_id = next(m["user_id"] for m in members if m["role"] == "member")
+        member_user_ids = [m["user_id"] for m in members if m["role"] == "member"]
 
-        # Member1 tries to remove themselves (not owner) - should fail
+        # Member1 tries to remove member2 - should fail
         response = await client.delete(
-            f"/api/v1/aquariums/{aquarium_id}/family/{member1_user_id}",
+            f"/api/v1/aquariums/{aquarium_id}/family/{member_user_ids[1]}",
             headers=auth_headers(tokens2),
         )
 
