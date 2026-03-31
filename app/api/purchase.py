@@ -3,8 +3,12 @@
 import uuid
 from typing import Annotated
 
+import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from pydantic import ValidationError
 from redis.asyncio import Redis
+from redis.exceptions import RedisError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -27,6 +31,8 @@ from app.services.purchase import (
     restore_purchases,
     verify_webhook_signature,
 )
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/purchases", tags=["purchases"])
 
@@ -85,7 +91,7 @@ async def handle_webhook(
     # Parse webhook event
     try:
         event = WebhookEvent.model_validate_json(body)
-    except Exception as e:
+    except (ValidationError, ValueError) as e:
         # Log invalid payload but return 200 to prevent retries
         await log_webhook_transaction(
             db=db,
@@ -144,8 +150,8 @@ async def handle_webhook(
         # Still return 200 to prevent retries
         return WebhookResponse(success=False, message=e.message)
 
-    except Exception as e:
-        # Log unexpected errors
+    except RedisError as e:
+        logger.error("Redis error during webhook processing", error=str(e), correlation_id=correlation_id)
         await log_webhook_transaction(
             db=db,
             transaction_id=transaction_id,
@@ -154,9 +160,12 @@ async def handle_webhook(
             payload=event.model_dump(mode="json"),
             correlation_id=correlation_id,
             processing_result="error",
-            error_message=str(e),
+            error_message=f"Redis error: {e}",
         )
-        # Return 200 to prevent retries, but indicate failure
+        return WebhookResponse(success=False, message="Internal processing error")
+
+    except SQLAlchemyError as e:
+        logger.error("Database error during webhook processing", error=str(e), correlation_id=correlation_id)
         return WebhookResponse(success=False, message="Internal processing error")
 
     finally:
