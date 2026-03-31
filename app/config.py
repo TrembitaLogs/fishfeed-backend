@@ -170,6 +170,9 @@ class Settings(BaseSettings):
     SUBSCRIPTION_CHECK_INTERVAL_MINUTES: int = 15  # Interval for checking expired subscriptions
     SUBSCRIPTION_BATCH_SIZE: int = 100  # Batch size for processing expired subscriptions
 
+    # Prometheus Metrics
+    METRICS_ENABLED: bool = True  # Expose /metrics endpoint for Prometheus scraping
+
     # Analytics
     ANALYTICS_FORWARD_URL: str | None = None  # PostHog/Amplitude endpoint URL
     ANALYTICS_IP_SALT: str = "fishfeed-analytics-salt"  # Salt for IP hashing

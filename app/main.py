@@ -4,6 +4,8 @@ from contextlib import asynccontextmanager
 import sentry_sdk
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
+from starlette.middleware.sessions import SessionMiddleware
 
 from app.admin.setup import setup_admin
 from app.api import (
@@ -99,6 +101,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(SessionMiddleware, secret_key=settings.SESSION_SECRET_KEY, https_only=_is_production)
+
+# Prometheus request metrics (latency, status codes, throughput)
+if settings.METRICS_ENABLED:
+    Instrumentator(
+        should_group_status_codes=True,
+        should_ignore_untemplated=True,
+        excluded_handlers=["/health", "/metrics"],
+    ).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
 
 # Health and releases are not versioned
