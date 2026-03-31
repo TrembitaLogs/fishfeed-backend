@@ -23,6 +23,9 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/fishfeed"
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 20
+    DB_POOL_RECYCLE: int = 1800
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -44,6 +47,19 @@ class Settings(BaseSettings):
     # OAuth
     GOOGLE_CLIENT_ID: str | None = None
     APPLE_CLIENT_ID: str | None = None
+
+    # Email (SMTP)
+    SMTP_HOST: str | None = None
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str | None = None
+    SMTP_PASSWORD: str | None = None
+    SMTP_USE_TLS: bool = True
+    SMTP_FROM_EMAIL: str = "noreply@fishfeed.club"
+    SMTP_FROM_NAME: str = "FishFeed"
+
+    # Password Reset
+    PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 60
+    PASSWORD_RESET_BASE_URL: str = "https://fishfeed.club/reset-password"
 
     # Family Mode
     INVITE_BASE_URL: str = "https://api.fishfeed.club/join"
@@ -133,6 +149,7 @@ class Settings(BaseSettings):
     # Admin Panel (static credentials for SQLAdmin)
     ADMIN_USERNAME: str = ""
     ADMIN_PASSWORD: str = ""
+    SESSION_SECRET_KEY: str = ""
 
     # Worker settings
     WORKER_ENABLED: bool = True
@@ -170,12 +187,16 @@ class Settings(BaseSettings):
     ANALYTICS_CLEANUP_MINUTE: int = 0  # Minute for daily cleanup job
 
     @model_validator(mode="after")
-    def validate_jwt_secret_key(self) -> Settings:
-        """Ensure JWT_SECRET_KEY is set and has sufficient length."""
+    def validate_secret_keys(self) -> Settings:
+        """Ensure secret keys are set and have sufficient length."""
         if not self.JWT_SECRET_KEY:
             raise ValueError("JWT_SECRET_KEY must be set via environment variable or .env file")
         if len(self.JWT_SECRET_KEY) < 32:
             raise ValueError("JWT_SECRET_KEY must be at least 32 characters long")
+        if not self.SESSION_SECRET_KEY:
+            raise ValueError("SESSION_SECRET_KEY must be set via environment variable or .env file")
+        if len(self.SESSION_SECRET_KEY) < 32:
+            raise ValueError("SESSION_SECRET_KEY must be at least 32 characters long")
         return self
 
 
