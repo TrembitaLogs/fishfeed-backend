@@ -297,13 +297,13 @@ class S3StorageService:
     async def generate_presigned_url(
         self,
         object_key: str,
-        expires_in_seconds: int = 86400,
+        expires_in_seconds: int = 3600,
     ) -> str:
         """Generate a presigned URL for downloading an object.
 
         Args:
             object_key: S3 object key.
-            expires_in_seconds: URL expiration time in seconds (default 24 hours).
+            expires_in_seconds: URL expiration time in seconds (default 1 hour).
 
         Returns:
             Presigned URL string.

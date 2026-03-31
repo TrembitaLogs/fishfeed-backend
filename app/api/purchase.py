@@ -70,8 +70,13 @@ async def handle_webhook(
     # Read raw body for signature verification
     body = await request.body()
 
-    # Validate signature if webhook secret is configured
-    if settings.REVENUECAT_WEBHOOK_SECRET:
+    # Validate webhook signature
+    if not settings.REVENUECAT_WEBHOOK_SECRET:
+        logger.warning(
+            "REVENUECAT_WEBHOOK_SECRET is not configured — webhook signature validation is disabled. "
+            "Set this secret in production to prevent unauthorized webhook calls.",
+        )
+    else:
         if not x_revenuecat_signature:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,

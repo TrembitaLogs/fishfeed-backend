@@ -6,12 +6,14 @@ from sqladmin.authentication import AuthenticationBackend
 from starlette.requests import Request
 
 from app.config import get_settings
+from app.utils.password import verify_password
 
 
 class AdminAuth(AuthenticationBackend):
     """Cookie-based session authentication for the SQLAdmin panel.
 
     Credentials are configured via ADMIN_USERNAME / ADMIN_PASSWORD env vars.
+    ADMIN_PASSWORD must be an argon2id hash (generate with the hash-admin-password script).
     If either is empty, admin login is disabled.
     """
 
@@ -33,7 +35,7 @@ class AdminAuth(AuthenticationBackend):
             return False
 
         username_ok = hmac.compare_digest(str(username), settings.ADMIN_USERNAME)
-        password_ok = hmac.compare_digest(str(password), settings.ADMIN_PASSWORD)
+        password_ok = verify_password(str(password), settings.ADMIN_PASSWORD)
 
         if not username_ok or not password_ok:
             return False
