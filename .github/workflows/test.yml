@@ -1,0 +1,79 @@
+name: Test (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      run-pip-audit:
+        description: Run pip-audit vulnerability scan
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: fishfeed_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/fishfeed_test
+      REDIS_URL: redis://localhost:6379/0
+      JWT_SECRET_KEY: test-secret-key-for-ci-minimum-32-chars
+      SESSION_SECRET_KEY: test-session-secret-for-ci-min-32-chars
+      JWT_ALGORITHM: HS256
+      ENVIRONMENT: test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: |
+            **/pyproject.toml
+            **/uv.lock
+
+      - name: Install Python
+        run: uv python install 3.14
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run pip-audit (dependency vulnerability scan)
+        if: ${{ inputs.run-pip-audit }}
+        run: uv run pip-audit --strict
+
+      - name: Run ruff (lint)
+        run: uv run ruff check . --output-format=github
+
+      - name: Run mypy (type check)
+        run: uv run mypy app/
+
+      - name: Run pytest with coverage
+        run: uv run pytest --cov=app --cov-report=xml --cov-report=term-missing --cov-fail-under=80
