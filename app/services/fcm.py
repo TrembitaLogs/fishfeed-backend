@@ -91,7 +91,7 @@ class FCMClient:
             logger.info("FCM client initialized successfully")
 
         except Exception as e:
-            logger.error(f"Failed to initialize FCM: {e}")
+            logger.error("Failed to initialize FCM", error=str(e))
             raise FCMConfigError(str(e)) from e
 
     @property
@@ -147,27 +147,27 @@ class FCMClient:
         try:
             message = self._build_message(token, title, body, data)
             response = messaging.send(message, dry_run=settings.FCM_DRY_RUN)
-            logger.debug(f"FCM message sent: {response}")
+            logger.debug("FCM message sent", response=response)
             return True, None
 
         except messaging.UnregisteredError:
-            logger.info(f"FCM token unregistered: {token[:20]}...")
+            logger.info("FCM token unregistered", token_prefix=token[:20])
             return False, "UNREGISTERED"
 
         except exceptions.InvalidArgumentError as e:
-            logger.warning(f"FCM invalid argument: {e}")
+            logger.warning("FCM invalid argument", error=str(e))
             return False, "INVALID_ARGUMENT"
 
         except exceptions.UnavailableError as e:
-            logger.error(f"FCM service unavailable: {e}")
+            logger.error("FCM service unavailable", error=str(e))
             raise FCMUnavailableError(str(e)) from e
 
         except exceptions.DeadlineExceededError as e:
-            logger.error(f"FCM request timeout: {e}")
+            logger.error("FCM request timeout", error=str(e))
             raise FCMUnavailableError("Request timeout") from e
 
         except exceptions.FirebaseError as e:
-            logger.error(f"FCM error: {e.code} - {e.message}")
+            logger.error("FCM error", error_code=e.code, error_message=e.message)
             if e.code in ("INTERNAL", "UNAVAILABLE"):
                 raise FCMUnavailableError(e.message) from e
             return False, e.code
@@ -225,17 +225,18 @@ class FCMClient:
                     results.append((False, error_code))
 
             logger.info(
-                f"FCM multicast: {response.success_count} sent, "
-                f"{response.failure_count} failed"
+                "FCM multicast complete",
+                success_count=response.success_count,
+                failure_count=response.failure_count,
             )
             return results
 
         except exceptions.UnavailableError as e:
-            logger.error(f"FCM service unavailable: {e}")
+            logger.error("FCM service unavailable", error=str(e))
             raise FCMUnavailableError(str(e)) from e
 
         except exceptions.FirebaseError as e:
-            logger.error(f"FCM multicast error: {e.code} - {e.message}")
+            logger.error("FCM multicast error", error_code=e.code, error_message=e.message)
             if e.code in ("INTERNAL", "UNAVAILABLE"):
                 raise FCMUnavailableError(e.message) from e
             return [(False, e.code)] * len(tokens)
@@ -286,7 +287,7 @@ async def remove_invalid_tokens(
         )
         result = await db.execute(stmt)
         await db.flush()
-        logger.info(f"Removed {result.rowcount} invalid FCM tokens for user {user_id}")  # type: ignore[attr-defined]
+        logger.info("Removed invalid FCM tokens", removed_count=result.rowcount, user_id=user_id)  # type: ignore[attr-defined]
 
     return tokens_to_remove
 

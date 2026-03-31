@@ -38,7 +38,7 @@ def _validate_water_type(value: str | None) -> str | None:
         return None
     if value in VALID_WATER_TYPES:
         return value
-    logger.warning(f"Invalid water_type '{value}', falling back to 'freshwater'")
+    logger.warning("Invalid water_type, falling back to 'freshwater'", water_type=value)
     return "freshwater"
 
 
@@ -96,7 +96,7 @@ async def _apply_aquarium_change(
             # Entity exists, treat as update with conflict check
             winner = resolve_conflict(existing.updated_at, change.client_updated_at)
             if winner != "client":
-                logger.debug(f"CREATE conflict for aquarium {change.entity_id}: server wins")
+                logger.debug("CREATE conflict for aquarium, server wins", entity_id=change.entity_id)
                 return ConflictItem(
                     entity_type="aquarium",
                     entity_id=change.entity_id,
@@ -127,10 +127,10 @@ async def _apply_aquarium_change(
             if "capacity" in change.data:
                 cap = change.data["capacity"]
                 if cap is not None and (not isinstance(cap, (int, float)) or cap <= 0):
-                    logger.warning(f"Invalid capacity '{cap}', skipping")
+                    logger.warning("Invalid capacity, skipping", capacity=cap)
                 else:
                     existing.capacity = cap
-            logger.debug(f"CREATE->UPDATE aquarium {change.entity_id}: client wins")
+            logger.debug("CREATE->UPDATE aquarium, client wins", entity_id=change.entity_id)
         else:
             # Create new aquarium
             photo_key = change.data.get("photo_key")
@@ -145,7 +145,7 @@ async def _apply_aquarium_change(
             # Validate capacity: skip negative/zero values
             capacity = change.data.get("capacity")
             if capacity is not None and (not isinstance(capacity, (int, float)) or capacity <= 0):
-                logger.warning(f"Invalid capacity '{capacity}' on create, skipping")
+                logger.warning("Invalid capacity on create, skipping", capacity=capacity)
                 capacity = None
 
             aquarium = Aquarium(
@@ -164,20 +164,20 @@ async def _apply_aquarium_change(
                 role="owner",
             )
             db.add(member)
-            logger.debug(f"Created aquarium {change.entity_id}")
+            logger.debug("Created aquarium", entity_id=change.entity_id)
 
     elif change.operation == "update":
         if existing is None:
-            logger.debug(f"UPDATE skipped for non-existent aquarium {change.entity_id}")
+            logger.debug("UPDATE skipped for non-existent aquarium", entity_id=change.entity_id)
             return None
 
         if existing.deleted_at is not None:
-            logger.debug(f"UPDATE skipped for deleted aquarium {change.entity_id}")
+            logger.debug("UPDATE skipped for deleted aquarium", entity_id=change.entity_id)
             return None
 
         winner = resolve_conflict(existing.updated_at, change.client_updated_at)
         if winner != "client":
-            logger.debug(f"UPDATE conflict for aquarium {change.entity_id}: server wins")
+            logger.debug("UPDATE conflict for aquarium, server wins", entity_id=change.entity_id)
             return ConflictItem(
                 entity_type="aquarium",
                 entity_id=change.entity_id,
@@ -209,23 +209,23 @@ async def _apply_aquarium_change(
         if "capacity" in change.data:
             cap = change.data["capacity"]
             if cap is not None and (not isinstance(cap, (int, float)) or cap <= 0):
-                logger.warning(f"Invalid capacity '{cap}', skipping")
+                logger.warning("Invalid capacity, skipping", capacity=cap)
             else:
                 existing.capacity = cap
-        logger.debug(f"Updated aquarium {change.entity_id}")
+        logger.debug("Updated aquarium", entity_id=change.entity_id)
 
     elif change.operation == "delete":
         if existing is None:
-            logger.debug(f"DELETE skipped for non-existent aquarium {change.entity_id}")
+            logger.debug("DELETE skipped for non-existent aquarium", entity_id=change.entity_id)
             return None
 
         if existing.deleted_at is not None:
-            logger.debug(f"DELETE skipped for already deleted aquarium {change.entity_id}")
+            logger.debug("DELETE skipped for already deleted aquarium", entity_id=change.entity_id)
             return None
 
         winner = resolve_conflict(existing.updated_at, change.client_updated_at)
         if winner != "client":
-            logger.debug(f"DELETE conflict for aquarium {change.entity_id}: server wins")
+            logger.debug("DELETE conflict for aquarium, server wins", entity_id=change.entity_id)
             return ConflictItem(
                 entity_type="aquarium",
                 entity_id=change.entity_id,
@@ -238,7 +238,7 @@ async def _apply_aquarium_change(
 
         # Client wins - soft delete
         existing.deleted_at = datetime.now(UTC)
-        logger.debug(f"Soft deleted aquarium {change.entity_id}")
+        logger.debug("Soft deleted aquarium", entity_id=change.entity_id)
 
     return None
 
@@ -269,7 +269,7 @@ async def _apply_fish_change(
             # Entity exists, treat as update with conflict check
             winner = resolve_conflict(existing.updated_at, change.client_updated_at)
             if winner != "client":
-                logger.debug(f"CREATE conflict for fish {change.entity_id}: server wins")
+                logger.debug("CREATE conflict for fish, server wins", entity_id=change.entity_id)
                 return ConflictItem(
                     entity_type="fish",
                     entity_id=change.entity_id,
@@ -302,7 +302,7 @@ async def _apply_fish_change(
                         entity_type="fish",
                         entity_id=str(change.entity_id),
                     )
-            logger.debug(f"CREATE->UPDATE fish {change.entity_id}: client wins")
+            logger.debug("CREATE->UPDATE fish, client wins", entity_id=change.entity_id)
         else:
             # Create new fish
             aquarium_id = change.data.get("aquarium_id")
@@ -332,20 +332,20 @@ async def _apply_fish_change(
                 notes=notes[:500] if notes else notes,
             )
             db.add(fish)
-            logger.debug(f"Created fish {change.entity_id}")
+            logger.debug("Created fish", entity_id=change.entity_id)
 
     elif change.operation == "update":
         if existing is None:
-            logger.debug(f"UPDATE skipped for non-existent fish {change.entity_id}")
+            logger.debug("UPDATE skipped for non-existent fish", entity_id=change.entity_id)
             return None
 
         if existing.deleted_at is not None:
-            logger.debug(f"UPDATE skipped for deleted fish {change.entity_id}")
+            logger.debug("UPDATE skipped for deleted fish", entity_id=change.entity_id)
             return None
 
         winner = resolve_conflict(existing.updated_at, change.client_updated_at)
         if winner != "client":
-            logger.debug(f"UPDATE conflict for fish {change.entity_id}: server wins")
+            logger.debug("UPDATE conflict for fish, server wins", entity_id=change.entity_id)
             return ConflictItem(
                 entity_type="fish",
                 entity_id=change.entity_id,
@@ -407,20 +407,20 @@ async def _apply_fish_change(
                     entity_type="fish",
                     entity_id=str(change.entity_id),
                 )
-        logger.debug(f"Updated fish {change.entity_id}")
+        logger.debug("Updated fish", entity_id=change.entity_id)
 
     elif change.operation == "delete":
         if existing is None:
-            logger.debug(f"DELETE skipped for non-existent fish {change.entity_id}")
+            logger.debug("DELETE skipped for non-existent fish", entity_id=change.entity_id)
             return None
 
         if existing.deleted_at is not None:
-            logger.debug(f"DELETE skipped for already deleted fish {change.entity_id}")
+            logger.debug("DELETE skipped for already deleted fish", entity_id=change.entity_id)
             return None
 
         winner = resolve_conflict(existing.updated_at, change.client_updated_at)
         if winner != "client":
-            logger.debug(f"DELETE conflict for fish {change.entity_id}: server wins")
+            logger.debug("DELETE conflict for fish, server wins", entity_id=change.entity_id)
             return ConflictItem(
                 entity_type="fish",
                 entity_id=change.entity_id,
@@ -442,7 +442,7 @@ async def _apply_fish_change(
             .values(active=False)
         )
         await db.execute(deactivate_stmt)
-        logger.debug(f"Soft deleted fish {change.entity_id} and deactivated its schedules")
+        logger.debug("Soft deleted fish and deactivated its schedules", entity_id=change.entity_id)
 
     return None
 
@@ -487,7 +487,7 @@ async def _apply_feeding_log_change(
 
         if existing is not None:
             # First-write-wins: existing log stays, return conflict
-            logger.debug(f"CREATE conflict for feeding_log {change.entity_id}: already exists")
+            logger.debug("CREATE conflict for feeding_log, already exists", entity_id=change.entity_id)
             server_data = _entity_to_dict(existing)
             server_data["acted_by_user_name"] = await _get_user_nickname(db, existing.acted_by_user_id)
             return ConflictItem(
@@ -558,8 +558,10 @@ async def _apply_feeding_log_change(
             if existing_dup is not None:
                 # First-write-wins: existing log stays
                 logger.info(
-                    f"Duplicate feeding_log for schedule {schedule_id} "
-                    f"at {scheduled_for}: existing {existing_dup.id} wins"
+                    "Duplicate feeding_log, existing wins",
+                    schedule_id=schedule_id,
+                    scheduled_for=scheduled_for,
+                    existing_id=existing_dup.id,
                 )
                 dup_server_data = _entity_to_dict(existing_dup)
                 dup_server_data["acted_by_user_name"] = await _get_user_nickname(db, existing_dup.acted_by_user_id)
@@ -586,11 +588,11 @@ async def _apply_feeding_log_change(
             notes=notes,
         )
         db.add(log)
-        logger.debug(f"Created feeding_log {change.entity_id}")
+        logger.debug("Created feeding_log", entity_id=change.entity_id)
 
     elif change.operation in ("update", "delete"):
         # FeedingLog records are immutable - ignore update/delete
-        logger.debug(f"{change.operation.upper()} ignored for immutable feeding_log {change.entity_id}")
+        logger.debug("Operation ignored for immutable feeding_log", operation=change.operation.upper(), entity_id=change.entity_id)
 
     return None
 
@@ -661,7 +663,7 @@ async def _apply_schedule_change(
             # Entity exists, treat as update with conflict check
             winner = resolve_conflict(existing.updated_at, change.client_updated_at)
             if winner != "client":
-                logger.debug(f"CREATE conflict for schedule {change.entity_id}: server wins")
+                logger.debug("CREATE conflict for schedule, server wins", entity_id=change.entity_id)
                 return ConflictItem(
                     entity_type="schedule",
                     entity_id=change.entity_id,
@@ -673,7 +675,7 @@ async def _apply_schedule_change(
                 )
             # Client wins - update existing
             _apply_schedule_fields(existing, change.data, user_id)
-            logger.debug(f"CREATE->UPDATE schedule {change.entity_id}: client wins")
+            logger.debug("CREATE->UPDATE schedule, client wins", entity_id=change.entity_id)
         else:
             # Create new schedule
             aquarium_id = change.data.get("aquarium_id")
@@ -719,16 +721,16 @@ async def _apply_schedule_change(
                 ),
             )
             db.add(schedule)
-            logger.debug(f"Created schedule {change.entity_id}")
+            logger.debug("Created schedule", entity_id=change.entity_id)
 
     elif change.operation == "update":
         if existing is None:
-            logger.debug(f"UPDATE skipped for non-existent schedule {change.entity_id}")
+            logger.debug("UPDATE skipped for non-existent schedule", entity_id=change.entity_id)
             return None
 
         winner = resolve_conflict(existing.updated_at, change.client_updated_at)
         if winner != "client":
-            logger.debug(f"UPDATE conflict for schedule {change.entity_id}: server wins")
+            logger.debug("UPDATE conflict for schedule, server wins", entity_id=change.entity_id)
             return ConflictItem(
                 entity_type="schedule",
                 entity_id=change.entity_id,
@@ -741,16 +743,16 @@ async def _apply_schedule_change(
 
         # Client wins - apply update
         _apply_schedule_fields(existing, change.data, user_id)
-        logger.debug(f"Updated schedule {change.entity_id}")
+        logger.debug("Updated schedule", entity_id=change.entity_id)
 
     elif change.operation == "delete":
         if existing is None:
-            logger.debug(f"DELETE skipped for non-existent schedule {change.entity_id}")
+            logger.debug("DELETE skipped for non-existent schedule", entity_id=change.entity_id)
             return None
 
         winner = resolve_conflict(existing.updated_at, change.client_updated_at)
         if winner != "client":
-            logger.debug(f"DELETE conflict for schedule {change.entity_id}: server wins")
+            logger.debug("DELETE conflict for schedule, server wins", entity_id=change.entity_id)
             return ConflictItem(
                 entity_type="schedule",
                 entity_id=change.entity_id,
@@ -763,7 +765,7 @@ async def _apply_schedule_change(
 
         # Client wins - hard delete
         await db.delete(existing)
-        logger.debug(f"Hard deleted schedule {change.entity_id}")
+        logger.debug("Hard deleted schedule", entity_id=change.entity_id)
 
     return None
 
@@ -813,12 +815,12 @@ async def _apply_streak_change(
                 last_feed_date=last_feed_date,
             )
             db.add(streak)
-            logger.debug(f"Created streak for user {user_id}")
+            logger.debug("Created streak for user", user_id=user_id)
         else:
             # Check for conflict
             winner = resolve_conflict(existing.updated_at, change.client_updated_at)
             if winner != "client":
-                logger.debug(f"UPDATE conflict for streak {user_id}: server wins")
+                logger.debug("UPDATE conflict for streak, server wins", user_id=user_id)
                 return ConflictItem(
                     entity_type="streak",
                     entity_id=change.entity_id,
@@ -849,11 +851,11 @@ async def _apply_streak_change(
                         existing.last_feed_date = lfd
                 else:
                     existing.last_feed_date = None
-            logger.debug(f"Updated streak for user {user_id}")
+            logger.debug("Updated streak for user", user_id=user_id)
 
     # Delete operation not supported for streaks
     elif change.operation == "delete":
-        logger.debug(f"DELETE not supported for streaks, ignoring {change.entity_id}")
+        logger.debug("DELETE not supported for streaks, ignoring", entity_id=change.entity_id)
 
     return None
 
@@ -891,7 +893,7 @@ async def _apply_achievement_change(
 
     if change.operation == "create":
         if existing is not None:
-            logger.debug(f"Achievement {achievement_type} already exists for user {user_id}, skipping")
+            logger.debug("Achievement already exists for user, skipping", achievement_type=achievement_type, user_id=user_id)
             return None
 
         unlocked_at = None
@@ -909,11 +911,11 @@ async def _apply_achievement_change(
             unlocked_at=unlocked_at or datetime.now(UTC),
         )
         db.add(achievement)
-        logger.debug(f"Created achievement {achievement_type} for user {user_id}")
+        logger.debug("Created achievement for user", achievement_type=achievement_type, user_id=user_id)
 
     elif change.operation == "update":
         if existing is None:
-            logger.debug(f"UPDATE skipped for non-existent achievement {achievement_type}")
+            logger.debug("UPDATE skipped for non-existent achievement", achievement_type=achievement_type)
             return None
 
         if "shared_at" in change.data:
@@ -925,7 +927,7 @@ async def _apply_achievement_change(
                     existing.shared_at = sa
             else:
                 existing.shared_at = None
-        logger.debug(f"Updated achievement {achievement_type} for user {user_id}")
+        logger.debug("Updated achievement for user", achievement_type=achievement_type, user_id=user_id)
 
     elif change.operation == "delete":
         logger.debug("DELETE not supported for achievements, ignoring")
@@ -964,12 +966,12 @@ async def _apply_progress_change(
                 level=change.data.get("level", 1),
             )
             db.add(progress)
-            logger.debug(f"Created progress for user {user_id}")
+            logger.debug("Created progress for user", user_id=user_id)
         else:
             # Check for conflict
             winner = resolve_conflict(existing.updated_at, change.client_updated_at)
             if winner != "client":
-                logger.debug(f"UPDATE conflict for progress {user_id}: server wins")
+                logger.debug("UPDATE conflict for progress, server wins", user_id=user_id)
                 return ConflictItem(
                     entity_type="progress",
                     entity_id=change.entity_id,
@@ -991,11 +993,11 @@ async def _apply_progress_change(
                 if new_level > existing.level:
                     existing.level = new_level
                     existing.last_level_up_at = datetime.now(UTC)
-            logger.debug(f"Updated progress for user {user_id}")
+            logger.debug("Updated progress for user", user_id=user_id)
 
     # Delete operation not supported for progress
     elif change.operation == "delete":
-        logger.debug(f"DELETE not supported for progress, ignoring {change.entity_id}")
+        logger.debug("DELETE not supported for progress, ignoring", entity_id=change.entity_id)
 
     return None
 
@@ -1011,13 +1013,13 @@ async def _apply_user_profile_change(
     existing = result.scalar_one_or_none()
 
     if existing is None:
-        logger.debug(f"User {user_id} not found, skipping profile change")
+        logger.debug("User not found, skipping profile change", user_id=user_id)
         return None
 
     if change.operation in ("create", "update"):
         winner = resolve_conflict(existing.updated_at, change.client_updated_at)
         if winner != "client":
-            logger.debug(f"UPDATE conflict for user_profile {user_id}: server wins")
+            logger.debug("UPDATE conflict for user_profile, server wins", user_id=user_id)
             return ConflictItem(
                 entity_type="user_profile",
                 entity_id=change.entity_id,
@@ -1045,10 +1047,10 @@ async def _apply_user_profile_change(
                 )
         if "settings" in change.data:
             existing.settings = change.data["settings"]
-        logger.debug(f"Updated user_profile for user {user_id}")
+        logger.debug("Updated user_profile for user", user_id=user_id)
 
     elif change.operation == "delete":
-        logger.debug(f"DELETE not supported for user_profile, ignoring {change.entity_id}")
+        logger.debug("DELETE not supported for user_profile, ignoring", entity_id=change.entity_id)
 
     return None
 
@@ -1080,15 +1082,16 @@ async def apply_changes(
     grouped = _group_changes_by_entity_type(changes)
 
     logger.debug(
-        f"Applying changes for user {user_id}: "
-        f"{len(grouped['aquarium'])} aquariums, "
-        f"{len(grouped['fish'])} fish, "
-        f"{len(grouped['feeding_log'])} feeding_logs, "
-        f"{len(grouped['schedule'])} schedules, "
-        f"{len(grouped['streak'])} streaks, "
-        f"{len(grouped['achievement'])} achievements, "
-        f"{len(grouped['progress'])} progress, "
-        f"{len(grouped['user_profile'])} user_profile"
+        "Applying changes for user",
+        user_id=user_id,
+        aquariums=len(grouped["aquarium"]),
+        fish=len(grouped["fish"]),
+        feeding_logs=len(grouped["feeding_log"]),
+        schedules=len(grouped["schedule"]),
+        streaks=len(grouped["streak"]),
+        achievements=len(grouped["achievement"]),
+        progress=len(grouped["progress"]),
+        user_profile=len(grouped["user_profile"]),
     )
 
     # Process aquarium changes
@@ -1167,7 +1170,7 @@ async def apply_changes(
     # Schedule creation is client-initiated (offline-first architecture).
     # _ensure_schedules_for_user() provides fallback for new fish without schedules.
 
-    logger.debug(f"Applied changes with {len(conflicts)} conflicts")
+    logger.debug("Applied changes", conflict_count=len(conflicts))
     return conflicts
 
 
@@ -1231,6 +1234,6 @@ async def _ensure_schedules_for_user(
     for aquarium_id in aquariums_needing_schedule:
         try:
             await feeding_service.generate_schedule(db, aquarium_id, user_id)
-            logger.debug(f"Generated schedules for aquarium {aquarium_id}")
+            logger.debug("Generated schedules for aquarium", aquarium_id=aquarium_id)
         except Exception as e:
-            logger.warning(f"Failed to generate schedules for aquarium {aquarium_id}: {e}")
+            logger.warning("Failed to generate schedules for aquarium", aquarium_id=aquarium_id, error=str(e))

@@ -45,7 +45,7 @@ def load_species_data() -> list[dict]:
     with open(DATA_FILE, encoding="utf-8") as f:
         data = json.load(f)
 
-    logger.info(f"Loaded {len(data)} species from {DATA_FILE}")
+    logger.info("Loaded %d species from %s", len(data), DATA_FILE)
     return data
 
 
@@ -83,7 +83,7 @@ async def clear_existing_species(session: AsyncSession) -> int:
     result = await session.execute(delete(Species))
     count = result.rowcount
     await session.commit()
-    logger.info(f"Cleared {count} existing species records")
+    logger.info("Cleared %d existing species records", count)
     return count
 
 
@@ -193,20 +193,20 @@ async def seed_species(
             stats["valid"] += 1
             valid_species.append(species)
 
-    logger.info(f"Validated {stats['valid']} species, {stats['invalid']} invalid")
+    logger.info("Validated %d species, %d invalid", stats['valid'], stats['invalid'])
 
     if dry_run:
         logger.info("DRY RUN: No database changes will be made")
         popular_count = sum(
             1 for s in valid_species if s.get("metadata", {}).get("is_popular", False)
         )
-        logger.info(f"Would insert/update {stats['valid']} species")
-        logger.info(f"Popular species: {popular_count}")
+        logger.info("Would insert/update %d species", stats['valid'])
+        logger.info("Popular species: %d", popular_count)
 
         # Show sample of species
         logger.info("Sample species (first 5):")
         for species in valid_species[:5]:
-            logger.info(f"  - {species['id']}: {species['common_name']}")
+            logger.info("  - %s: %s", species['id'], species['common_name'])
 
         stats["inserted"] = stats["valid"]
         return stats
@@ -234,10 +234,10 @@ async def seed_species(
                     stats["inserted"] += 1
 
             total_processed += len(batch)
-            logger.info(f"Progress: {total_processed}/{len(valid_species)} species")
+            logger.info("Progress: %d/%d species", total_processed, len(valid_species))
 
     logger.info(
-        f"Seeding complete: {stats['inserted']} inserted, {stats['updated']} updated"
+        "Seeding complete: %d inserted, %d updated", stats['inserted'], stats['updated']
     )
     return stats
 
@@ -290,24 +290,24 @@ async def main() -> int:
 
         logger.info("=" * 60)
         logger.info("Summary:")
-        logger.info(f"  Total in file: {stats['total_in_file']}")
-        logger.info(f"  Valid records: {stats['valid']}")
-        logger.info(f"  Invalid records: {stats['invalid']}")
+        logger.info("  Total in file: %d", stats['total_in_file'])
+        logger.info("  Valid records: %d", stats['valid'])
+        logger.info("  Invalid records: %d", stats['invalid'])
         if stats["cleared"]:
-            logger.info(f"  Cleared: {stats['cleared']}")
-        logger.info(f"  Inserted: {stats['inserted']}")
-        logger.info(f"  Updated: {stats['updated']}")
+            logger.info("  Cleared: %d", stats['cleared'])
+        logger.info("  Inserted: %d", stats['inserted'])
+        logger.info("  Updated: %d", stats['updated'])
         logger.info("=" * 60)
 
         if stats["errors"]:
-            logger.warning(f"Completed with {len(stats['errors'])} validation errors")
+            logger.warning("Completed with %d validation errors", len(stats['errors']))
             return 1
 
         logger.info("Seeding completed successfully!")
         return 0
 
     except Exception as e:
-        logger.exception(f"Seeding failed: {e}")
+        logger.exception("Seeding failed: %s", e)
         return 1
     finally:
         await engine.dispose()

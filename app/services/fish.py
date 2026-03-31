@@ -90,8 +90,12 @@ async def add_fish(
     fish.species = species
 
     logger.info(
-        f"Added fish '{fish.id}' (species: {data.species_id}, via: {data.added_via}) "
-        f"to aquarium '{aquarium_id}' by user '{user_id}'"
+        "Added fish to aquarium",
+        fish_id=fish.id,
+        species_id=data.species_id,
+        added_via=data.added_via,
+        aquarium_id=aquarium_id,
+        user_id=user_id,
     )
 
     return fish
@@ -213,7 +217,7 @@ async def update_fish(
     result = await db.execute(stmt)
     fish = result.scalar_one()
 
-    logger.info(f"Updated fish '{fish_id}' by user '{user_id}'")
+    logger.info("Updated fish", fish_id=fish_id, user_id=user_id)
     return fish
 
 
@@ -247,7 +251,7 @@ async def remove_fish(
     fish.deleted_at = datetime.now(UTC)
     await db.flush()
 
-    logger.info(f"Soft deleted fish '{fish_id}' by user '{user_id}'")
+    logger.info("Soft deleted fish", fish_id=fish_id, user_id=user_id)
 
 
 async def get_fish_by_species(

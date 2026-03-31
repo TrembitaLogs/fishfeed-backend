@@ -136,7 +136,7 @@ async def generate_schedule(
 
             # Skip if schedule already exists for this fish+time combination
             if (fish.id, time_obj) in existing_schedules:
-                logger.debug(f"Skipping existing schedule for fish {fish.id} at {time_str}")
+                logger.debug("Skipping existing schedule", fish_id=fish.id, time=time_str)
                 continue
 
             schedule = FeedingSchedule(
@@ -159,8 +159,10 @@ async def generate_schedule(
             await db.refresh(schedule)
 
     logger.info(
-        f"Generated {len(created_schedules)} new schedules for aquarium"
-        f" '{aquarium_id}' (skipped {len(existing_schedules)} existing)"
+        "Generated new schedules for aquarium",
+        schedule_count=len(created_schedules),
+        aquarium_id=aquarium_id,
+        skipped_count=len(existing_schedules),
     )
     return created_schedules
 
@@ -228,7 +230,7 @@ async def create_schedule(
     await db.flush()
     await db.refresh(schedule)
 
-    logger.info(f"Created schedule '{schedule.id}' for aquarium '{aquarium_id}'")
+    logger.info("Created schedule", schedule_id=schedule.id, aquarium_id=aquarium_id)
     return schedule
 
 
@@ -273,7 +275,7 @@ async def update_schedule(
     await db.flush()
     await db.refresh(schedule)
 
-    logger.info(f"Updated schedule '{schedule_id}'")
+    logger.info("Updated schedule", schedule_id=schedule_id)
     return schedule
 
 
@@ -299,7 +301,7 @@ async def delete_schedule(
     await db.delete(schedule)
     await db.flush()
 
-    logger.info(f"Deleted schedule '{schedule_id}'")
+    logger.info("Deleted schedule", schedule_id=schedule_id)
 
 
 async def get_feeding_logs(
@@ -386,7 +388,7 @@ async def create_feeding_log(
         try:
             await family_feeding_trigger(db, log.id, user_id)
         except Exception as e:
-            logger.error(f"Failed to send family feeding notification: {e}")
+            logger.error("Failed to send family feeding notification", error=str(e))
 
-    logger.info(f"Created feeding log '{log.id}' for aquarium '{aquarium_id}'")
+    logger.info("Created feeding log", log_id=log.id, aquarium_id=aquarium_id)
     return log

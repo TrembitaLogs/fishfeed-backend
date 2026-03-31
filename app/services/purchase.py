@@ -94,7 +94,7 @@ async def _get_user_by_app_user_id(db: AsyncSession, app_user_id: str) -> User |
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
     except ValueError:
-        logger.warning(f"Invalid app_user_id format: {app_user_id}")
+        logger.warning("Invalid app_user_id format", app_user_id=app_user_id)
         return None
 
 
@@ -165,7 +165,7 @@ async def check_idempotency(
 
     if not lock_acquired:
         # Another process is handling this transaction
-        logger.info(f"Webhook {transaction_id} is being processed by another worker")
+        logger.info("Webhook is being processed by another worker", transaction_id=transaction_id)
         return True, None
 
     # Check if transaction exists in database
@@ -178,7 +178,7 @@ async def check_idempotency(
     if existing:
         # Already processed, release lock
         await redis.delete(lock_key)
-        logger.info(f"Webhook {transaction_id} already processed at {existing.processed_at}")
+        logger.info("Webhook already processed", transaction_id=transaction_id, processed_at=existing.processed_at)
         return True, None
 
     return False, lock_key
@@ -232,15 +232,17 @@ async def log_webhook_transaction(
     db.add(transaction)
     await db.flush()
 
-    log_msg = (
-        f"Webhook logged: transaction_id={transaction_id}, "
-        f"event_type={event_type}, user_id={user_id}, "
-        f"result={processing_result}, correlation_id={correlation_id}"
+    log_kwargs = dict(
+        transaction_id=transaction_id,
+        event_type=event_type,
+        user_id=user_id,
+        result=processing_result,
+        correlation_id=correlation_id,
     )
     if processing_result == "error":
-        logger.error(log_msg)
+        logger.error("Webhook logged", **log_kwargs)
     else:
-        logger.info(log_msg)
+        logger.info("Webhook logged", **log_kwargs)
 
     return transaction
 
@@ -275,7 +277,7 @@ async def _clear_downgrade_info(db: AsyncSession, user_id: UUID) -> None:
         # Reset AI scans to premium (unlimited represented as high number)
         user.free_ai_scans_remaining = PREMIUM_USER_LIMITS.ai_scans_per_month
         await db.flush()
-        logger.info(f"Cleared downgrade info for user {user_id}")
+        logger.info("Cleared downgrade info for user", user_id=user_id)
 
 
 async def process_webhook(db: AsyncSession, event: WebhookEvent) -> None:
@@ -299,14 +301,15 @@ async def process_webhook(db: AsyncSession, event: WebhookEvent) -> None:
     app_user_id = event_data.app_user_id
 
     logger.info(
-        f"Processing webhook event: type={event_type}, "
-        f"app_user_id={app_user_id}, "
-        f"transaction_id={event_data.transaction_id}"
+        "Processing webhook event",
+        type=event_type,
+        app_user_id=app_user_id,
+        transaction_id=event_data.transaction_id,
     )
 
     user = await _get_user_by_app_user_id(db, app_user_id)
     if user is None:
-        logger.warning(f"User not found for app_user_id: {app_user_id}")
+        logger.warning("User not found for app_user_id", app_user_id=app_user_id)
         return
 
     # Extract entitlement info
@@ -331,7 +334,7 @@ async def process_webhook(db: AsyncSession, event: WebhookEvent) -> None:
         )
         # Clear any limits exceeded from previous downgrade
         await _clear_downgrade_info(db, user.id)
-        logger.info(f"User {user.id} upgraded to premium via INITIAL_PURCHASE")
+        logger.info("User upgraded to premium via INITIAL_PURCHASE", user_id=user.id)
 
     elif event_type == "RENEWAL":
         await update_subscription_status(
@@ -344,7 +347,7 @@ async def process_webhook(db: AsyncSession, event: WebhookEvent) -> None:
         )
         # Clear any limits exceeded from previous downgrade (in case user resubscribed)
         await _clear_downgrade_info(db, user.id)
-        logger.info(f"User {user.id} subscription renewed until {expires_at}")
+        logger.info("User subscription renewed", user_id=user.id, expires_at=expires_at)
 
     elif event_type == "CANCELLATION":
         # User cancelled but still has access until expires_at
@@ -352,14 +355,14 @@ async def process_webhook(db: AsyncSession, event: WebhookEvent) -> None:
         subscription_settings["will_renew"] = False
         _set_subscription_settings(user, subscription_settings)
         await db.flush()
-        logger.info(f"User {user.id} cancelled subscription, active until {user.subscription_expires_at}")
+        logger.info("User cancelled subscription", user_id=user.id, active_until=user.subscription_expires_at)
 
     elif event_type == "EXPIRATION":
         await revert_to_free(db, user.id)
-        logger.info(f"User {user.id} subscription expired, reverted to free")
+        logger.info("User subscription expired, reverted to free", user_id=user.id)
 
     elif event_type == "BILLING_ISSUE":
-        logger.warning(f"Billing issue for user {user.id}, transaction_id={event_data.transaction_id}")
+        logger.warning("Billing issue for user", user_id=user.id, transaction_id=event_data.transaction_id)
         subscription_settings = _get_subscription_settings(user)
         subscription_settings["billing_issue"] = True
         subscription_settings["billing_issue_at"] = datetime.now(UTC).isoformat()
@@ -371,25 +374,25 @@ async def process_webhook(db: AsyncSession, event: WebhookEvent) -> None:
         subscription_settings["product_id"] = product_id or event_data.product_id
         _set_subscription_settings(user, subscription_settings)
         await db.flush()
-        logger.info(f"User {user.id} changed product to {product_id or event_data.product_id}")
+        logger.info("User changed product", user_id=user.id, product_id=product_id or event_data.product_id)
 
     elif event_type == "UNCANCELLATION":
         subscription_settings = _get_subscription_settings(user)
         subscription_settings["will_renew"] = True
         _set_subscription_settings(user, subscription_settings)
         await db.flush()
-        logger.info(f"User {user.id} uncancelled subscription")
+        logger.info("User uncancelled subscription", user_id=user.id)
 
     elif event_type == "SUBSCRIBER_ALIAS":
         # User alias event - typically for anonymous to identified user transitions
-        logger.info(f"Subscriber alias event for {app_user_id}")
+        logger.info("Subscriber alias event", app_user_id=app_user_id)
 
     elif event_type == "TRANSFER":
         # Transfer event - subscription transferred between users
-        logger.info(f"Transfer event for {app_user_id}")
+        logger.info("Transfer event", app_user_id=app_user_id)
 
     else:
-        logger.warning(f"Unhandled webhook event type: {event_type}")
+        logger.warning("Unhandled webhook event type", event_type=event_type)
 
 
 async def update_subscription_status(
@@ -426,8 +429,11 @@ async def update_subscription_status(
     await db.flush()
 
     logger.info(
-        f"Updated subscription for user {user_id}: "
-        f"status={status}, expires_at={expires_at}, product_id={product_id}"
+        "Updated subscription for user",
+        user_id=user_id,
+        status=status,
+        expires_at=expires_at,
+        product_id=product_id,
     )
 
 
@@ -504,7 +510,7 @@ async def restore_purchases(
                             product_id=product_id,
                             will_renew=not premium_entitlement.get("unsubscribe_detected_at"),
                         )
-                        logger.info(f"Restored premium subscription for user {user_id}")
+                        logger.info("Restored premium subscription for user", user_id=user_id)
 
             elif response.status_code == 400:
                 raise InvalidReceiptError("Receipt validation failed")
@@ -512,14 +518,14 @@ async def restore_purchases(
                 logger.error("RevenueCat API authentication failed")
                 raise RevenueCatAPIError("API authentication failed")
             else:
-                logger.error(f"RevenueCat API error: {response.status_code} - {response.text}")
+                logger.error("RevenueCat API error", status_code=response.status_code, response_text=response.text)
                 raise RevenueCatAPIError(f"API returned status {response.status_code}")
 
     except httpx.TimeoutException:
         logger.error("RevenueCat API timeout")
         raise RevenueCatAPIError("API request timed out") from None
     except httpx.RequestError as e:
-        logger.error(f"RevenueCat API request error: {e}")
+        logger.error("RevenueCat API request error", error=str(e))
         raise RevenueCatAPIError(f"API request failed: {e}") from None
 
     return await get_subscription_status(db, user_id)
@@ -595,4 +601,4 @@ async def revert_to_free(db: AsyncSession, user_id: UUID) -> None:
 
     await db.flush()
 
-    logger.info(f"User {user_id} reverted to free tier")
+    logger.info("User reverted to free tier", user_id=user_id)

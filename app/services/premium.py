@@ -77,10 +77,10 @@ async def is_premium(user: User, redis: Redis | None = None) -> bool:
             cached = await redis.get(cache_key)
             if cached is not None:
                 cached_data = json.loads(cached)
-                logger.debug(f"Premium status cache hit for user {user_id}")
+                logger.debug("Premium status cache hit", user_id=user_id)
                 return bool(cached_data.get("is_premium", False))
         except Exception as e:
-            logger.warning(f"Redis cache read error for premium status: {e}")
+            logger.warning("Redis cache read error for premium status", error=str(e))
 
     # Check subscription status
     is_active = _is_subscription_active(user)
@@ -94,9 +94,9 @@ async def is_premium(user: User, redis: Redis | None = None) -> bool:
                 json.dumps({"is_premium": is_active}),
                 ex=PREMIUM_CACHE_TTL_SECONDS,
             )
-            logger.debug(f"Cached premium status for user {user_id}: {is_active}")
+            logger.debug("Cached premium status", user_id=user_id, is_active=is_active)
         except Exception as e:
-            logger.warning(f"Redis cache write error for premium status: {e}")
+            logger.warning("Redis cache write error for premium status", error=str(e))
 
     return is_active
 
@@ -113,9 +113,9 @@ async def invalidate_premium_cache(user_id: str, redis: Redis) -> None:
     cache_key = f"{PREMIUM_CACHE_KEY_PREFIX}{user_id}"
     try:
         await redis.delete(cache_key)
-        logger.debug(f"Invalidated premium cache for user {user_id}")
+        logger.debug("Invalidated premium cache", user_id=user_id)
     except Exception as e:
-        logger.warning(f"Redis cache invalidation error: {e}")
+        logger.warning("Redis cache invalidation error", error=str(e))
 
 
 def get_user_limits(user: User) -> UserLimits:

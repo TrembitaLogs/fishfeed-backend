@@ -107,8 +107,10 @@ async def anonymize_old_events_job(dry_run: bool = False) -> dict:
     cutoff_date = datetime.now(UTC) - timedelta(days=anonymize_days)
 
     logger.info(
-        f"Starting anonymize_old_events_job (dry_run={dry_run}, "
-        f"cutoff={cutoff_date.date()}, batch_size={batch_size})"
+        "Starting anonymize_old_events_job",
+        dry_run=dry_run,
+        cutoff_date=cutoff_date.date(),
+        batch_size=batch_size,
     )
 
     total_anonymized = 0
@@ -134,7 +136,10 @@ async def anonymize_old_events_job(dry_run: bool = False) -> dict:
             if dry_run:
                 total_anonymized += len(events)
                 logger.info(
-                    f"[DRY-RUN] Would anonymize batch {total_batches}: {len(events)} events"
+                    "Would anonymize batch",
+                    dry_run=True,
+                    batch_number=total_batches,
+                    event_count=len(events),
                 )
                 # In dry-run, we need to mark them somehow to avoid infinite loop
                 # Just break after first batch to show count
@@ -152,8 +157,10 @@ async def anonymize_old_events_job(dry_run: bool = False) -> dict:
             total_anonymized += len(events)
 
             logger.info(
-                f"Anonymized batch {total_batches}: {len(events)} events "
-                f"(total: {total_anonymized})"
+                "Anonymized batch",
+                batch_number=total_batches,
+                event_count=len(events),
+                total_anonymized=total_anonymized,
             )
 
     # Get remaining count for dry-run reporting
@@ -180,7 +187,7 @@ async def anonymize_old_events_job(dry_run: bool = False) -> dict:
         "batches_processed": total_batches,
     }
 
-    logger.info(f"anonymize_old_events_job completed: {stats}")
+    logger.info("anonymize_old_events_job completed", stats=stats)
     return stats
 
 
@@ -201,8 +208,10 @@ async def delete_old_events_job(dry_run: bool = False) -> dict:
     cutoff_date = datetime.now(UTC) - timedelta(days=retention_days)
 
     logger.info(
-        f"Starting delete_old_events_job (dry_run={dry_run}, "
-        f"cutoff={cutoff_date.date()}, batch_size={batch_size})"
+        "Starting delete_old_events_job",
+        dry_run=dry_run,
+        cutoff_date=cutoff_date.date(),
+        batch_size=batch_size,
     )
 
     total_deleted = 0
@@ -219,7 +228,7 @@ async def delete_old_events_job(dry_run: bool = False) -> dict:
         total_count = result.scalar_one()
 
         if dry_run:
-            logger.info(f"[DRY-RUN] Would delete {total_count} events older than {cutoff_date.date()}")
+            logger.info("Would delete old events", dry_run=True, event_count=total_count, cutoff_date=cutoff_date.date())
             return {
                 "job": "delete_old_events",
                 "dry_run": True,
@@ -255,8 +264,10 @@ async def delete_old_events_job(dry_run: bool = False) -> dict:
             total_deleted += len(ids_to_delete)
 
             logger.info(
-                f"Deleted batch {total_batches}: {len(ids_to_delete)} events "
-                f"(total: {total_deleted})"
+                "Deleted batch",
+                batch_number=total_batches,
+                event_count=len(ids_to_delete),
+                total_deleted=total_deleted,
             )
 
     stats = {
@@ -270,7 +281,7 @@ async def delete_old_events_job(dry_run: bool = False) -> dict:
         "batches_processed": total_batches,
     }
 
-    logger.info(f"delete_old_events_job completed: {stats}")
+    logger.info("delete_old_events_job completed", stats=stats)
     return stats
 
 
@@ -285,7 +296,7 @@ async def analytics_cleanup_job(dry_run: bool = False) -> dict:
     Returns:
         Combined statistics from both jobs.
     """
-    logger.info(f"Starting analytics_cleanup_job (dry_run={dry_run})")
+    logger.info("Starting analytics_cleanup_job", dry_run=dry_run)
 
     anonymize_stats = await anonymize_old_events_job(dry_run=dry_run)
     retention_stats = await delete_old_events_job(dry_run=dry_run)
@@ -298,7 +309,7 @@ async def analytics_cleanup_job(dry_run: bool = False) -> dict:
         "retention": retention_stats,
     }
 
-    logger.info(f"analytics_cleanup_job completed: {combined_stats}")
+    logger.info("analytics_cleanup_job completed", stats=combined_stats)
     return combined_stats
 
 

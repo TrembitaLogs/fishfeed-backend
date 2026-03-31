@@ -110,7 +110,7 @@ class S3StorageService:
         # Check for existing image first
         existing_url = await self.check_exists(image_hash)
         if existing_url:
-            logger.info(f"Image {image_hash[:16]}... already exists, returning cached URL")
+            logger.info("Image already exists, returning cached URL", image_hash=image_hash[:16])
             return existing_url
 
         object_key = self._get_object_key(image_hash)
@@ -128,12 +128,12 @@ class S3StorageService:
 
             # Construct URL
             url = f"{self._settings.S3_ENDPOINT_URL}/{self._settings.S3_BUCKET_NAME}/{object_key}"
-            logger.info(f"Uploaded image {image_hash[:16]}... to S3: {object_key}")
+            logger.info("Uploaded image to S3", image_hash=image_hash[:16], object_key=object_key)
             return url
 
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
-            logger.error(f"S3 upload failed: {error_code} - {e}")
+            logger.error("S3 upload failed", error_code=error_code, error=str(e))
             raise StorageError(f"Failed to upload image: {error_code}") from None
 
     async def check_exists(self, image_hash: str) -> str | None:
@@ -175,7 +175,7 @@ class S3StorageService:
 
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
-            logger.warning(f"S3 existence check failed: {error_code}")
+            logger.warning("S3 existence check failed", error_code=error_code)
             return None
 
         return None
@@ -240,12 +240,12 @@ class S3StorageService:
                     )
                     deleted_count += len(response.get("Deleted", []))
 
-            logger.info(f"Deleted {deleted_count} old images from S3")
+            logger.info("Deleted old images from S3", deleted_count=deleted_count)
             return deleted_count
 
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
-            logger.error(f"S3 cleanup failed: {error_code} - {e}")
+            logger.error("S3 cleanup failed", error_code=error_code, error=str(e))
             raise StorageError(f"Failed to cleanup old images: {error_code}") from None
 
     async def get_image_url(self, image_hash: str) -> str | None:
@@ -286,12 +286,12 @@ class S3StorageService:
                     ContentType="application/json",
                 )
 
-            logger.info(f"Uploaded JSON data to S3: {object_key}")
+            logger.info("Uploaded JSON data to S3", object_key=object_key)
             return object_key
 
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
-            logger.error(f"S3 JSON upload failed: {error_code} - {e}")
+            logger.error("S3 JSON upload failed", error_code=error_code, error=str(e))
             raise StorageError(f"Failed to upload JSON data: {error_code}") from None
 
     async def generate_presigned_url(
@@ -327,12 +327,12 @@ class S3StorageService:
                     ExpiresIn=expires_in_seconds,
                 )
 
-            logger.info(f"Generated presigned URL for: {object_key}")
+            logger.info("Generated presigned URL", object_key=object_key)
             return str(url)
 
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
-            logger.error(f"S3 presigned URL generation failed: {error_code} - {e}")
+            logger.error("S3 presigned URL generation failed", error_code=error_code, error=str(e))
             raise StorageError(f"Failed to generate presigned URL: {error_code}") from None
 
     async def get_object_size(self, object_key: str) -> int:
@@ -362,7 +362,7 @@ class S3StorageService:
 
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
-            logger.error(f"S3 get object size failed: {error_code} - {e}")
+            logger.error("S3 get object size failed", error_code=error_code, error=str(e))
             raise StorageError(f"Failed to get object size: {error_code}") from None
 
 

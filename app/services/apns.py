@@ -97,12 +97,12 @@ class APNsClient:
 
             APNsClient._initialized = True
             mode = "sandbox" if settings.APNS_USE_SANDBOX else "production"
-            logger.info(f"APNs client initialized successfully ({mode} mode)")
+            logger.info("APNs client initialized successfully", mode=mode)
 
         except APNsConfigError:
             raise
         except Exception as e:
-            logger.error(f"Failed to initialize APNs: {e}")
+            logger.error("Failed to initialize APNs", error=str(e))
             raise APNsConfigError(str(e)) from e
 
     @property
@@ -174,12 +174,14 @@ class APNsClient:
             result = await APNsClient._client.send_notification(request)
 
             if result.is_successful:
-                logger.debug(f"APNs notification sent: {result.notification_id}")
+                logger.debug("APNs notification sent", notification_id=result.notification_id)
                 return True, None
 
             error_reason = result.description or f"HTTP_{result.status}"
             logger.info(
-                f"APNs notification failed: {result.status} - {result.description}"
+                "APNs notification failed",
+                status=result.status,
+                description=result.description,
             )
 
             if result.status == APNS_RESPONSE_CODE.SERVICE_UNAVAILABLE:
@@ -193,7 +195,7 @@ class APNsClient:
         except APNsUnavailableError:
             raise
         except Exception as e:
-            logger.error(f"APNs error: {e}")
+            logger.error("APNs error", error=str(e))
             raise APNsUnavailableError(str(e)) from e
 
     async def send_batch(
@@ -240,11 +242,11 @@ class APNsClient:
             except APNsUnavailableError:
                 raise
             except Exception as e:
-                logger.error(f"APNs batch error for token: {e}")
+                logger.error("APNs batch error for token", error=str(e))
                 results.append((False, "SEND_ERROR"))
                 failure_count += 1
 
-        logger.info(f"APNs batch: {success_count} sent, {failure_count} failed")
+        logger.info("APNs batch complete", success_count=success_count, failure_count=failure_count)
         return results
 
 
@@ -279,7 +281,7 @@ async def remove_invalid_tokens(
         )
         result = await db.execute(stmt)
         await db.flush()
-        logger.info(f"Removed {result.rowcount} invalid APNs tokens for user {user_id}")  # type: ignore[attr-defined]
+        logger.info("Removed invalid APNs tokens", removed_count=result.rowcount, user_id=user_id)  # type: ignore[attr-defined]
 
     return tokens_to_remove
 

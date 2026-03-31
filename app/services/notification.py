@@ -123,7 +123,7 @@ class NotificationService:
         )
         await self.db.execute(stmt)
         await self.db.flush()
-        logger.info(f"Registered {platform} push token for user {user_id}")
+        logger.info("Registered push token for user", platform=platform, user_id=user_id)
 
     async def unregister_push_token(
         self,
@@ -147,7 +147,7 @@ class NotificationService:
         await self.db.flush()
 
         if result.rowcount > 0:  # type: ignore[attr-defined]
-            logger.info(f"Unregistered push token for user {user_id}")
+            logger.info("Unregistered push token for user", user_id=user_id)
             return True
         return False
 
@@ -264,7 +264,7 @@ class NotificationService:
         pref_field = NOTIFICATION_TYPE_TO_PREFERENCE.get(notification_type)
         if pref_field is None:
             # Unknown notification type, allow by default
-            logger.warning(f"Unknown notification type: {notification_type}")
+            logger.warning("Unknown notification type", notification_type=notification_type)
             return True
 
         return preferences.get(pref_field, True)
@@ -334,7 +334,9 @@ class NotificationService:
             )
             if not throttle_result:
                 logger.info(
-                    f"Notification throttled for user {user_id}: {throttle_result.reason}"
+                    "Notification throttled for user",
+                    user_id=user_id,
+                    reason=throttle_result.reason,
                 )
                 await self._log_notification(
                     user_id=user_id,
@@ -351,7 +353,9 @@ class NotificationService:
         preferences = await self.get_user_preferences(user_id)
         if not self._is_notification_allowed(preferences, notification_type):  # type: ignore[arg-type]
             logger.info(
-                f"Notification type '{notification_type}' disabled for user {user_id}"
+                "Notification type disabled for user",
+                notification_type=notification_type,
+                user_id=user_id,
             )
             await self._log_notification(
                 user_id=user_id,
@@ -367,7 +371,7 @@ class NotificationService:
         # Get user tokens
         tokens = await self._get_user_tokens(user_id)
         if not tokens:
-            logger.info(f"No push tokens found for user {user_id}")
+            logger.info("No push tokens found for user", user_id=user_id)
             return False
 
         # Group tokens by platform
@@ -450,7 +454,7 @@ class NotificationService:
             )
 
         except APNsUnavailableError as e:
-            logger.error(f"APNs unavailable: {e}")
+            logger.error("APNs unavailable", error=str(e))
             # Log failure for all tokens
             for _ in tokens:
                 await self._log_notification(
@@ -524,7 +528,7 @@ class NotificationService:
             )
 
         except FCMUnavailableError as e:
-            logger.error(f"FCM unavailable: {e}")
+            logger.error("FCM unavailable", error=str(e))
             # Log failure for all tokens
             for _ in tokens:
                 await self._log_notification(

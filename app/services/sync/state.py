@@ -40,7 +40,7 @@ async def get_server_state(
     Returns:
         ServerState with aquariums, fish, events, and deleted entity IDs.
     """
-    logger.debug(f"get_server_state for user {user_id}, since={since}")
+    logger.debug("get_server_state for user", user_id=user_id, since=since)
 
     # For delta sync, include deleted aquariums to track deletions
     # For initial sync, only active aquariums
@@ -94,7 +94,7 @@ async def get_server_state(
         user_profile_data = _entity_to_dict(user_entity)
 
     if not user_aquarium_ids:
-        logger.debug(f"No aquariums found for user {user_id}")
+        logger.debug("No aquariums found for user", user_id=user_id)
         return ServerState(
             aquariums=[],
             fish=[],
@@ -206,14 +206,17 @@ async def get_server_state(
             schedules_data.append(_entity_to_dict(schedule))
 
     logger.debug(
-        f"get_server_state returning: "
-        f"{len(aquariums_data)} aquariums, {len(fish_data)} fish, "
-        f"{len(events_data)} events, {len(schedules_data)} schedules, "
-        f"{len(streaks_data)} streaks, {len(achievements_data)} achievements, "
-        f"{len(progress_data)} progress, "
-        f"{len(deleted.aquariums)} deleted aquariums, "
-        f"{len(deleted.fish)} deleted fish, "
-        f"{len(deleted.feeding_logs)} deleted events"
+        "get_server_state returning",
+        aquariums=len(aquariums_data),
+        fish=len(fish_data),
+        events=len(events_data),
+        schedules=len(schedules_data),
+        streaks=len(streaks_data),
+        achievements=len(achievements_data),
+        progress=len(progress_data),
+        deleted_aquariums=len(deleted.aquariums),
+        deleted_fish=len(deleted.fish),
+        deleted_events=len(deleted.feeding_logs),
     )
 
     return ServerState(

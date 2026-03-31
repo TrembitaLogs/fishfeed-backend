@@ -309,7 +309,7 @@ async def scan_image(
     # Check for cached result (deduplication)
     cached_scan = await _find_cached_scan(db, user_id, image_hash)
     if cached_scan:
-        logger.info(f"Returning cached scan {cached_scan.id} for user {user_id}")
+        logger.info("Returning cached scan", scan_id=cached_scan.id, user_id=user_id)
         return await _build_scan_response(db, cached_scan, scans_remaining)
 
     # Call AI provider
@@ -318,7 +318,7 @@ async def scan_image(
             preprocessed_bytes
         )
     except AIProviderError as e:
-        logger.error(f"AI classification failed for user {user_id}: {e}")
+        logger.error("AI classification failed", user_id=user_id, error=str(e))
         raise
 
     # Map predictions to species
@@ -335,7 +335,7 @@ async def scan_image(
     try:
         image_url = await storage.upload_image(preprocessed_bytes, image_hash)
     except StorageError as e:
-        logger.warning(f"Failed to upload image to S3: {e.message}")
+        logger.warning("Failed to upload image to S3", error_message=e.message)
         # Continue without image URL - scan is still valid
 
     # Create scan record
@@ -359,9 +359,12 @@ async def scan_image(
     await db.refresh(scan)
 
     logger.info(
-        f"Scan {scan.id} completed for user {user_id}: "
-        f"species={primary_species.id if primary_species else 'none'}, "
-        f"confidence={confidence:.2f}, time={processing_time_ms}ms"
+        "Scan completed",
+        scan_id=scan.id,
+        user_id=user_id,
+        species_id=primary_species.id if primary_species else None,
+        confidence=round(confidence, 2),
+        processing_time_ms=processing_time_ms,
     )
 
     return await _build_scan_response(db, scan, scans_remaining)
@@ -414,8 +417,11 @@ async def confirm_species(
     await db.flush()
 
     logger.info(
-        f"Scan {scan_id} confirmed by user {user_id}: "
-        f"species={species_id}, corrected={scan.was_corrected}"
+        "Scan confirmed",
+        scan_id=scan_id,
+        user_id=user_id,
+        species_id=species_id,
+        was_corrected=scan.was_corrected,
     )
 
 

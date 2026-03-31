@@ -122,7 +122,7 @@ class ThrottleManager:
         results = await pipe.execute()
 
         new_count = int(results[0])
-        logger.debug(f"Incremented notification counter for user {user_id}: {new_count}")
+        logger.debug("Incremented notification counter", user_id=user_id, new_count=new_count)
         return new_count
 
     async def get_user_timezone(self, user_id: UUID) -> timezone:
@@ -151,7 +151,7 @@ class ThrottleManager:
                     offset = timedelta(hours=hours, minutes=minutes) * sign
                     return timezone(offset)
             except (ValueError, AttributeError):
-                logger.warning(f"Invalid timezone '{tz_str}' for user {user_id}, using UTC")
+                logger.warning("Invalid timezone, using UTC", tz_str=tz_str, user_id=user_id)
 
         return UTC
 
@@ -237,18 +237,18 @@ class ThrottleManager:
         """
         # Check global opt-out first
         if await self.is_globally_opted_out(user_id):
-            logger.info(f"Notification blocked for user {user_id}: global opt-out")
+            logger.info("Notification blocked", user_id=user_id, reason="global opt-out")
             return ThrottleResult(False, "GLOBAL_OPT_OUT")
 
         # Check daily limit
         if not await self.check_daily_limit(user_id):
-            logger.info(f"Notification blocked for user {user_id}: daily limit reached")
+            logger.info("Notification blocked", user_id=user_id, reason="daily limit reached")
             return ThrottleResult(False, "DAILY_LIMIT_REACHED")
 
         # Check quiet hours (urgent notifications bypass this)
         is_urgent = notification_type in URGENT_NOTIFICATION_TYPES
         if not is_urgent and await self.check_quiet_hours(user_id):
-            logger.info(f"Notification blocked for user {user_id}: quiet hours")
+            logger.info("Notification blocked", user_id=user_id, reason="quiet hours")
             return ThrottleResult(False, "QUIET_HOURS")
 
         return ThrottleResult(True)

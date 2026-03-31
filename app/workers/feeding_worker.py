@@ -107,9 +107,9 @@ async def start_scheduler() -> AsyncScheduler:
         conflict_policy=ConflictPolicy.replace,
     )
     logger.info(
-        f"Added job '{JOB_WEEKLY_SUMMARY}' "
-        f"(weekly on Sunday at {settings.NOTIFICATION_WEEKLY_SUMMARY_HOUR:02d}:"
-        f"{settings.NOTIFICATION_WEEKLY_SUMMARY_MINUTE:02d} UTC)"
+        "Added job",
+        job_name=JOB_WEEKLY_SUMMARY,
+        schedule=f"weekly on Sunday at {settings.NOTIFICATION_WEEKLY_SUMMARY_HOUR:02d}:{settings.NOTIFICATION_WEEKLY_SUMMARY_MINUTE:02d} UTC",
     )
 
     # Job 2: Re-engagement notifications (daily at configured time)
@@ -124,9 +124,9 @@ async def start_scheduler() -> AsyncScheduler:
         conflict_policy=ConflictPolicy.replace,
     )
     logger.info(
-        f"Added job '{JOB_RE_ENGAGEMENT}' "
-        f"(daily at {settings.NOTIFICATION_RE_ENGAGEMENT_HOUR:02d}:"
-        f"{settings.NOTIFICATION_RE_ENGAGEMENT_MINUTE:02d} UTC)"
+        "Added job",
+        job_name=JOB_RE_ENGAGEMENT,
+        schedule=f"daily at {settings.NOTIFICATION_RE_ENGAGEMENT_HOUR:02d}:{settings.NOTIFICATION_RE_ENGAGEMENT_MINUTE:02d} UTC",
     )
 
     # Job 3: Check expired subscriptions (every N minutes)
@@ -137,8 +137,9 @@ async def start_scheduler() -> AsyncScheduler:
         conflict_policy=ConflictPolicy.replace,
     )
     logger.info(
-        f"Added job '{JOB_CHECK_EXPIRED_SUBSCRIPTIONS}' "
-        f"(every {settings.SUBSCRIPTION_CHECK_INTERVAL_MINUTES} minutes)"
+        "Added job",
+        job_name=JOB_CHECK_EXPIRED_SUBSCRIPTIONS,
+        schedule=f"every {settings.SUBSCRIPTION_CHECK_INTERVAL_MINUTES} minutes",
     )
 
     # Job 4: Analytics cleanup - anonymization and retention (daily at configured time)
@@ -153,8 +154,9 @@ async def start_scheduler() -> AsyncScheduler:
         conflict_policy=ConflictPolicy.replace,
     )
     logger.info(
-        f"Added job '{JOB_ANALYTICS_CLEANUP}' "
-        f"(daily at {settings.ANALYTICS_CLEANUP_HOUR:02d}:{settings.ANALYTICS_CLEANUP_MINUTE:02d} UTC)"
+        "Added job",
+        job_name=JOB_ANALYTICS_CLEANUP,
+        schedule=f"daily at {settings.ANALYTICS_CLEANUP_HOUR:02d}:{settings.ANALYTICS_CLEANUP_MINUTE:02d} UTC",
     )
 
     # Job 5: Image cleanup - delete orphaned images older than 7 days (daily at 04:00 UTC)
@@ -164,7 +166,7 @@ async def start_scheduler() -> AsyncScheduler:
         id=JOB_IMAGE_CLEANUP,
         conflict_policy=ConflictPolicy.replace,
     )
-    logger.info(f"Added job '{JOB_IMAGE_CLEANUP}' (daily at 04:00 UTC)")
+    logger.info("Added job", job_name=JOB_IMAGE_CLEANUP, schedule="daily at 04:00 UTC")
 
     # Job 6: S3 reconciliation - find unreferenced objects (weekly Sunday at 05:00 UTC)
     await _scheduler.add_schedule(
@@ -173,7 +175,7 @@ async def start_scheduler() -> AsyncScheduler:
         id=JOB_S3_RECONCILIATION,
         conflict_policy=ConflictPolicy.replace,
     )
-    logger.info(f"Added job '{JOB_S3_RECONCILIATION}' (weekly on Sunday at 05:00 UTC)")
+    logger.info("Added job", job_name=JOB_S3_RECONCILIATION, schedule="weekly on Sunday at 05:00 UTC")
 
     # Start processing schedules in background
     await _scheduler.start_in_background()
@@ -214,7 +216,7 @@ async def run_once(job_name: str | None = None) -> None:
                                'check_subscriptions', 'analytics_cleanup',
                                'image_cleanup', 's3_reconciliation'
     """
-    logger.info(f"Running jobs once (job_name={job_name})")
+    logger.info("Running jobs once", job_name=job_name)
 
     JobFunc = Callable[[], Awaitable[Any]]
     jobs: dict[str, tuple[str, JobFunc]] = {
@@ -229,19 +231,19 @@ async def run_once(job_name: str | None = None) -> None:
     jobs_to_run: list[tuple[str, JobFunc]]
     if job_name:
         if job_name not in jobs:
-            logger.error(f"Unknown job: {job_name}. Valid: {list(jobs.keys())}")
+            logger.error("Unknown job", job_name=job_name, valid_jobs=list(jobs.keys()))
             return
         jobs_to_run = [jobs[job_name]]
     else:
         jobs_to_run = list(jobs.values())
 
     for name, job_func in jobs_to_run:
-        logger.info(f"Running job: {name}")
+        logger.info("Running job", job_name=name)
         try:
             result = await job_func()
-            logger.info(f"Job {name} completed: {result}")
+            logger.info("Job completed", job_name=name, result=result)
         except Exception as e:
-            logger.error(f"Job {name} failed: {e}")
+            logger.error("Job failed", job_name=name, error=str(e))
 
 
 async def run_worker() -> None:
@@ -253,7 +255,7 @@ async def run_worker() -> None:
     loop = asyncio.get_event_loop()
 
     def handle_signal(sig: signal.Signals) -> None:
-        logger.info(f"Received signal {sig.name}, shutting down...")
+        logger.info("Received signal, shutting down", signal_name=sig.name)
         if _shutdown_event:
             _shutdown_event.set()
 

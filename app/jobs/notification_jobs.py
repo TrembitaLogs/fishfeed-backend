@@ -88,11 +88,11 @@ async def weekly_summary_job() -> int:
                     sent_count += 1
 
             except Exception as e:
-                logger.error(f"Failed to send weekly summary to user {user_id}: {e}")
+                logger.error("Failed to send weekly summary to user", user_id=user_id, error=str(e))
                 continue
 
         await db.commit()
-        logger.info(f"Weekly summary sent to {sent_count} users")
+        logger.info("Weekly summary sent", sent_count=sent_count)
         return sent_count
 
 
@@ -228,11 +228,11 @@ async def re_engagement_job() -> int:
                     sent_count += 1
 
             except Exception as e:
-                logger.error(f"Failed to send re-engagement to user {user_id}: {e}")
+                logger.error("Failed to send re-engagement to user", user_id=user_id, error=str(e))
                 continue
 
         await db.commit()
-        logger.info(f"Re-engagement sent to {sent_count} users")
+        logger.info("Re-engagement sent", sent_count=sent_count)
         return sent_count
 
 
@@ -289,8 +289,9 @@ async def family_feeding_trigger(
         Number of notifications sent.
     """
     logger.info(
-        f"Triggering family notification for feeding log {feeding_log_id} "
-        f"by user {completed_by_user_id}"
+        "Triggering family notification for feeding log",
+        feeding_log_id=feeding_log_id,
+        completed_by_user_id=completed_by_user_id,
     )
 
     # Get the feeding log with aquarium info
@@ -299,7 +300,7 @@ async def family_feeding_trigger(
     log = result.scalar_one_or_none()
 
     if log is None:
-        logger.warning(f"Feeding log {feeding_log_id} not found")
+        logger.warning("Feeding log not found", feeding_log_id=feeding_log_id)
         return 0
 
     # Get aquarium name
@@ -308,7 +309,7 @@ async def family_feeding_trigger(
     aquarium = aquarium_result.scalar_one_or_none()
 
     if aquarium is None:
-        logger.warning(f"Aquarium {log.aquarium_id} not found")
+        logger.warning("Aquarium not found", aquarium_id=log.aquarium_id)
         return 0
 
     # Get the nickname of the user who completed feeding
@@ -326,7 +327,7 @@ async def family_feeding_trigger(
     member_ids = [row[0] for row in members_result.all()]
 
     if not member_ids:
-        logger.debug(f"No other family members for aquarium {log.aquarium_id}")
+        logger.debug("No other family members for aquarium", aquarium_id=log.aquarium_id)
         return 0
 
     notification_service = NotificationService(db)
@@ -354,10 +355,12 @@ async def family_feeding_trigger(
                 sent_count += 1
 
         except Exception as e:
-            logger.error(f"Failed to send family notification to {member_id}: {e}")
+            logger.error("Failed to send family notification", member_id=member_id, error=str(e))
             continue
 
     logger.info(
-        f"Family feeding notification sent to {sent_count}/{len(member_ids)} members"
+        "Family feeding notification sent",
+        sent_count=sent_count,
+        total_members=len(member_ids),
     )
     return sent_count

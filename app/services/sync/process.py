@@ -45,9 +45,12 @@ async def process_sync(
         SyncAccessDeniedError: If user doesn't have access to entities.
     """
     logger.info(
-        f"Processing sync for user {user_id}: "
-        f"{len(request.changes)} changes, last_sync_at={request.last_sync_at}, "
-        f"page_size={request.page_size}, cursor={request.cursor}"
+        "Processing sync for user",
+        user_id=user_id,
+        change_count=len(request.changes),
+        last_sync_at=request.last_sync_at,
+        page_size=request.page_size,
+        cursor=request.cursor,
     )
 
     try:
@@ -82,9 +85,12 @@ async def process_sync(
         await db.flush()
 
         logger.info(
-            f"Sync completed for user {user_id}: "
-            f"{len(synced_ids)} synced, {len(conflicts)} conflicts, "
-            f"has_more={has_more}, token={sync_token}"
+            "Sync completed for user",
+            user_id=user_id,
+            synced_count=len(synced_ids),
+            conflict_count=len(conflicts),
+            has_more=has_more,
+            token=sync_token,
         )
 
         return SyncResponse(
@@ -101,5 +107,5 @@ async def process_sync(
         raise
     except Exception as e:
         # Re-raise as SyncError (rollback handled by get_db dependency)
-        logger.error(f"Sync failed for user {user_id}: {e}", exc_info=True)
+        logger.error("Sync failed for user", user_id=user_id, error=str(e), exc_info=True)
         raise SyncError(f"Sync processing failed: {e}") from e

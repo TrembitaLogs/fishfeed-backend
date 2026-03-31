@@ -144,12 +144,12 @@ async def list_species(
         try:
             cached = await redis.get(cache_key)
             if cached:
-                logger.debug(f"Cache hit for {cache_key}")
+                logger.debug("Cache hit", cache_key=cache_key)
                 response = SpeciesListResponse.model_validate_json(cached)
                 response.items = await _resolve_species_image_urls(response.items)
                 return response
         except RedisError as e:
-            logger.warning(f"Redis error on get: {e}")
+            logger.warning("Redis error on get", error=str(e))
 
     # Query database
     stmt = select(Species)
@@ -185,9 +185,9 @@ async def list_species(
     if redis is not None:
         try:
             await redis.set(cache_key, response.model_dump_json(), ex=TTL_SPECIES_LIST)
-            logger.debug(f"Cached {cache_key} with TTL {TTL_SPECIES_LIST}s")
+            logger.debug("Cached species list", cache_key=cache_key, ttl=TTL_SPECIES_LIST)
         except RedisError as e:
-            logger.warning(f"Redis error on set: {e}")
+            logger.warning("Redis error on set", error=str(e))
 
     # Resolve S3 keys to presigned URLs before returning
     response.items = await _resolve_species_image_urls(response.items)
@@ -242,12 +242,12 @@ async def get_species_cached(
         try:
             cached = await redis.get(cache_key)
             if cached:
-                logger.debug(f"Cache hit for {cache_key}")
+                logger.debug("Cache hit", cache_key=cache_key)
                 response = SpeciesResponse.model_validate_json(cached)
                 resolved = await _resolve_species_image_urls([response])
                 return resolved[0]
         except RedisError as e:
-            logger.warning(f"Redis error on get: {e}")
+            logger.warning("Redis error on get", error=str(e))
 
     # Query database
     species = await get_species(db, species_id)
@@ -257,9 +257,9 @@ async def get_species_cached(
     if redis is not None:
         try:
             await redis.set(cache_key, response.model_dump_json(), ex=TTL_SPECIES_DETAIL)
-            logger.debug(f"Cached {cache_key} with TTL {TTL_SPECIES_DETAIL}s")
+            logger.debug("Cached species detail", cache_key=cache_key, ttl=TTL_SPECIES_DETAIL)
         except RedisError as e:
-            logger.warning(f"Redis error on set: {e}")
+            logger.warning("Redis error on set", error=str(e))
 
     # Resolve S3 keys to presigned URLs before returning
     resolved = await _resolve_species_image_urls([response])
@@ -298,12 +298,12 @@ async def search_species(
         try:
             cached = await redis.get(cache_key)
             if cached:
-                logger.debug(f"Cache hit for {cache_key}")
+                logger.debug("Cache hit", cache_key=cache_key)
                 cached_list = json.loads(cached)
                 response_list = [SpeciesResponse.model_validate(item) for item in cached_list]
                 return await _resolve_species_image_urls(response_list)
         except RedisError as e:
-            logger.warning(f"Redis error on get: {e}")
+            logger.warning("Redis error on get", error=str(e))
 
     # Use plainto_tsquery for safe full-text search (no raw tsquery syntax injection).
     # websearch_to_tsquery handles prefix matching via :* through a separate safe step.
@@ -347,9 +347,9 @@ async def search_species(
         try:
             cache_data = json.dumps([r.model_dump(mode="json") for r in response_list])
             await redis.set(cache_key, cache_data, ex=TTL_SPECIES_SEARCH)
-            logger.debug(f"Cached {cache_key} with TTL {TTL_SPECIES_SEARCH}s")
+            logger.debug("Cached search results", cache_key=cache_key, ttl=TTL_SPECIES_SEARCH)
         except RedisError as e:
-            logger.warning(f"Redis error on set: {e}")
+            logger.warning("Redis error on set", error=str(e))
 
     # Resolve S3 keys to presigned URLs before returning
     return await _resolve_species_image_urls(response_list)
@@ -379,12 +379,12 @@ async def get_popular_species(
         try:
             cached = await redis.get(cache_key)
             if cached:
-                logger.debug(f"Cache hit for {cache_key}")
+                logger.debug("Cache hit", cache_key=cache_key)
                 cached_list = json.loads(cached)
                 response_list = [SpeciesResponse.model_validate(item) for item in cached_list]
                 return await _resolve_species_image_urls(response_list)
         except RedisError as e:
-            logger.warning(f"Redis error on get: {e}")
+            logger.warning("Redis error on get", error=str(e))
 
     # Query database
     stmt = (
@@ -403,9 +403,9 @@ async def get_popular_species(
         try:
             cache_data = json.dumps([r.model_dump(mode="json") for r in response_list])
             await redis.set(cache_key, cache_data, ex=TTL_SPECIES_POPULAR)
-            logger.debug(f"Cached {cache_key} with TTL {TTL_SPECIES_POPULAR}s")
+            logger.debug("Cached popular species", cache_key=cache_key, ttl=TTL_SPECIES_POPULAR)
         except RedisError as e:
-            logger.warning(f"Redis error on set: {e}")
+            logger.warning("Redis error on set", error=str(e))
 
     # Resolve S3 keys to presigned URLs before returning
     return await _resolve_species_image_urls(response_list)
@@ -431,14 +431,14 @@ async def invalidate_species_cache(
                 cursor, keys = await redis.scan(cursor, match=pattern, count=100)
                 if keys:
                     await redis.delete(*keys)
-                    logger.debug(f"Invalidated {len(keys)} cache keys matching {pattern}")
+                    logger.debug("Invalidated cache keys", key_count=len(keys), pattern=pattern)
                 if cursor == 0:
                     break
         else:
             # Invalidate specific species detail
             detail_key = species_detail_key(species_id)
             await redis.delete(detail_key)
-            logger.debug(f"Invalidated cache key {detail_key}")
+            logger.debug("Invalidated cache key", cache_key=detail_key)
 
             # Invalidate list and popular caches (they may contain this species)
             for pattern in [species_list_pattern(), species_popular_pattern()]:
@@ -447,11 +447,11 @@ async def invalidate_species_cache(
                     cursor, keys = await redis.scan(cursor, match=pattern, count=100)
                     if keys:
                         await redis.delete(*keys)
-                        logger.debug(f"Invalidated {len(keys)} cache keys matching {pattern}")
+                        logger.debug("Invalidated cache keys", key_count=len(keys), pattern=pattern)
                     if cursor == 0:
                         break
     except RedisError as e:
-        logger.warning(f"Redis error during cache invalidation: {e}")
+        logger.warning("Redis error during cache invalidation", error=str(e))
 
 
 async def create_species(

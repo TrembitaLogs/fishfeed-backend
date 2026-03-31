@@ -235,7 +235,7 @@ class GoogleVisionProvider(AIProvider):
         except AIProviderError:
             raise
         except Exception as e:
-            logger.error(f"Google Vision API error: {e}")
+            logger.error("Google Vision API error", error=str(e))
             raise AIProviderUnavailableError(self.name, str(e)) from e
 
     async def health_check(self) -> bool:
@@ -348,7 +348,7 @@ class ReplicateProvider(AIProvider):
         except AIProviderError:
             raise
         except Exception as e:
-            logger.error(f"Replicate API error: {e}")
+            logger.error("Replicate API error", error=str(e))
             raise AIProviderUnavailableError(self.name, str(e)) from e
 
     async def _poll_prediction(
@@ -530,22 +530,22 @@ async def classify_with_fallback(
 
     try:
         result = await primary.classify_fish(image_bytes)
-        logger.info(f"Classification successful with {primary.name}")
+        logger.info("Classification successful", provider=primary.name)
         return result.filter_by_threshold(min_confidence)
 
     except AIProviderError as e:
-        logger.warning(f"Primary provider {primary.name} failed: {e}")
+        logger.warning("Primary provider failed", provider=primary.name, error=str(e))
 
         if not e.retriable or fallback is None:
             raise
 
-        logger.info(f"Attempting fallback to {fallback.name}")
+        logger.info("Attempting fallback", provider=fallback.name)
         try:
             result = await fallback.classify_fish(image_bytes)
-            logger.info(f"Fallback classification successful with {fallback.name}")
+            logger.info("Fallback classification successful", provider=fallback.name)
             return result.filter_by_threshold(min_confidence)
         except AIProviderError as fallback_error:
-            logger.error(f"Fallback provider {fallback.name} also failed: {fallback_error}")
+            logger.error("Fallback provider also failed", provider=fallback.name, error=str(fallback_error))
             raise e from fallback_error
 
 

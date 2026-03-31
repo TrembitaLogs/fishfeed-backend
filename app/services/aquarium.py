@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 import structlog
-from sqlalchemy import or_, select
+from sqlalchemy import case, literal_column, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -66,33 +66,36 @@ async def check_access(
         AquariumNotFoundError: If aquarium not found or deleted.
         AquariumAccessDeniedError: If user doesn't have access.
     """
+    # Single atomic query: fetch aquarium + membership in one round-trip
+    # to avoid TOCTOU race between existence check and access check.
     stmt = (
-        select(Aquarium)
+        select(
+            Aquarium,
+            case(
+                (Aquarium.owner_id == user_id, literal_column("'owner'")),
+                else_=AquariumMember.role,
+            ).label("resolved_role"),
+        )
+        .outerjoin(
+            AquariumMember,
+            (AquariumMember.aquarium_id == Aquarium.id)
+            & (AquariumMember.user_id == user_id),
+        )
         .where(Aquarium.id == aquarium_id)
         .where(Aquarium.deleted_at.is_(None))
     )
     result = await db.execute(stmt)
-    aquarium = result.scalar_one_or_none()
+    row = result.one_or_none()
 
-    if aquarium is None:
+    if row is None:
         raise AquariumNotFoundError(aquarium_id)
 
-    # Check if user is owner
-    if aquarium.owner_id == user_id:
-        return aquarium, "owner"
+    aquarium, role = row.tuple()
 
-    # Check if user is member
-    member_stmt = select(AquariumMember).where(
-        AquariumMember.aquarium_id == aquarium_id,
-        AquariumMember.user_id == user_id,
-    )
-    member_result = await db.execute(member_stmt)
-    member = member_result.scalar_one_or_none()
+    if role is None:
+        raise AquariumAccessDeniedError(aquarium_id)
 
-    if member is not None:
-        return aquarium, member.role
-
-    raise AquariumAccessDeniedError(aquarium_id)
+    return aquarium, role
 
 
 async def create_aquarium(
@@ -128,7 +131,7 @@ async def create_aquarium(
     await db.flush()
     await db.refresh(aquarium)
 
-    logger.info(f"Created aquarium '{aquarium.id}' for user '{user_id}'")
+    logger.info("Created aquarium", aquarium_id=aquarium.id, user_id=user_id)
 
     return aquarium
 
@@ -260,7 +263,7 @@ async def update_aquarium(
     await db.flush()
     await db.refresh(aquarium)
 
-    logger.info(f"Updated aquarium '{aquarium_id}' by user '{user_id}'")
+    logger.info("Updated aquarium", aquarium_id=aquarium_id, user_id=user_id)
     return aquarium
 
 
@@ -307,6 +310,8 @@ async def delete_aquarium(
     await db.flush()
 
     logger.info(
-        f"Soft deleted aquarium '{aquarium_id}' and {len(fish_list)} fish "
-        f"by user '{user_id}'"
+        "Soft deleted aquarium and associated fish",
+        aquarium_id=aquarium_id,
+        fish_count=len(fish_list),
+        user_id=user_id,
     )

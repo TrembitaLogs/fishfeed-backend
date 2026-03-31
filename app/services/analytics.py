@@ -94,7 +94,7 @@ async def track_event(
     await db.flush()
 
     logger.debug(
-        f"Tracked event '{event.event_type}' for user '{user_id}'"
+        "Tracked event for user", event_type=event.event_type, user_id=user_id
     )
 
     # Fire-and-forget external forwarding
@@ -169,7 +169,7 @@ async def track_events_batch(
     await db.flush()
 
     logger.info(
-        f"Tracked {len(events)} events in batch for user '{user_id}'"
+        "Tracked events in batch for user", event_count=len(events), user_id=user_id
     )
 
     # Fire-and-forget external forwarding
@@ -188,7 +188,7 @@ async def _forward_to_external_safe(events: list[dict]) -> None:
     try:
         await forward_to_external(events)
     except Exception as e:
-        logger.error(f"Failed to forward events to external service: {e}")
+        logger.error("Failed to forward events to external service", error=str(e))
 
 
 async def forward_to_external(events: list[dict]) -> None:
@@ -224,7 +224,7 @@ async def forward_to_external(events: list[dict]) -> None:
                 response.raise_for_status()
 
             logger.debug(
-                f"Successfully forwarded {len(events)} events to {url}"
+                "Successfully forwarded events", event_count=len(events), url=url
             )
             return
 
@@ -233,13 +233,18 @@ async def forward_to_external(events: list[dict]) -> None:
                 # Exponential backoff: 1s, 2s, 4s
                 wait_time = 2 ** attempt
                 logger.warning(
-                    f"Failed to forward events (attempt {attempt + 1}/{max_retries}): {e}. "
-                    f"Retrying in {wait_time}s..."
+                    "Failed to forward events, retrying",
+                    attempt=attempt + 1,
+                    max_retries=max_retries,
+                    error=str(e),
+                    retry_in_seconds=wait_time,
                 )
                 await asyncio.sleep(wait_time)
             else:
                 logger.error(
-                    f"Failed to forward events after {max_retries} attempts: {e}"
+                    "Failed to forward events after all attempts",
+                    max_retries=max_retries,
+                    error=str(e),
                 )
                 raise
 
@@ -313,14 +318,15 @@ async def export_user_data(
     except StorageNotConfiguredError:
         raise
     except Exception as e:
-        logger.error(f"GDPR export failed for user {user_id}: {e}")
+        logger.error("GDPR export failed for user", user_id=user_id, error=str(e))
         raise GDPRError(f"Failed to export user data: {e}") from None
 
     expires_at = datetime.now(UTC) + timedelta(seconds=EXPORT_URL_TTL_SECONDS)
 
     logger.info(
-        f"GDPR data export completed for user {user_id}, "
-        f"file size: {file_size} bytes"
+        "GDPR data export completed for user",
+        user_id=user_id,
+        file_size_bytes=file_size,
     )
 
     return DataExportResponse(
@@ -604,7 +610,7 @@ async def delete_user_data(db: AsyncSession, user_id: UUID) -> None:
     if not user:
         raise UserNotFoundError(user_id)
 
-    logger.info(f"Starting GDPR data deletion for user {user_id}")
+    logger.info("Starting GDPR data deletion for user", user_id=user_id)
 
     try:
         # Get user's owned aquarium IDs for cascade operations
@@ -617,19 +623,19 @@ async def delete_user_data(db: AsyncSession, user_id: UUID) -> None:
         await db.execute(
             delete(AnalyticsEvent).where(AnalyticsEvent.user_id == user_id)
         )
-        logger.debug(f"Deleted analytics_events for user {user_id}")
+        logger.debug("Deleted analytics_events for user", user_id=user_id)
 
         # 2. Delete ai_scans
         await db.execute(
             delete(AIScan).where(AIScan.user_id == user_id)
         )
-        logger.debug(f"Deleted ai_scans for user {user_id}")
+        logger.debug("Deleted ai_scans for user", user_id=user_id)
 
         # 3. Delete notification_logs
         await db.execute(
             delete(NotificationLog).where(NotificationLog.user_id == user_id)
         )
-        logger.debug(f"Deleted notification_logs for user {user_id}")
+        logger.debug("Deleted notification_logs for user", user_id=user_id)
 
         # 4. Delete push_tokens and notification_preferences
         await db.execute(
@@ -638,7 +644,7 @@ async def delete_user_data(db: AsyncSession, user_id: UUID) -> None:
         await db.execute(
             delete(NotificationPreference).where(NotificationPreference.user_id == user_id)
         )
-        logger.debug(f"Deleted push_tokens and notification_preferences for user {user_id}")
+        logger.debug("Deleted push_tokens and notification_preferences for user", user_id=user_id)
 
         # 5. Delete streaks and achievements
         await db.execute(
@@ -647,7 +653,7 @@ async def delete_user_data(db: AsyncSession, user_id: UUID) -> None:
         await db.execute(
             delete(Achievement).where(Achievement.user_id == user_id)
         )
-        logger.debug(f"Deleted streaks and achievements for user {user_id}")
+        logger.debug("Deleted streaks and achievements for user", user_id=user_id)
 
         # 6. Delete feeding_logs and feeding_schedules from owned aquariums
         if owned_aquarium_ids:
@@ -657,13 +663,13 @@ async def delete_user_data(db: AsyncSession, user_id: UUID) -> None:
             await db.execute(
                 delete(FeedingSchedule).where(FeedingSchedule.aquarium_id.in_(owned_aquarium_ids))
             )
-            logger.debug(f"Deleted feeding data for owned aquariums of user {user_id}")
+            logger.debug("Deleted feeding data for owned aquariums of user", user_id=user_id)
 
             # 8. Delete fish from owned aquariums
             await db.execute(
                 delete(Fish).where(Fish.aquarium_id.in_(owned_aquarium_ids))
             )
-            logger.debug(f"Deleted fish for owned aquariums of user {user_id}")
+            logger.debug("Deleted fish for owned aquariums of user", user_id=user_id)
 
         # 9. Delete family_invites (created by user or used by user)
         await db.execute(
@@ -671,13 +677,13 @@ async def delete_user_data(db: AsyncSession, user_id: UUID) -> None:
                 (FamilyInvite.created_by == user_id) | (FamilyInvite.used_by == user_id)
             )
         )
-        logger.debug(f"Deleted family_invites for user {user_id}")
+        logger.debug("Deleted family_invites for user", user_id=user_id)
 
         # 10. Delete aquarium_members for this user
         await db.execute(
             delete(AquariumMember).where(AquariumMember.user_id == user_id)
         )
-        logger.debug(f"Deleted aquarium_memberships for user {user_id}")
+        logger.debug("Deleted aquarium_memberships for user", user_id=user_id)
 
         # 11. Handle orphan aquariums (owned aquariums with no remaining members)
         for aquarium_id in owned_aquarium_ids:
@@ -697,7 +703,7 @@ async def delete_user_data(db: AsyncSession, user_id: UUID) -> None:
                 await db.execute(
                     delete(Aquarium).where(Aquarium.id == aquarium_id)
                 )
-                logger.debug(f"Deleted orphan aquarium {aquarium_id}")
+                logger.debug("Deleted orphan aquarium", aquarium_id=aquarium_id)
             else:
                 # Transfer ownership to first remaining member or just delete the aquarium
                 # For GDPR compliance, we delete the aquarium as it belongs to the deleted user
@@ -710,23 +716,23 @@ async def delete_user_data(db: AsyncSession, user_id: UUID) -> None:
                 await db.execute(
                     delete(Aquarium).where(Aquarium.id == aquarium_id)
                 )
-                logger.debug(f"Deleted aquarium {aquarium_id} with remaining members")
+                logger.debug("Deleted aquarium with remaining members", aquarium_id=aquarium_id)
 
         # 12. Delete refresh_tokens
         await db.execute(
             delete(RefreshToken).where(RefreshToken.user_id == user_id)
         )
-        logger.debug(f"Deleted refresh_tokens for user {user_id}")
+        logger.debug("Deleted refresh_tokens for user", user_id=user_id)
 
         # 13. Finally, delete the user
         await db.execute(
             delete(User).where(User.id == user_id)
         )
-        logger.debug(f"Deleted user record for {user_id}")
+        logger.debug("Deleted user record", user_id=user_id)
 
         await db.flush()
-        logger.info(f"GDPR data deletion completed for user {user_id}")
+        logger.info("GDPR data deletion completed for user", user_id=user_id)
 
     except Exception as e:
-        logger.error(f"GDPR deletion failed for user {user_id}: {e}")
+        logger.error("GDPR deletion failed for user", user_id=user_id, error=str(e))
         raise GDPRError(f"Failed to delete user data: {e}") from None

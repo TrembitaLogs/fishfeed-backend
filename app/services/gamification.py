@@ -220,7 +220,7 @@ async def get_or_create_streak(db: AsyncSession, user_id: UUID) -> Streak:
         db.add(streak)
         await db.flush()
         await db.refresh(streak)
-        logger.info(f"Created new streak record for user '{user_id}'")
+        logger.info("Created new streak record", user_id=user_id)
 
     return streak
 
@@ -245,27 +245,22 @@ async def update_streak(db: AsyncSession, user_id: UUID) -> Streak:
     yesterday = today - timedelta(days=1)
 
     if streak.last_feed_date == today:
-        logger.debug(f"User '{user_id}' already fed today, streak unchanged")
+        logger.debug("User already fed today, streak unchanged", user_id=user_id)
         return streak
 
     if streak.last_feed_date == yesterday:
         streak.current_streak += 1
-        logger.info(
-            f"User '{user_id}' streak incremented to {streak.current_streak}"
-        )
+        logger.info("User streak incremented", user_id=user_id, current_streak=streak.current_streak)
     else:
         streak.current_streak = 1
         if streak.last_feed_date is not None:
-            logger.info(
-                f"User '{user_id}' streak reset to 1 "
-                f"(last feed: {streak.last_feed_date})"
-            )
+            logger.info("User streak reset to 1", user_id=user_id, last_feed_date=streak.last_feed_date)
         else:
-            logger.info(f"User '{user_id}' started first streak")
+            logger.info("User started first streak", user_id=user_id)
 
     if streak.current_streak > streak.best_streak:
         streak.best_streak = streak.current_streak
-        logger.info(f"User '{user_id}' new best streak: {streak.best_streak}")
+        logger.info("User new best streak", user_id=user_id, best_streak=streak.best_streak)
 
     streak.last_feed_date = today
 
@@ -299,7 +294,7 @@ async def use_freeze(db: AsyncSession, user_id: UUID) -> bool:
         raise StreakNotFoundError(user_id)
 
     if streak.freeze_available <= 0:
-        logger.warning(f"User '{user_id}' attempted to use freeze but none available")
+        logger.warning("User attempted to use freeze but none available", user_id=user_id)
         return False
 
     streak.freeze_available -= 1
@@ -313,9 +308,7 @@ async def use_freeze(db: AsyncSession, user_id: UUID) -> bool:
     await db.flush()
     await db.refresh(streak)
 
-    logger.info(
-        f"User '{user_id}' used freeze day, {streak.freeze_available} remaining"
-    )
+    logger.info("User used freeze day", user_id=user_id, freeze_available=streak.freeze_available)
 
     return True
 
@@ -475,9 +468,7 @@ async def check_achievements(db: AsyncSession, user_id: UUID) -> list[Achievemen
             )
             db.add(achievement)
             newly_unlocked.append(achievement)
-            logger.info(
-                f"User '{user_id}' unlocked achievement: {definition.achievement_type.value}"
-            )
+            logger.info("User unlocked achievement", user_id=user_id, achievement_type=definition.achievement_type.value)
 
     if newly_unlocked:
         await db.flush()
@@ -529,9 +520,7 @@ async def share_achievement(
     await db.flush()
     await db.refresh(achievement)
 
-    logger.info(
-        f"User '{user_id}' shared achievement: {achievement.achievement_type}"
-    )
+    logger.info("User shared achievement", user_id=user_id, achievement_type=achievement.achievement_type)
 
     return achievement
 

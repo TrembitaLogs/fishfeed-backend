@@ -72,7 +72,7 @@ def decode_base64_image(base64_str: str) -> Image.Image:
     try:
         image_data = base64.b64decode(base64_str)
     except Exception as e:
-        logger.warning(f"Failed to decode base64: {e}")
+        logger.warning("Failed to decode base64", error=str(e))
         raise InvalidBase64Error("Failed to decode base64 string") from e
 
     return _bytes_to_image(image_data)
@@ -192,7 +192,7 @@ def _bytes_to_image(image_data: bytes) -> Image.Image:
         image = Image.open(io.BytesIO(image_data))
         image.load()  # Force load to catch truncated images
     except Exception as e:
-        logger.warning(f"Failed to parse image: {e}")
+        logger.warning("Failed to parse image", error=str(e))
         raise InvalidImageFormatError("Invalid or corrupted image data") from e
 
     # Check format

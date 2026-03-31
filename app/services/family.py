@@ -258,7 +258,7 @@ async def get_family_members(
         for row in rows
     ]
 
-    logger.debug(f"Retrieved {len(members)} family members for aquarium '{aquarium_id}'")
+    logger.debug("Retrieved family members", member_count=len(members), aquarium_id=aquarium_id)
     return members
 
 
@@ -312,8 +312,12 @@ async def create_invite(
     invite_link = _build_invite_link(invite_code)
 
     logger.info(
-        f"Created invite '{invite_code}' for aquarium '{aquarium_id}' "
-        f"by user '{user_id}' (members: {current_count}/{limit})"
+        "Created invite for aquarium",
+        invite_code=invite_code,
+        aquarium_id=aquarium_id,
+        user_id=user_id,
+        current_count=current_count,
+        limit=limit,
     )
 
     return InviteResponse(
@@ -429,18 +433,20 @@ async def accept_invite(
             notification_type="family_update",
         )
     except Exception as e:
-        logger.error(f"Failed to send push notification to owner: {e}")
+        logger.error("Failed to send push notification to owner", error=str(e))
 
     logger.info(
-        f"User '{user_id}' accepted invite '{invite_code}' "
-        f"and joined aquarium '{aquarium.id}'"
+        "User accepted invite and joined aquarium",
+        user_id=user_id,
+        invite_code=invite_code,
+        aquarium_id=aquarium.id,
     )
 
     # Check achievements for aquarium owner (they're gaining family members)
     try:
         await check_achievements(db, aquarium.owner_id)
     except Exception as e:
-        logger.error(f"Failed to check achievements after accepting invite: {e}")
+        logger.error("Failed to check achievements after accepting invite", error=str(e))
 
     return aquarium
 
@@ -509,11 +515,13 @@ async def remove_member(
             notification_type="family_update",
         )
     except Exception as e:
-        logger.error(f"Failed to send push notification to removed member: {e}")
+        logger.error("Failed to send push notification to removed member", error=str(e))
 
     logger.info(
-        f"Owner '{requesting_user_id}' removed member '{member_id}' "
-        f"from aquarium '{aquarium_id}'"
+        "Owner removed member from aquarium",
+        requesting_user_id=requesting_user_id,
+        member_id=member_id,
+        aquarium_id=aquarium_id,
     )
 
 
@@ -609,6 +617,8 @@ async def cancel_invite(
     await db.flush()
 
     logger.info(
-        f"Owner '{user_id}' cancelled invite '{invite.invite_code}' "
-        f"for aquarium '{aquarium_id}'"
+        "Owner cancelled invite for aquarium",
+        user_id=user_id,
+        invite_code=invite.invite_code,
+        aquarium_id=aquarium_id,
     )

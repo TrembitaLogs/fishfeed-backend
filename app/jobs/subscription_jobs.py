@@ -63,13 +63,15 @@ async def check_expired_subscriptions_job() -> int:
                     total_processed += 1
                 except Exception as e:
                     logger.error(
-                        f"Failed to process expired subscription for user {user.id}: {e}"
+                        "Failed to process expired subscription for user",
+                        user_id=user.id,
+                        error=str(e),
                     )
                     continue
 
-            logger.info(f"Processed batch of {len(expired_users)} expired subscriptions")
+            logger.info("Processed batch of expired subscriptions", batch_size=len(expired_users))
 
-    logger.info(f"check_expired_subscriptions_job completed: {total_processed} users processed")
+    logger.info("check_expired_subscriptions_job completed", users_processed=total_processed)
     return total_processed
 
 
@@ -81,7 +83,7 @@ async def _process_expired_user(db: AsyncSession, user: User) -> None:
         user: User with expired subscription.
     """
     user_id = user.id
-    logger.info(f"Processing expired subscription for user {user_id}")
+    logger.info("Processing expired subscription for user", user_id=user_id)
 
     # Revert to free tier
     await revert_to_free(db, user_id)
@@ -92,7 +94,7 @@ async def _process_expired_user(db: AsyncSession, user: User) -> None:
     # Send push notification about subscription expiry
     await _send_subscription_expired_notification(db, user_id)
 
-    logger.info(f"User {user_id} reverted to free tier after subscription expiry")
+    logger.info("User reverted to free tier after subscription expiry", user_id=user_id)
 
 
 async def apply_free_tier_limits(db: AsyncSession, user_id: UUID) -> dict:
@@ -110,14 +112,14 @@ async def apply_free_tier_limits(db: AsyncSession, user_id: UUID) -> dict:
     Returns:
         Dict with limit status information.
     """
-    logger.info(f"Applying free tier limits for user {user_id}")
+    logger.info("Applying free tier limits for user", user_id=user_id)
 
     stmt = select(User).where(User.id == user_id, User.deleted_at.is_(None))
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
 
     if user is None:
-        logger.warning(f"User {user_id} not found when applying free tier limits")
+        logger.warning("User not found when applying free tier limits", user_id=user_id)
         return {"error": "user_not_found"}
 
     limits_exceeded = {}
@@ -135,8 +137,10 @@ async def apply_free_tier_limits(db: AsyncSession, user_id: UUID) -> dict:
             "exceeded_at": now.isoformat(),
         }
         logger.info(
-            f"User {user_id} has {aquarium_count} aquariums, "
-            f"exceeds free limit of {FREE_USER_LIMITS.max_aquariums}"
+            "User has aquariums exceeding free limit",
+            user_id=user_id,
+            aquarium_count=aquarium_count,
+            free_limit=FREE_USER_LIMITS.max_aquariums,
         )
 
     # Check fish per aquarium
@@ -150,7 +154,9 @@ async def apply_free_tier_limits(db: AsyncSession, user_id: UUID) -> dict:
             "exceeded_at": now.isoformat(),
         }
         logger.info(
-            f"User {user_id} has aquariums with excess fish: {aquariums_with_excess_fish}"
+            "User has aquariums with excess fish",
+            user_id=user_id,
+            aquariums_with_excess_fish=aquariums_with_excess_fish,
         )
 
     # Check family members per aquarium (free tier typically allows fewer members)
@@ -168,7 +174,7 @@ async def apply_free_tier_limits(db: AsyncSession, user_id: UUID) -> dict:
         settings_dict["limits_exceeded"] = limits_exceeded
         settings_dict["downgraded_at"] = now.isoformat()
         user.settings = settings_dict
-        logger.info(f"User {user_id} limits exceeded: {list(limits_exceeded.keys())}")
+        logger.info("User limits exceeded", user_id=user_id, exceeded_limits=list(limits_exceeded.keys()))
 
     await db.commit()
 
@@ -291,14 +297,14 @@ async def _send_subscription_expired_notification(
         )
 
         if success:
-            logger.info(f"Subscription expiry notification sent to user {user_id}")
+            logger.info("Subscription expiry notification sent to user", user_id=user_id)
         else:
-            logger.info(f"Failed to send subscription expiry notification to user {user_id}")
+            logger.info("Failed to send subscription expiry notification to user", user_id=user_id)
 
         return success
 
     except Exception as e:
-        logger.error(f"Error sending subscription expiry notification to {user_id}: {e}")
+        logger.error("Error sending subscription expiry notification", user_id=user_id, error=str(e))
         return False
 
 
@@ -324,4 +330,4 @@ async def clear_limits_exceeded(db: AsyncSession, user_id: UUID) -> None:
     user.settings = settings_dict
 
     await db.commit()
-    logger.info(f"Cleared limits_exceeded for user {user_id}")
+    logger.info("Cleared limits_exceeded for user", user_id=user_id)
