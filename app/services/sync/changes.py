@@ -18,7 +18,7 @@ from app.schemas.sync import ChangeItem, ConflictItem
 from app.services import feeding as feeding_service
 from app.services.image_service import register_orphaned
 
-from .utils import _entity_to_dict, _group_changes_by_entity_type, resolve_conflict
+from .utils import RESOLUTION_LABELS, _entity_to_dict, _group_changes_by_entity_type, resolve_conflict
 
 logger = structlog.get_logger(__name__)
 
@@ -95,7 +95,7 @@ async def _apply_aquarium_change(
         if existing is not None:
             # Entity exists, treat as update with conflict check
             winner = resolve_conflict(existing.updated_at, change.client_updated_at)
-            if winner == "server":
+            if winner != "client":
                 logger.debug(f"CREATE conflict for aquarium {change.entity_id}: server wins")
                 return ConflictItem(
                     entity_type="aquarium",
@@ -104,7 +104,7 @@ async def _apply_aquarium_change(
                     server_data=_entity_to_dict(existing),
                     client_updated_at=change.client_updated_at,
                     server_updated_at=existing.updated_at,
-                    resolution="server_wins",
+                    resolution=RESOLUTION_LABELS[winner],
                 )
             # Client wins - update existing
             if "name" in change.data:
@@ -176,7 +176,7 @@ async def _apply_aquarium_change(
             return None
 
         winner = resolve_conflict(existing.updated_at, change.client_updated_at)
-        if winner == "server":
+        if winner != "client":
             logger.debug(f"UPDATE conflict for aquarium {change.entity_id}: server wins")
             return ConflictItem(
                 entity_type="aquarium",
@@ -185,7 +185,7 @@ async def _apply_aquarium_change(
                 server_data=_entity_to_dict(existing),
                 client_updated_at=change.client_updated_at,
                 server_updated_at=existing.updated_at,
-                resolution="server_wins",
+                resolution=RESOLUTION_LABELS[winner],
             )
 
         # Client wins - apply update
@@ -224,7 +224,7 @@ async def _apply_aquarium_change(
             return None
 
         winner = resolve_conflict(existing.updated_at, change.client_updated_at)
-        if winner == "server":
+        if winner != "client":
             logger.debug(f"DELETE conflict for aquarium {change.entity_id}: server wins")
             return ConflictItem(
                 entity_type="aquarium",
@@ -233,7 +233,7 @@ async def _apply_aquarium_change(
                 server_data=_entity_to_dict(existing),
                 client_updated_at=change.client_updated_at,
                 server_updated_at=existing.updated_at,
-                resolution="server_wins",
+                resolution=RESOLUTION_LABELS[winner],
             )
 
         # Client wins - soft delete
@@ -268,7 +268,7 @@ async def _apply_fish_change(
         if existing is not None:
             # Entity exists, treat as update with conflict check
             winner = resolve_conflict(existing.updated_at, change.client_updated_at)
-            if winner == "server":
+            if winner != "client":
                 logger.debug(f"CREATE conflict for fish {change.entity_id}: server wins")
                 return ConflictItem(
                     entity_type="fish",
@@ -277,7 +277,7 @@ async def _apply_fish_change(
                     server_data=_entity_to_dict(existing),
                     client_updated_at=change.client_updated_at,
                     server_updated_at=existing.updated_at,
-                    resolution="server_wins",
+                    resolution=RESOLUTION_LABELS[winner],
                 )
             # Client wins - update existing
             if "quantity" in change.data:
@@ -344,7 +344,7 @@ async def _apply_fish_change(
             return None
 
         winner = resolve_conflict(existing.updated_at, change.client_updated_at)
-        if winner == "server":
+        if winner != "client":
             logger.debug(f"UPDATE conflict for fish {change.entity_id}: server wins")
             return ConflictItem(
                 entity_type="fish",
@@ -353,7 +353,7 @@ async def _apply_fish_change(
                 server_data=_entity_to_dict(existing),
                 client_updated_at=change.client_updated_at,
                 server_updated_at=existing.updated_at,
-                resolution="server_wins",
+                resolution=RESOLUTION_LABELS[winner],
             )
 
         # Client wins - apply update
@@ -419,7 +419,7 @@ async def _apply_fish_change(
             return None
 
         winner = resolve_conflict(existing.updated_at, change.client_updated_at)
-        if winner == "server":
+        if winner != "client":
             logger.debug(f"DELETE conflict for fish {change.entity_id}: server wins")
             return ConflictItem(
                 entity_type="fish",
@@ -428,7 +428,7 @@ async def _apply_fish_change(
                 server_data=_entity_to_dict(existing),
                 client_updated_at=change.client_updated_at,
                 server_updated_at=existing.updated_at,
-                resolution="server_wins",
+                resolution=RESOLUTION_LABELS[winner],
             )
 
         # Client wins - soft delete
@@ -660,7 +660,7 @@ async def _apply_schedule_change(
         if existing is not None:
             # Entity exists, treat as update with conflict check
             winner = resolve_conflict(existing.updated_at, change.client_updated_at)
-            if winner == "server":
+            if winner != "client":
                 logger.debug(f"CREATE conflict for schedule {change.entity_id}: server wins")
                 return ConflictItem(
                     entity_type="schedule",
@@ -669,7 +669,7 @@ async def _apply_schedule_change(
                     server_data=_entity_to_dict(existing),
                     client_updated_at=change.client_updated_at,
                     server_updated_at=existing.updated_at,
-                    resolution="server_wins",
+                    resolution=RESOLUTION_LABELS[winner],
                 )
             # Client wins - update existing
             _apply_schedule_fields(existing, change.data, user_id)
@@ -700,7 +700,7 @@ async def _apply_schedule_change(
             elif anchor_date_val:
                 anchor_date = anchor_date_val
             else:
-                anchor_date = dt_date.today()
+                anchor_date = datetime.now(UTC).date()
 
             schedule = FeedingSchedule(
                 id=change.entity_id,
@@ -727,7 +727,7 @@ async def _apply_schedule_change(
             return None
 
         winner = resolve_conflict(existing.updated_at, change.client_updated_at)
-        if winner == "server":
+        if winner != "client":
             logger.debug(f"UPDATE conflict for schedule {change.entity_id}: server wins")
             return ConflictItem(
                 entity_type="schedule",
@@ -736,7 +736,7 @@ async def _apply_schedule_change(
                 server_data=_entity_to_dict(existing),
                 client_updated_at=change.client_updated_at,
                 server_updated_at=existing.updated_at,
-                resolution="server_wins",
+                resolution=RESOLUTION_LABELS[winner],
             )
 
         # Client wins - apply update
@@ -749,7 +749,7 @@ async def _apply_schedule_change(
             return None
 
         winner = resolve_conflict(existing.updated_at, change.client_updated_at)
-        if winner == "server":
+        if winner != "client":
             logger.debug(f"DELETE conflict for schedule {change.entity_id}: server wins")
             return ConflictItem(
                 entity_type="schedule",
@@ -758,7 +758,7 @@ async def _apply_schedule_change(
                 server_data=_entity_to_dict(existing),
                 client_updated_at=change.client_updated_at,
                 server_updated_at=existing.updated_at,
-                resolution="server_wins",
+                resolution=RESOLUTION_LABELS[winner],
             )
 
         # Client wins - hard delete
@@ -817,7 +817,7 @@ async def _apply_streak_change(
         else:
             # Check for conflict
             winner = resolve_conflict(existing.updated_at, change.client_updated_at)
-            if winner == "server":
+            if winner != "client":
                 logger.debug(f"UPDATE conflict for streak {user_id}: server wins")
                 return ConflictItem(
                     entity_type="streak",
@@ -826,7 +826,7 @@ async def _apply_streak_change(
                     server_data=_entity_to_dict(existing),
                     client_updated_at=change.client_updated_at,
                     server_updated_at=existing.updated_at,
-                    resolution="server_wins",
+                    resolution=RESOLUTION_LABELS[winner],
                 )
 
             # Client wins - apply update
@@ -968,7 +968,7 @@ async def _apply_progress_change(
         else:
             # Check for conflict
             winner = resolve_conflict(existing.updated_at, change.client_updated_at)
-            if winner == "server":
+            if winner != "client":
                 logger.debug(f"UPDATE conflict for progress {user_id}: server wins")
                 return ConflictItem(
                     entity_type="progress",
@@ -977,7 +977,7 @@ async def _apply_progress_change(
                     server_data=_entity_to_dict(existing),
                     client_updated_at=change.client_updated_at,
                     server_updated_at=existing.updated_at,
-                    resolution="server_wins",
+                    resolution=RESOLUTION_LABELS[winner],
                 )
 
             # Client wins - apply update (XP can only go up)
@@ -1016,7 +1016,7 @@ async def _apply_user_profile_change(
 
     if change.operation in ("create", "update"):
         winner = resolve_conflict(existing.updated_at, change.client_updated_at)
-        if winner == "server":
+        if winner != "client":
             logger.debug(f"UPDATE conflict for user_profile {user_id}: server wins")
             return ConflictItem(
                 entity_type="user_profile",
@@ -1025,7 +1025,7 @@ async def _apply_user_profile_change(
                 server_data=_entity_to_dict(existing),
                 client_updated_at=change.client_updated_at,
                 server_updated_at=existing.updated_at,
-                resolution="server_wins",
+                resolution=RESOLUTION_LABELS[winner],
             )
         # Client wins - apply update
         if "nickname" in change.data:

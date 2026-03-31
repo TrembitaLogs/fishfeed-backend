@@ -1,6 +1,6 @@
 """Feeding service with business logic for feeding schedules and logs."""
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from datetime import time as dt_time
 from uuid import UUID
 
@@ -112,7 +112,7 @@ async def generate_schedule(
     }
 
     created_schedules: list[FeedingSchedule] = []
-    today = date.today()
+    today = datetime.now(UTC).date()
 
     for fish in fish_list:
         frequency = (
@@ -206,7 +206,7 @@ async def create_schedule(
         )
 
     # Validate anchor_date not >7 days in future
-    max_anchor = date.today() + timedelta(days=7)
+    max_anchor = datetime.now(UTC).date() + timedelta(days=7)
     if data.anchor_date > max_anchor:
         raise FeedingError(
             "anchor_date cannot be more than 7 days in the future",
@@ -260,7 +260,7 @@ async def update_schedule(
 
     # Validate anchor_date if provided
     if "anchor_date" in update_data and update_data["anchor_date"] is not None:
-        max_anchor = date.today() + timedelta(days=7)
+        max_anchor = datetime.now(UTC).date() + timedelta(days=7)
         if update_data["anchor_date"] > max_anchor:
             raise FeedingError(
                 "anchor_date cannot be more than 7 days in the future",

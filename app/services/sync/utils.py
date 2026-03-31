@@ -1,8 +1,10 @@
 """Sync utility functions: token generation, conflict resolution, entity conversion."""
 
-from datetime import UTC, datetime
-from typing import Any
+from datetime import UTC, datetime, timedelta
+from typing import Any, Literal
 from uuid import uuid4
+
+import structlog
 
 from app.models.aquarium import Aquarium
 from app.models.feeding import FeedingLog, FeedingSchedule
@@ -10,6 +12,17 @@ from app.models.fish import Fish
 from app.models.gamification import Achievement, Streak, UserProgress
 from app.models.user import User
 from app.schemas.sync import ChangeItem, EntityType
+
+logger = structlog.get_logger(__name__)
+
+MAX_CLOCK_SKEW = timedelta(minutes=5)
+
+ConflictWinner = Literal["client", "server", "clock_skew"]
+
+RESOLUTION_LABELS: dict[str, str] = {
+    "server": "server_wins",
+    "clock_skew": "clock_skew_rejected",
+}
 
 
 def _generate_sync_token() -> str:
@@ -29,19 +42,21 @@ def _generate_sync_token() -> str:
 def resolve_conflict(
     server_updated_at: datetime,
     client_updated_at: datetime,
-) -> str:
+) -> ConflictWinner:
     """Determine winner based on timestamp comparison (last-write-wins).
+
+    Rejects client changes whose timestamp is more than 5 minutes ahead of
+    server time (clock skew guard).
 
     Args:
         server_updated_at: Server entity's updated_at timestamp.
         client_updated_at: Client's updated_at timestamp.
 
     Returns:
-        'client' if client timestamp is newer, 'server' otherwise.
-        When timestamps are equal, server wins for determinism.
+        'client' if client timestamp is newer, 'server' if server wins,
+        'clock_skew' if client timestamp exceeds server time by more than
+        MAX_CLOCK_SKEW.
     """
-    # Normalize both datetimes to UTC for comparison
-    # Handle both timezone-aware and timezone-naive datetimes
     server_ts = server_updated_at
     client_ts = client_updated_at
 
@@ -49,6 +64,16 @@ def resolve_conflict(
         server_ts = server_ts.replace(tzinfo=UTC)
     if client_ts.tzinfo is None:
         client_ts = client_ts.replace(tzinfo=UTC)
+
+    now = datetime.now(UTC)
+    if client_ts > now + MAX_CLOCK_SKEW:
+        logger.warning(
+            "Clock skew detected: client_updated_at is too far in the future",
+            client_updated_at=client_ts.isoformat(),
+            server_now=now.isoformat(),
+            skew_seconds=(client_ts - now).total_seconds(),
+        )
+        return "clock_skew"
 
     if client_ts > server_ts:
         return "client"

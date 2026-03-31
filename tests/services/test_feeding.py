@@ -1,8 +1,9 @@
 """Integration tests for feeding service (Schedule + FeedingLog architecture)."""
 
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from datetime import time as dt_time
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import text
@@ -303,6 +304,32 @@ class TestGenerateSchedule:
             # Total should be 3
             all_schedules = await get_schedules(async_session, aquarium.id, user.id)
             assert len(all_schedules) == 3
+        finally:
+            await cleanup_feeding_data(async_session)
+
+    async def test_generate_schedule_uses_utc_date(self, async_session: AsyncSession):
+        """Anchor date should use UTC date, not server-local date.
+
+        Simulates a scenario where it's 2026-04-01 00:30 UTC (still March 31
+        in UTC-5). The generated schedule should use the UTC date (April 1).
+        """
+        await cleanup_feeding_data(async_session)
+        try:
+            user = await create_test_user(async_session)
+            species = await create_test_species(async_session)
+            aquarium = await create_test_aquarium(async_session, user)
+            await add_fish(async_session, aquarium.id, user.id, FishCreate(species_id=species.id))
+
+            # 2026-04-01 00:30 UTC — in a UTC-5 zone this would still be March 31
+            fake_utc_now = datetime(2026, 4, 1, 0, 30, tzinfo=UTC)
+            with patch("app.services.feeding.datetime") as mock_dt:
+                mock_dt.now.return_value = fake_utc_now
+                mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+                schedules = await generate_schedule(async_session, aquarium.id, user.id)
+
+            assert len(schedules) >= 1
+            for schedule in schedules:
+                assert schedule.anchor_date == date(2026, 4, 1)
         finally:
             await cleanup_feeding_data(async_session)
 

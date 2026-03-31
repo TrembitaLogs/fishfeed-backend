@@ -4,7 +4,7 @@ This module provides rate limiting and quiet hours functionality for
 push notifications to prevent spam and respect user preferences.
 """
 
-from datetime import UTC, date, datetime, time, timezone
+from datetime import UTC, datetime, time, timezone
 from uuid import UUID
 
 import structlog
@@ -74,7 +74,7 @@ class ThrottleManager:
         Returns:
             Redis key string.
         """
-        today = date.today().isoformat()
+        today = datetime.now(UTC).date().isoformat()
         return f"{NOTIFICATION_COUNT_PREFIX}:{user_id}:{today}"
 
     async def get_daily_count(self, user_id: UUID) -> int:

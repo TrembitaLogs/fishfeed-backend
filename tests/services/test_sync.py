@@ -1453,6 +1453,71 @@ def test_resolve_conflict_server_wins_on_tie():
     assert result == "server"
 
 
+def test_resolve_conflict_clock_skew_rejected():
+    """Test that client with timestamp far in the future is rejected as clock_skew."""
+    from app.services.sync import resolve_conflict
+
+    server_time = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+    # Client timestamp 10 minutes in the future from now
+    client_time = datetime.now(UTC) + timedelta(minutes=10)
+
+    result = resolve_conflict(server_time, client_time)
+
+    assert result == "clock_skew"
+
+
+def test_resolve_conflict_clock_skew_boundary_within_threshold():
+    """Test that client timestamp within 5-minute threshold is accepted."""
+    from app.services.sync import resolve_conflict
+
+    server_time = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+    # Client timestamp 4 minutes in the future from now (within threshold)
+    client_time = datetime.now(UTC) + timedelta(minutes=4)
+
+    result = resolve_conflict(server_time, client_time)
+
+    assert result == "client"
+
+
+def test_resolve_conflict_clock_skew_boundary_exactly_at_threshold():
+    """Test that client timestamp exactly at 5-minute threshold is accepted."""
+    from app.services.sync import resolve_conflict
+
+    server_time = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+    # Client timestamp exactly at the threshold boundary (should be accepted)
+    client_time = datetime.now(UTC) + timedelta(minutes=5)
+
+    result = resolve_conflict(server_time, client_time)
+
+    # Exactly at threshold is not exceeding it, so client wins
+    assert result == "client"
+
+
+def test_resolve_conflict_clock_skew_just_over_threshold():
+    """Test that client timestamp just over 5-minute threshold is rejected."""
+    from app.services.sync import resolve_conflict
+
+    server_time = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+    # Client timestamp 5 minutes and 1 second in the future
+    client_time = datetime.now(UTC) + timedelta(minutes=5, seconds=1)
+
+    result = resolve_conflict(server_time, client_time)
+
+    assert result == "clock_skew"
+
+
+def test_resolve_conflict_clock_skew_naive_datetimes():
+    """Test clock skew detection with timezone-naive datetimes."""
+    from app.services.sync import resolve_conflict
+
+    server_time = datetime(2024, 1, 1, 12, 0, 0)  # naive
+    client_time = datetime.now(UTC).replace(tzinfo=None) + timedelta(minutes=10)  # naive, far future
+
+    result = resolve_conflict(server_time, client_time)
+
+    assert result == "clock_skew"
+
+
 # ============================================================================
 # Verify _detect_concurrent_feeding is removed
 # ============================================================================
