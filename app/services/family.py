@@ -18,7 +18,8 @@ from app.services.aquarium import (
     check_access,
 )
 from app.services.gamification import check_achievements
-from app.services.image_service import generate_presigned_url
+from app.services.image_service import batch_generate_presigned_urls
+from app.services.notification import NotificationService
 
 logger = structlog.get_logger(__name__)
 
@@ -238,29 +239,24 @@ async def get_family_members(
     result = await db.execute(stmt)
     rows = result.all()
 
-    # Resolve avatar_key → presigned URL for members that have avatars
-    members = []
-    for row in rows:
-        avatar_url = None
-        if row.avatar_key:
-            try:
-                avatar_url = await generate_presigned_url(row.avatar_key)
-            except Exception:
-                logger.warning(
-                    "failed_to_generate_avatar_url",
-                    user_id=str(row.user_id),
-                    avatar_key=row.avatar_key,
-                )
+    # Batch presign all avatar keys in one S3 client session (fixes N+1)
+    avatar_keys = [row.avatar_key for row in rows if row.avatar_key]
+    try:
+        presigned_urls = await batch_generate_presigned_urls(avatar_keys)
+    except Exception:
+        logger.warning("failed_to_batch_generate_avatar_urls", aquarium_id=str(aquarium_id))
+        presigned_urls = {}
 
-        members.append(
-            FamilyMemberResponse(
-                user_id=row.user_id,
-                nickname=row.nickname,
-                avatar_url=avatar_url,
-                role=row.role,
-                joined_at=row.joined_at,
-            )
+    members = [
+        FamilyMemberResponse(
+            user_id=row.user_id,
+            nickname=row.nickname,
+            avatar_url=presigned_urls.get(row.avatar_key),
+            role=row.role,
+            joined_at=row.joined_at,
         )
+        for row in rows
+    ]
 
     logger.debug(f"Retrieved {len(members)} family members for aquarium '{aquarium_id}'")
     return members
@@ -419,8 +415,22 @@ async def accept_invite(
     await db.flush()
     await db.refresh(aquarium)
 
-    # TODO: Send push notification to owner when NotificationService is implemented
-    # notify_owner_new_member(aquarium.id, user_nickname)
+    # Notify the aquarium owner that a new member joined
+    try:
+        notification_service = NotificationService(db)
+        await notification_service.send_push(
+            user_id=aquarium.owner_id,
+            title="New family member joined",
+            body=f"A new member has joined your aquarium '{aquarium.name}'",
+            data={
+                "type": "family_member_joined",
+                "aquarium_id": str(aquarium.id),
+            },
+            notification_type="family_update",
+        )
+    except Exception as e:
+        logger.error(f"Failed to send push notification to owner: {e}")
+
     logger.info(
         f"User '{user_id}' accepted invite '{invite_code}' "
         f"and joined aquarium '{aquarium.id}'"
@@ -485,8 +495,22 @@ async def remove_member(
     await db.delete(member)
     await db.flush()
 
-    # TODO: Send push notification to removed member when NotificationService is implemented
-    # notify_member_removed(member_id, aquarium.name)
+    # Notify the removed member
+    try:
+        notification_service = NotificationService(db)
+        await notification_service.send_push(
+            user_id=member_id,
+            title="Removed from aquarium",
+            body=f"You have been removed from aquarium '{aquarium.name}'",
+            data={
+                "type": "family_member_removed",
+                "aquarium_id": str(aquarium_id),
+            },
+            notification_type="family_update",
+        )
+    except Exception as e:
+        logger.error(f"Failed to send push notification to removed member: {e}")
+
     logger.info(
         f"Owner '{requesting_user_id}' removed member '{member_id}' "
         f"from aquarium '{aquarium_id}'"

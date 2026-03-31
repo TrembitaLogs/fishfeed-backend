@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import text
@@ -858,5 +859,157 @@ async def test_remove_member_after_removal_cannot_access(async_session: AsyncSes
         # Verify member no longer has access
         with pytest.raises(AquariumAccessDeniedError):
             await get_family_members(async_session, aquarium.id, member.id)
+    finally:
+        await cleanup_family_data(async_session)
+
+
+# Push notification tests
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_accept_invite_sends_push_notification_to_owner(
+    async_session: AsyncSession,
+):
+    """Test that accepting invite sends push notification to aquarium owner."""
+    await cleanup_family_data(async_session)
+    try:
+        owner = await create_test_user(async_session, email="owner@example.com")
+        new_member = await create_test_user(async_session, email="member@example.com")
+
+        data = AquariumCreate(name="Test Aquarium")
+        aquarium = await create_aquarium(async_session, owner.id, data)
+        invite = await create_invite(async_session, aquarium.id, owner.id)
+
+        with patch(
+            "app.services.family.NotificationService"
+        ) as MockNotificationService:
+            mock_service = MockNotificationService.return_value
+            mock_service.send_push = AsyncMock(return_value=True)
+
+            await accept_invite(async_session, invite.invite_code, new_member.id)
+
+            mock_service.send_push.assert_called_once()
+            call_kwargs = mock_service.send_push.call_args.kwargs
+            assert call_kwargs["user_id"] == owner.id
+            assert call_kwargs["notification_type"] == "family_update"
+            assert "family_member_joined" in call_kwargs["data"]["type"]
+            assert call_kwargs["data"]["aquarium_id"] == str(aquarium.id)
+    finally:
+        await cleanup_family_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_accept_invite_succeeds_when_notification_fails(
+    async_session: AsyncSession,
+):
+    """Test that accept_invite still succeeds even if notification fails."""
+    await cleanup_family_data(async_session)
+    try:
+        owner = await create_test_user(async_session, email="owner@example.com")
+        new_member = await create_test_user(async_session, email="member@example.com")
+
+        data = AquariumCreate(name="Test Aquarium")
+        aquarium = await create_aquarium(async_session, owner.id, data)
+        invite = await create_invite(async_session, aquarium.id, owner.id)
+
+        with patch(
+            "app.services.family.NotificationService"
+        ) as MockNotificationService:
+            mock_service = MockNotificationService.return_value
+            mock_service.send_push = AsyncMock(
+                side_effect=Exception("Network error")
+            )
+
+            result = await accept_invite(
+                async_session, invite.invite_code, new_member.id
+            )
+            assert result.id == aquarium.id
+
+            members = await get_family_members(
+                async_session, aquarium.id, owner.id
+            )
+            assert len(members) == 2
+    finally:
+        await cleanup_family_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_remove_member_sends_push_notification_to_removed_member(
+    async_session: AsyncSession,
+):
+    """Test that removing a member sends push notification to the removed member."""
+    await cleanup_family_data(async_session)
+    try:
+        owner = await create_test_user(async_session, email="owner@example.com")
+        member = await create_test_user(async_session, email="member@example.com")
+
+        data = AquariumCreate(name="Test Aquarium")
+        aquarium = await create_aquarium(async_session, owner.id, data)
+
+        am = AquariumMember(
+            aquarium_id=aquarium.id,
+            user_id=member.id,
+            role="member",
+        )
+        async_session.add(am)
+        await async_session.commit()
+
+        with patch(
+            "app.services.family.NotificationService"
+        ) as MockNotificationService:
+            mock_service = MockNotificationService.return_value
+            mock_service.send_push = AsyncMock(return_value=True)
+
+            await remove_member(
+                async_session, aquarium.id, member.id, owner.id
+            )
+
+            mock_service.send_push.assert_called_once()
+            call_kwargs = mock_service.send_push.call_args.kwargs
+            assert call_kwargs["user_id"] == member.id
+            assert call_kwargs["notification_type"] == "family_update"
+            assert "family_member_removed" in call_kwargs["data"]["type"]
+            assert call_kwargs["data"]["aquarium_id"] == str(aquarium.id)
+    finally:
+        await cleanup_family_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_remove_member_succeeds_when_notification_fails(
+    async_session: AsyncSession,
+):
+    """Test that remove_member still succeeds even if notification fails."""
+    await cleanup_family_data(async_session)
+    try:
+        owner = await create_test_user(async_session, email="owner@example.com")
+        member = await create_test_user(async_session, email="member@example.com")
+
+        data = AquariumCreate(name="Test Aquarium")
+        aquarium = await create_aquarium(async_session, owner.id, data)
+
+        am = AquariumMember(
+            aquarium_id=aquarium.id,
+            user_id=member.id,
+            role="member",
+        )
+        async_session.add(am)
+        await async_session.commit()
+
+        with patch(
+            "app.services.family.NotificationService"
+        ) as MockNotificationService:
+            mock_service = MockNotificationService.return_value
+            mock_service.send_push = AsyncMock(
+                side_effect=Exception("Network error")
+            )
+
+            await remove_member(
+                async_session, aquarium.id, member.id, owner.id
+            )
+
+            members = await get_family_members(
+                async_session, aquarium.id, owner.id
+            )
+            assert len(members) == 1
     finally:
         await cleanup_family_data(async_session)
