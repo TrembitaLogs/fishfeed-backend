@@ -4,14 +4,14 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from starlette.middleware.sessions import SessionMiddleware
-
-TEST_SESSION_SECRET = "test-session-secret-minimum-32-characters-long"
-
-
 @pytest_asyncio.fixture(loop_scope="session")
 async def admin_app(async_engine):
-    """Create a minimal FastAPI app with SQLAdmin configured using test engine."""
+    """Create a minimal FastAPI app with SQLAdmin configured using test engine.
+
+    Note: sqladmin adds its own SessionMiddleware internally when
+    authentication_backend is provided, so we must NOT add another one here
+    to avoid double-signing conflicts.
+    """
     test_app = FastAPI()
 
     with pytest.MonkeyPatch.context() as mp:
@@ -19,8 +19,6 @@ async def admin_app(async_engine):
         from app.admin.setup import setup_admin
 
         setup_admin(test_app)
-
-    test_app.add_middleware(SessionMiddleware, secret_key=TEST_SESSION_SECRET)
 
     yield test_app
 

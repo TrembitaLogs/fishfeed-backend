@@ -848,7 +848,7 @@ async def test_schedule_update_handles_new_fields(
                 "interval_days": 2,
                 "active": False,
             },
-            client_updated_at=schedule.updated_at + timedelta(hours=1),
+            client_updated_at=schedule.updated_at + timedelta(seconds=1),
         )
         request = SyncRequest(changes=[change], last_sync_at=None)
 
@@ -1326,7 +1326,7 @@ async def test_apply_changes_update_fish_client_wins(
         aquarium = await create_test_aquarium(async_session, user.id)
         fish = await create_test_fish(async_session, aquarium.id)
 
-        client_time = fish.updated_at + timedelta(hours=1)
+        client_time = fish.updated_at + timedelta(seconds=1)
 
         change = ChangeItem(
             entity_type="fish",
@@ -1392,7 +1392,7 @@ async def test_apply_changes_delete_fish_client_wins(
         aquarium = await create_test_aquarium(async_session, user.id)
         fish = await create_test_fish(async_session, aquarium.id)
 
-        client_time = fish.updated_at + timedelta(hours=1)
+        client_time = fish.updated_at + timedelta(seconds=1)
 
         change = ChangeItem(
             entity_type="fish",
@@ -2073,7 +2073,7 @@ async def test_aquarium_photo_key_update_creates_orphaned_image(
             entity_id=aquarium.id,
             operation="update",
             data={"photo_key": new_key},
-            client_updated_at=aquarium.updated_at + timedelta(hours=1),
+            client_updated_at=aquarium.updated_at + timedelta(seconds=1),
         )
         response = await process_sync(
             async_session, user.id, SyncRequest(changes=[change]),
@@ -2110,7 +2110,7 @@ async def test_aquarium_photo_key_null_creates_orphaned_image(
             entity_id=aquarium.id,
             operation="update",
             data={"photo_key": None},
-            client_updated_at=aquarium.updated_at + timedelta(hours=1),
+            client_updated_at=aquarium.updated_at + timedelta(seconds=1),
         )
         response = await process_sync(
             async_session, user.id, SyncRequest(changes=[change]),
@@ -2185,7 +2185,7 @@ async def test_same_photo_key_no_orphaned_duplicate(
             entity_id=aquarium.id,
             operation="update",
             data={"photo_key": same_key},
-            client_updated_at=aquarium.updated_at + timedelta(hours=1),
+            client_updated_at=aquarium.updated_at + timedelta(seconds=1),
         )
         await process_sync(
             async_session, user.id, SyncRequest(changes=[change]),
@@ -2227,7 +2227,7 @@ async def test_invalid_aquarium_photo_key_ignored(
                 entity_id=aquarium.id,
                 operation="update",
                 data={"photo_key": invalid_key},
-                client_updated_at=aquarium.updated_at + timedelta(hours=1),
+                client_updated_at=aquarium.updated_at + timedelta(seconds=1),
             )
             await process_sync(
                 async_session, user.id, SyncRequest(changes=[change]),
@@ -2260,7 +2260,7 @@ async def test_fish_photo_key_update_creates_orphaned_image(
             entity_id=fish.id,
             operation="update",
             data={"photo_key": new_key},
-            client_updated_at=fish.updated_at + timedelta(hours=1),
+            client_updated_at=fish.updated_at + timedelta(seconds=1),
         )
         response = await process_sync(
             async_session, user.id, SyncRequest(changes=[change]),
@@ -2294,7 +2294,7 @@ async def test_invalid_fish_photo_key_cross_type_rejected(
             entity_id=fish.id,
             operation="update",
             data={"photo_key": "aquariums/abc/99999999.webp"},
-            client_updated_at=fish.updated_at + timedelta(hours=1),
+            client_updated_at=fish.updated_at + timedelta(seconds=1),
         )
         await process_sync(
             async_session, user.id, SyncRequest(changes=[change]),
@@ -2330,7 +2330,7 @@ async def test_user_avatar_key_update_creates_orphaned_image(
             entity_id=user.id,
             operation="update",
             data={"avatar_key": new_key},
-            client_updated_at=user.updated_at + timedelta(hours=1),
+            client_updated_at=user.updated_at + timedelta(seconds=1),
         )
         response = await process_sync(
             async_session, user.id, SyncRequest(changes=[change]),
@@ -2366,7 +2366,7 @@ async def test_user_avatar_key_null_creates_orphaned_image(
             entity_id=user.id,
             operation="update",
             data={"avatar_key": None},
-            client_updated_at=user.updated_at + timedelta(hours=1),
+            client_updated_at=user.updated_at + timedelta(seconds=1),
         )
         response = await process_sync(
             async_session, user.id, SyncRequest(changes=[change]),
@@ -2397,7 +2397,7 @@ async def test_user_avatar_url_field_not_accepted(
             entity_id=user.id,
             operation="update",
             data={"avatar_url": "https://example.com/avatar.jpg"},
-            client_updated_at=user.updated_at + timedelta(hours=1),
+            client_updated_at=user.updated_at + timedelta(seconds=1),
         )
         await process_sync(
             async_session, user.id, SyncRequest(changes=[change]),
@@ -2467,7 +2467,7 @@ async def test_invalid_avatar_key_ignored(
                 entity_id=user.id,
                 operation="update",
                 data={"avatar_key": invalid_key},
-                client_updated_at=user.updated_at + timedelta(hours=1),
+                client_updated_at=user.updated_at + timedelta(seconds=1),
             )
             await process_sync(
                 async_session, user.id, SyncRequest(changes=[change]),
@@ -2542,7 +2542,7 @@ async def test_photo_key_empty_string_rejected(
             entity_id=aquarium.id,
             operation="update",
             data={"photo_key": ""},
-            client_updated_at=aquarium.updated_at + timedelta(hours=1),
+            client_updated_at=aquarium.updated_at + timedelta(seconds=1),
         )
         await process_sync(
             async_session, user.id, SyncRequest(changes=[change]),
@@ -2575,7 +2575,7 @@ async def test_concurrent_photo_key_updates_different_entities(
 
         new_aq_key = "aquariums/abc/fff66666.webp"
         new_fish_key = "fish/abc/00077777.webp"
-        client_time = max(aquarium.updated_at, fish.updated_at) + timedelta(hours=1)
+        client_time = max(aquarium.updated_at, fish.updated_at) + timedelta(seconds=1)
 
         changes = [
             ChangeItem(
@@ -2646,7 +2646,7 @@ async def test_full_sync_roundtrip_with_photo_key(
             entity_id=aq_id,
             operation="update",
             data={"photo_key": photo_key},
-            client_updated_at=aquarium.updated_at + timedelta(hours=1),
+            client_updated_at=aquarium.updated_at + timedelta(seconds=1),
         )
         await process_sync(
             async_session, user.id, SyncRequest(changes=[update_change]),

@@ -14,6 +14,8 @@ from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.utils.password import hash_password
+
 TEST_USERNAME = "admin"
 TEST_PASSWORD = "Admin$ecure123"
 
@@ -245,4 +247,5 @@ def _settings(
     username: str = TEST_USERNAME,
     password: str = TEST_PASSWORD,
 ) -> _FakeSettings:
-    return _FakeSettings(username=username, password=password)
+    hashed = hash_password(password) if password else password
+    return _FakeSettings(username=username, password=hashed)
