@@ -169,6 +169,69 @@ class TestSessionCookieAttributes:
         )
 
 
+# ─── Session persistence ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestSessionPersistence:
+    """Verify admin sessions persist across requests via SessionMiddleware."""
+
+    async def test_session_persists_after_login(self, admin_app, monkeypatch):
+        """After login, subsequent requests should remain authenticated."""
+        monkeypatch.setattr("app.admin.auth.get_settings", lambda: _settings())
+
+        transport = ASGITransport(app=admin_app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            login_response = await client.post(
+                "/admin/login",
+                data={"username": TEST_USERNAME, "password": TEST_PASSWORD},
+                follow_redirects=False,
+            )
+            assert login_response.status_code in (301, 302, 303, 307)
+
+            session_cookie = login_response.cookies.get("session")
+            assert session_cookie, "Expected session cookie after login"
+
+            admin_response = await client.get("/admin/", follow_redirects=False)
+
+            assert admin_response.status_code == 200
+            assert "text/html" in admin_response.headers.get("content-type", "")
+
+    async def test_unauthenticated_request_redirects_to_login(self, admin_app):
+        """Without a session cookie, /admin/ should redirect to login."""
+        transport = ASGITransport(app=admin_app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            response = await client.get("/admin/", follow_redirects=False)
+
+        assert response.status_code in (301, 302, 303, 307)
+        assert "/admin/login" in response.headers.get("location", "")
+
+    async def test_logout_invalidates_session(self, admin_app, monkeypatch):
+        """After logout, the session should no longer grant access."""
+        monkeypatch.setattr("app.admin.auth.get_settings", lambda: _settings())
+
+        transport = ASGITransport(app=admin_app)
+        async with AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            await client.post(
+                "/admin/login",
+                data={"username": TEST_USERNAME, "password": TEST_PASSWORD},
+                follow_redirects=False,
+            )
+
+            await client.get("/admin/logout", follow_redirects=False)
+
+            response = await client.get("/admin/", follow_redirects=False)
+
+        assert response.status_code in (301, 302, 303, 307)
+        assert "/admin/login" in response.headers.get("location", "")
+
+
 # ─── Helpers ─────────────────────────────────────────────────────────
 
 

@@ -293,7 +293,7 @@ class TestPasswordChange:
 
 @pytest.mark.asyncio(loop_scope="session")
 class TestPasswordReset:
-    """Tests for POST /auth/password/reset endpoint."""
+    """Tests for POST /auth/password/reset and /auth/password/reset/confirm endpoints."""
 
     async def test_password_reset_always_succeeds(self, client: AsyncClient):
         """Test that password reset always returns 202 to prevent enumeration."""
@@ -313,6 +313,78 @@ class TestPasswordReset:
             json={"email": email},
         )
         assert response.status_code == 202
+
+    async def test_password_reset_confirm_with_valid_token(self, client: AsyncClient):
+        """Test that password reset confirm works with a valid token."""
+        email = "resetconfirm@example.com"
+        old_password = "OldSecurePass123"
+        new_password = "NewSecurePass456"
+
+        await client.post(
+            "/api/v1/auth/register",
+            json={"email": email, "password": old_password},
+        )
+
+        with patch(
+            "app.services.auth.send_password_reset_email",
+            return_value=True,
+        ) as mock_send:
+            await client.post(
+                "/api/v1/auth/password/reset",
+                json={"email": email},
+            )
+            mock_send.assert_called_once()
+            token = mock_send.call_args[0][1]
+
+        response = await client.post(
+            "/api/v1/auth/password/reset/confirm",
+            json={"token": token, "new_password": new_password},
+        )
+        assert response.status_code == 200
+
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"email": email, "password": new_password},
+        )
+        assert login_response.status_code == 200
+
+    async def test_password_reset_confirm_invalid_token_fails(self, client: AsyncClient):
+        """Test that password reset confirm fails with invalid token."""
+        response = await client.post(
+            "/api/v1/auth/password/reset/confirm",
+            json={"token": "invalid-token-value", "new_password": "NewSecurePass123"},
+        )
+        assert response.status_code == 400
+
+    async def test_password_reset_token_is_single_use(self, client: AsyncClient):
+        """Test that a reset token cannot be reused."""
+        email = "singleuse@example.com"
+        await client.post(
+            "/api/v1/auth/register",
+            json={"email": email, "password": "OldSecurePass123"},
+        )
+
+        with patch(
+            "app.services.auth.send_password_reset_email",
+            return_value=True,
+        ) as mock_send:
+            await client.post(
+                "/api/v1/auth/password/reset",
+                json={"email": email},
+            )
+            token = mock_send.call_args[0][1]
+
+        response = await client.post(
+            "/api/v1/auth/password/reset/confirm",
+            json={"token": token, "new_password": "NewSecurePass456"},
+        )
+        assert response.status_code == 200
+
+        response = await client.post(
+            "/api/v1/auth/password/reset/confirm",
+            json={"token": token, "new_password": "AnotherPass789"},
+        )
+        assert response.status_code == 400
 
 
 @pytest.mark.asyncio(loop_scope="session")

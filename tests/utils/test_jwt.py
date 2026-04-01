@@ -3,7 +3,7 @@
 from datetime import timedelta
 from uuid import uuid4
 
-from jose import jwt
+import jwt
 
 from app.config import get_settings
 from app.utils.jwt import create_access_token, create_refresh_token, decode_token

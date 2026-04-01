@@ -5,19 +5,18 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from redis.asyncio import Redis
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import get_db
 from app.dependencies import CurrentActiveUser
 from app.middleware.rate_limit import RateLimiter, _get_client_ip, _hash_ip
-from app.models.user import User
 from app.redis import get_redis
 from app.schemas.auth import (
     LoginRequest,
     OAuthRequest,
     PasswordChangeRequest,
+    PasswordResetConfirmRequest,
     PasswordResetRequest,
     RefreshRequest,
     RegisterRequest,
@@ -27,15 +26,20 @@ from app.services.auth import (
     EmailAlreadyExistsError,
     InvalidCredentialsError,
     InvalidOAuthTokenError,
+    InvalidOldPasswordError,
     InvalidRefreshTokenError,
+    InvalidResetTokenError,
     OAuthNotConfiguredError,
+    OAuthPasswordChangeError,
+    change_password,
+    confirm_password_reset,
     login_user,
     logout,
     oauth_login,
     refresh_tokens,
     register_user,
+    request_password_reset,
 )
-from app.utils.password import hash_password, verify_password
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -218,7 +222,9 @@ async def logout_user(
 )
 async def password_reset(
     request: PasswordResetRequest,
+    http_request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis)],
 ) -> dict[str, str]:
     """Request a password reset email.
 
@@ -226,17 +232,39 @@ async def password_reset(
     if a user with that email exists. Always returns success
     to prevent email enumeration.
     """
-    # Check if user exists (but don't reveal this to the client)
-    stmt = select(User).where(User.email == request.email, User.deleted_at.is_(None))
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
+    settings = get_settings()
+    await _check_auth_rate_limit(http_request, redis, settings.RATE_LIMIT_LOGIN_PER_MIN, "auth_password_reset")
 
-    if user is not None:
-        # TODO: Generate reset token and send email
-        # This will be implemented when email service is available
-        pass
+    await request_password_reset(db, redis, request.email)
 
     return {"message": "If the email exists, a password reset link has been sent"}
+
+
+@router.post(
+    "/password/reset/confirm",
+    status_code=status.HTTP_200_OK,
+    summary="Confirm password reset",
+    responses={
+        200: {"description": "Password reset successfully"},
+        400: {"description": "Invalid or expired reset token"},
+    },
+)
+async def password_reset_confirm(
+    request: PasswordResetConfirmRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis)],
+) -> dict[str, str]:
+    """Complete a password reset using the token from the reset email.
+
+    Validates the reset token and sets the new password.
+    The token is single-use and expires after use.
+    """
+    try:
+        await confirm_password_reset(db, redis, request.token, request.new_password)
+    except InvalidResetTokenError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+
+    return {"message": "Password has been reset successfully"}
 
 
 @router.post(
@@ -259,21 +287,10 @@ async def password_change(
     Requires the current password for verification before
     setting the new password.
     """
-    if current_user.password_hash is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot change password for OAuth accounts",
-        )
-
-    if not verify_password(request.old_password, current_user.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid old password",
-        )
-
-    current_user.password_hash = hash_password(request.new_password)
-    current_user.token_version += 1
-    await db.flush()
+    try:
+        await change_password(db, current_user, request.old_password, request.new_password)
+    except (OAuthPasswordChangeError, InvalidOldPasswordError) as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message) from None
 
     return {"message": "Password changed successfully"}
 

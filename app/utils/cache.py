@@ -12,6 +12,9 @@ TTL_SPECIES_LIST = 3600  # 1 hour
 TTL_SPECIES_DETAIL = 86400  # 24 hours
 TTL_SPECIES_POPULAR = 3600  # 1 hour
 TTL_SPECIES_SEARCH = 1800  # 30 minutes
+TTL_USER_STATS = 60  # 1 minute - invalidated on feed/achievement actions
+TTL_USER_ACHIEVEMENTS = 120  # 2 minutes
+TTL_FEEDING_SCHEDULES = 300  # 5 minutes
 
 
 def _hash_dict(data: dict[str, Any]) -> str:
@@ -103,3 +106,43 @@ def species_popular_pattern() -> str:
         Redis key pattern string.
     """
     return f"species:{CACHE_VERSION}:popular*"
+
+
+# User stats / gamification cache keys
+
+
+def user_stats_key(user_id: str) -> str:
+    """Generate cache key for user gamification stats."""
+    return f"user_stats:{CACHE_VERSION}:{user_id}"
+
+
+def user_achievements_key(user_id: str) -> str:
+    """Generate cache key for user achievements list."""
+    return f"achievements:{CACHE_VERSION}:{user_id}"
+
+
+def user_gamification_pattern(user_id: str) -> str:
+    """Get pattern for all gamification cache keys for a user."""
+    return f"*:{CACHE_VERSION}:{user_id}"
+
+
+def invalidate_user_gamification_keys(user_id: str) -> list[str]:
+    """Get list of cache keys to delete when user gamification data changes."""
+    return [
+        user_stats_key(user_id),
+        user_achievements_key(user_id),
+    ]
+
+
+# Feeding schedule cache keys
+
+
+def feeding_schedules_key(aquarium_id: str, active_only: bool = True) -> str:
+    """Generate cache key for feeding schedules of an aquarium."""
+    suffix = "active" if active_only else "all"
+    return f"feeding_schedules:{CACHE_VERSION}:{aquarium_id}:{suffix}"
+
+
+def feeding_schedules_pattern(aquarium_id: str) -> str:
+    """Get pattern for all feeding schedule cache keys for an aquarium."""
+    return f"feeding_schedules:{CACHE_VERSION}:{aquarium_id}:*"

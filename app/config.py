@@ -9,6 +9,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        secrets_dir="/run/secrets",
     )
 
     # Application
@@ -29,6 +30,13 @@ class Settings(BaseSettings):
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_POOL_MIN_SIZE: int = 5
+    REDIS_POOL_MAX_SIZE: int = 20
+    REDIS_POOL_TIMEOUT: int = 10  # Seconds to wait for a connection from the pool
+    REDIS_SOCKET_TIMEOUT: int = 5  # Seconds for socket read/write operations
+    REDIS_SOCKET_CONNECT_TIMEOUT: int = 3  # Seconds to establish a connection
+    REDIS_RETRY_ON_TIMEOUT: bool = True
+    REDIS_HEALTH_CHECK_INTERVAL: int = 30  # Seconds between health checks on idle connections
 
     # CORS
     CORS_ORIGINS: list[str] = [

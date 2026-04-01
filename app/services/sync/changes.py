@@ -18,6 +18,7 @@ from app.schemas.sync import ChangeItem, ConflictItem
 from app.services import feeding as feeding_service
 from app.services.image_service import register_orphaned
 
+from .dead_letter import record_dead_letter
 from .utils import RESOLUTION_LABELS, _entity_to_dict, _group_changes_by_entity_type, resolve_conflict
 
 logger = structlog.get_logger(__name__)
@@ -1094,9 +1095,29 @@ async def apply_changes(
         user_profile=len(grouped["user_profile"]),
     )
 
+    async def _safe_apply(
+        change: ChangeItem,
+        handler: Any,
+        *args: Any,
+    ) -> ConflictItem | None:
+        """Apply a change handler, recording failures to dead-letter instead of aborting sync."""
+        try:
+            result: ConflictItem | None = await handler(db, user_id, change, *args)
+            return result
+        except Exception as e:
+            logger.error(
+                "Change handler failed, recording to dead letter",
+                entity_type=change.entity_type,
+                entity_id=str(change.entity_id),
+                operation=change.operation,
+                error=str(e),
+            )
+            await record_dead_letter(db, user_id, change, e)
+            return None
+
     # Process aquarium changes
     for change in grouped["aquarium"]:
-        conflict = await _apply_aquarium_change(db, user_id, change)
+        conflict = await _safe_apply(change, _apply_aquarium_change)
         if conflict:
             conflicts.append(conflict)
 
@@ -1110,7 +1131,7 @@ async def apply_changes(
     # Process fish changes and collect affected aquarium IDs
     affected_aquarium_ids: set[UUID] = set()
     for change in grouped["fish"]:
-        conflict = await _apply_fish_change(db, user_id, change, accessible_aquarium_ids)
+        conflict = await _safe_apply(change, _apply_fish_change, accessible_aquarium_ids)
         if conflict:
             conflicts.append(conflict)
         else:
@@ -1129,37 +1150,37 @@ async def apply_changes(
 
     # Process feeding log changes
     for change in grouped["feeding_log"]:
-        conflict = await _apply_feeding_log_change(db, user_id, change)
+        conflict = await _safe_apply(change, _apply_feeding_log_change)
         if conflict:
             conflicts.append(conflict)
 
     # Process schedule changes
     for change in grouped["schedule"]:
-        conflict = await _apply_schedule_change(db, user_id, change)
+        conflict = await _safe_apply(change, _apply_schedule_change)
         if conflict:
             conflicts.append(conflict)
 
     # Process streak changes (user-scoped)
     for change in grouped["streak"]:
-        conflict = await _apply_streak_change(db, user_id, change)
+        conflict = await _safe_apply(change, _apply_streak_change)
         if conflict:
             conflicts.append(conflict)
 
     # Process achievement changes (user-scoped)
     for change in grouped["achievement"]:
-        conflict = await _apply_achievement_change(db, user_id, change)
+        conflict = await _safe_apply(change, _apply_achievement_change)
         if conflict:
             conflicts.append(conflict)
 
     # Process progress changes (user-scoped)
     for change in grouped["progress"]:
-        conflict = await _apply_progress_change(db, user_id, change)
+        conflict = await _safe_apply(change, _apply_progress_change)
         if conflict:
             conflicts.append(conflict)
 
     # Process user_profile changes (user-scoped)
     for change in grouped["user_profile"]:
-        conflict = await _apply_user_profile_change(db, user_id, change)
+        conflict = await _safe_apply(change, _apply_user_profile_change)
         if conflict:
             conflicts.append(conflict)
 

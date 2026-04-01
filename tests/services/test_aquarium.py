@@ -1,5 +1,6 @@
 """Integration tests for aquarium service."""
 
+import asyncio
 import uuid
 
 import pytest
@@ -15,6 +16,7 @@ from app.services.aquarium import (
     AquariumAccessDeniedError,
     AquariumNotFoundError,
     AquariumOwnerRequiredError,
+    check_access,
     create_aquarium,
     delete_aquarium,
     get_aquarium,
@@ -507,5 +509,87 @@ async def test_get_deleted_aquarium_raises_not_found(async_session: AsyncSession
             await get_aquarium(async_session, aquarium_id, user.id)
 
         assert exc_info.value.status_code == 404
+    finally:
+        await cleanup_aquarium_data(async_session)
+
+
+# concurrent access tests
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_check_access_concurrent_requests_consistent(async_session: AsyncSession):
+    """Test that concurrent check_access calls return consistent results.
+
+    Verifies that the atomic single-query approach in check_access
+    produces correct results when called concurrently for the same
+    aquarium by both an authorized owner and an unauthorized user.
+    """
+    await cleanup_aquarium_data(async_session)
+    try:
+        owner = await create_test_user(async_session, "owner@example.com")
+        stranger = await create_test_user(async_session, "stranger@example.com")
+        data = AquariumCreate(name="Concurrent Test")
+        aquarium = await create_aquarium(async_session, owner.id, data)
+
+        async def owner_access():
+            aq, role = await check_access(async_session, aquarium.id, owner.id)
+            return aq.id, role
+
+        async def stranger_access():
+            try:
+                await check_access(async_session, aquarium.id, stranger.id)
+                return None, "should_have_raised"
+            except AquariumAccessDeniedError:
+                return None, "denied"
+
+        results = await asyncio.gather(
+            owner_access(),
+            stranger_access(),
+            owner_access(),
+            stranger_access(),
+        )
+
+        # Owner always gets access with 'owner' role
+        assert results[0] == (aquarium.id, "owner")
+        assert results[2] == (aquarium.id, "owner")
+        # Stranger always gets denied
+        assert results[1] == (None, "denied")
+        assert results[3] == (None, "denied")
+    finally:
+        await cleanup_aquarium_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_check_access_atomic_for_member_role(async_session: AsyncSession):
+    """Test that check_access returns correct member role atomically."""
+    await cleanup_aquarium_data(async_session)
+    try:
+        owner = await create_test_user(async_session, "owner@example.com")
+        member_user = await create_test_user(async_session, "member@example.com")
+
+        data = AquariumCreate(name="Member Atomic Test")
+        aquarium = await create_aquarium(async_session, owner.id, data)
+
+        member = AquariumMember(
+            aquarium_id=aquarium.id,
+            user_id=member_user.id,
+            role="member",
+        )
+        async_session.add(member)
+        await async_session.commit()
+
+        # Concurrent access checks for owner and member
+        results = await asyncio.gather(
+            check_access(async_session, aquarium.id, owner.id),
+            check_access(async_session, aquarium.id, member_user.id),
+        )
+
+        owner_aq, owner_role = results[0]
+        member_aq, member_role = results[1]
+
+        assert owner_aq.id == aquarium.id
+        assert owner_role == "owner"
+        assert member_aq.id == aquarium.id
+        assert member_role == "member"
     finally:
         await cleanup_aquarium_data(async_session)

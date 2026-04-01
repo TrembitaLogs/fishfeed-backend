@@ -4,7 +4,8 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from jose import ExpiredSignatureError, JWTError, jwt
+import jwt
+from jwt import ExpiredSignatureError, PyJWTError
 
 from app.config import get_settings
 
@@ -88,5 +89,5 @@ def decode_token(token: str) -> dict | None:
         return payload
     except ExpiredSignatureError:
         return None
-    except JWTError:
+    except PyJWTError:
         return None

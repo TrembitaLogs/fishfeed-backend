@@ -78,6 +78,24 @@ class PasswordResetRequest(BaseModel):
     email: EmailStr
 
 
+class PasswordResetConfirmRequest(BaseModel):
+    """Request schema for completing a password reset."""
+
+    token: str = Field(min_length=1)
+    new_password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password_complexity(cls, v: str) -> str:
+        """Validate new password meets complexity requirements."""
+        if not PASSWORD_PATTERN.match(v):
+            raise ValueError(
+                "Password must contain at least one uppercase letter, "
+                "one lowercase letter, and one digit"
+            )
+        return v
+
+
 class PasswordChangeRequest(BaseModel):
     """Request schema for password change."""
 

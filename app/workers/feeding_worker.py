@@ -8,6 +8,11 @@ This module provides scheduled jobs for:
 - Image cleanup: orphaned images garbage collection (daily at 04:00 UTC)
 - S3 reconciliation: find unreferenced S3 objects (weekly Sunday at 05:00 UTC)
 
+Schedule migration tracking:
+    Increment SCHEDULE_VERSION when changing job schedules (triggers, timing).
+    The version is stored in Redis so schedules are only re-registered on version bumps,
+    avoiding unnecessary churn on every restart.
+
 Usage:
     # Run as standalone worker
     python -m app.workers.feeding_worker
@@ -28,7 +33,7 @@ from datetime import UTC
 from typing import Any
 
 import structlog
-from apscheduler import AsyncScheduler, ConflictPolicy
+from apscheduler import AsyncScheduler, ConflictPolicy, JobOutcome, JobReleased
 from apscheduler.datastores.sqlalchemy import SQLAlchemyDataStore
 from apscheduler.eventbrokers.asyncpg import AsyncpgEventBroker
 from apscheduler.triggers.cron import CronTrigger
@@ -43,6 +48,17 @@ from app.jobs.subscription_jobs import check_expired_subscriptions_job
 
 logger = structlog.get_logger(__name__)
 settings = get_settings()
+
+# Increment this when schedule definitions change (triggers, timing, new/removed jobs).
+# On startup, schedules are only re-registered when this version differs from the
+# stored value in Redis, preventing unnecessary ConflictPolicy.replace churn.
+SCHEDULE_VERSION = 1
+SCHEDULE_VERSION_KEY = "fishfeed:scheduler:schedule_version"
+
+# Redis keys for job outcome tracking
+JOB_FAILURE_KEY_PREFIX = "fishfeed:scheduler:job_failure:"
+JOB_LAST_SUCCESS_KEY_PREFIX = "fishfeed:scheduler:job_last_success:"
+JOB_FAILURE_TTL = 86400 * 7  # Keep failure records for 7 days
 
 # Global scheduler instance
 _scheduler: AsyncScheduler | None = None
@@ -66,11 +82,193 @@ def get_scheduler() -> AsyncScheduler | None:
     return _scheduler
 
 
+async def _handle_job_released(event: JobReleased) -> None:
+    """Handle job completion events for alerting and tracking.
+
+    Logs successes at info level, failures at error level with exception details.
+    Tracks last success/failure timestamps in Redis for monitoring.
+    """
+    schedule_id = event.schedule_id or event.task_id or "unknown"
+    outcome = event.outcome
+
+    if outcome == JobOutcome.success:
+        logger.info(
+            "Job completed successfully",
+            job_id=event.job_id,
+            schedule_id=schedule_id,
+            started_at=str(event.started_at),
+        )
+        try:
+            from app.redis import get_redis_client
+
+            redis = get_redis_client()
+            key = f"{JOB_LAST_SUCCESS_KEY_PREFIX}{schedule_id}"
+            await redis.set(key, event.timestamp.isoformat(), ex=JOB_FAILURE_TTL)
+        except Exception:
+            pass
+    else:
+        log_data = {
+            "job_id": event.job_id,
+            "schedule_id": schedule_id,
+            "outcome": outcome.name,
+            "started_at": str(event.started_at),
+        }
+        if event.exception_type:
+            log_data["exception_type"] = event.exception_type
+            log_data["exception_message"] = event.exception_message
+
+        logger.error("Job failed", **log_data)
+
+        # Track failure in Redis for monitoring/alerting
+        try:
+            from app.redis import get_redis_client
+
+            redis = get_redis_client()
+            failure_key = f"{JOB_FAILURE_KEY_PREFIX}{schedule_id}"
+            await redis.lpush(
+                failure_key,
+                f"{event.timestamp.isoformat()}|{outcome.name}|{event.exception_message or ''}",
+            )
+            await redis.ltrim(failure_key, 0, 49)  # Keep last 50 failures
+            await redis.expire(failure_key, JOB_FAILURE_TTL)
+        except Exception:
+            pass
+
+        # Report to Sentry if available
+        try:
+            import sentry_sdk
+
+            sentry_sdk.capture_message(
+                f"Scheduler job failed: {schedule_id} ({outcome.name})",
+                level="error",
+                extras=log_data,
+            )
+        except Exception:
+            pass
+
+
+async def _needs_schedule_update() -> bool:
+    """Check if schedule definitions need to be re-registered.
+
+    Compares SCHEDULE_VERSION against the value stored in Redis.
+    Returns True on first run or when version has been bumped.
+    """
+    try:
+        from app.redis import get_redis_client
+
+        redis = get_redis_client()
+        stored = await redis.get(SCHEDULE_VERSION_KEY)
+        if stored is not None and int(stored) == SCHEDULE_VERSION:
+            return False
+    except Exception:
+        # Redis not available or not initialized — always update
+        pass
+    return True
+
+
+async def _store_schedule_version() -> None:
+    """Persist the current schedule version to Redis after successful registration."""
+    try:
+        from app.redis import get_redis_client
+
+        redis = get_redis_client()
+        await redis.set(SCHEDULE_VERSION_KEY, str(SCHEDULE_VERSION))
+    except Exception as e:
+        logger.warning("Failed to store schedule version in Redis", error=str(e))
+
+
+async def _register_schedules(scheduler: AsyncScheduler) -> None:
+    """Register all job schedules with the scheduler."""
+    # Job 1: Weekly summary notifications (Sunday at configured time)
+    await scheduler.add_schedule(
+        weekly_summary_job,
+        CronTrigger(
+            day_of_week="sun",
+            hour=settings.NOTIFICATION_WEEKLY_SUMMARY_HOUR,
+            minute=settings.NOTIFICATION_WEEKLY_SUMMARY_MINUTE,
+            timezone=UTC,
+        ),
+        id=JOB_WEEKLY_SUMMARY,
+        conflict_policy=ConflictPolicy.replace,
+    )
+    logger.info(
+        "Added job",
+        job_name=JOB_WEEKLY_SUMMARY,
+        schedule=f"weekly on Sunday at {settings.NOTIFICATION_WEEKLY_SUMMARY_HOUR:02d}:{settings.NOTIFICATION_WEEKLY_SUMMARY_MINUTE:02d} UTC",
+    )
+
+    # Job 2: Re-engagement notifications (daily at configured time)
+    await scheduler.add_schedule(
+        re_engagement_job,
+        CronTrigger(
+            hour=settings.NOTIFICATION_RE_ENGAGEMENT_HOUR,
+            minute=settings.NOTIFICATION_RE_ENGAGEMENT_MINUTE,
+            timezone=UTC,
+        ),
+        id=JOB_RE_ENGAGEMENT,
+        conflict_policy=ConflictPolicy.replace,
+    )
+    logger.info(
+        "Added job",
+        job_name=JOB_RE_ENGAGEMENT,
+        schedule=f"daily at {settings.NOTIFICATION_RE_ENGAGEMENT_HOUR:02d}:{settings.NOTIFICATION_RE_ENGAGEMENT_MINUTE:02d} UTC",
+    )
+
+    # Job 3: Check expired subscriptions (every N minutes)
+    await scheduler.add_schedule(
+        check_expired_subscriptions_job,
+        IntervalTrigger(minutes=settings.SUBSCRIPTION_CHECK_INTERVAL_MINUTES),
+        id=JOB_CHECK_EXPIRED_SUBSCRIPTIONS,
+        conflict_policy=ConflictPolicy.replace,
+    )
+    logger.info(
+        "Added job",
+        job_name=JOB_CHECK_EXPIRED_SUBSCRIPTIONS,
+        schedule=f"every {settings.SUBSCRIPTION_CHECK_INTERVAL_MINUTES} minutes",
+    )
+
+    # Job 4: Analytics cleanup - anonymization and retention (daily at configured time)
+    await scheduler.add_schedule(
+        analytics_cleanup_job,
+        CronTrigger(
+            hour=settings.ANALYTICS_CLEANUP_HOUR,
+            minute=settings.ANALYTICS_CLEANUP_MINUTE,
+            timezone=UTC,
+        ),
+        id=JOB_ANALYTICS_CLEANUP,
+        conflict_policy=ConflictPolicy.replace,
+    )
+    logger.info(
+        "Added job",
+        job_name=JOB_ANALYTICS_CLEANUP,
+        schedule=f"daily at {settings.ANALYTICS_CLEANUP_HOUR:02d}:{settings.ANALYTICS_CLEANUP_MINUTE:02d} UTC",
+    )
+
+    # Job 5: Image cleanup - delete orphaned images older than 7 days (daily at 04:00 UTC)
+    await scheduler.add_schedule(
+        image_cleanup_job,
+        CronTrigger(hour=4, minute=0, timezone=UTC),
+        id=JOB_IMAGE_CLEANUP,
+        conflict_policy=ConflictPolicy.replace,
+    )
+    logger.info("Added job", job_name=JOB_IMAGE_CLEANUP, schedule="daily at 04:00 UTC")
+
+    # Job 6: S3 reconciliation - find unreferenced objects (weekly Sunday at 05:00 UTC)
+    await scheduler.add_schedule(
+        s3_reconciliation_job,
+        CronTrigger(day_of_week="sun", hour=5, minute=0, timezone=UTC),
+        id=JOB_S3_RECONCILIATION,
+        conflict_policy=ConflictPolicy.replace,
+    )
+    logger.info("Added job", job_name=JOB_S3_RECONCILIATION, schedule="weekly on Sunday at 05:00 UTC")
+
+
 async def start_scheduler() -> AsyncScheduler:
     """Initialize and start the scheduler with all jobs.
 
-    Creates an AsyncScheduler with PostgreSQL datastore and asyncpg event broker,
-    adds all scheduled jobs, and starts the scheduler.
+    Creates an AsyncScheduler with PostgreSQL datastore and asyncpg event broker.
+    Schedules are only re-registered when SCHEDULE_VERSION changes, avoiding
+    unnecessary churn on normal restarts.
 
     Returns:
         Started AsyncScheduler instance.
@@ -94,88 +292,16 @@ async def start_scheduler() -> AsyncScheduler:
     # Start scheduler context
     await _scheduler.__aenter__()
 
-    # Job 1: Weekly summary notifications (Sunday at configured time)
-    await _scheduler.add_schedule(
-        weekly_summary_job,
-        CronTrigger(
-            day_of_week="sun",
-            hour=settings.NOTIFICATION_WEEKLY_SUMMARY_HOUR,
-            minute=settings.NOTIFICATION_WEEKLY_SUMMARY_MINUTE,
-            timezone=UTC,
-        ),
-        id=JOB_WEEKLY_SUMMARY,
-        conflict_policy=ConflictPolicy.replace,
-    )
-    logger.info(
-        "Added job",
-        job_name=JOB_WEEKLY_SUMMARY,
-        schedule=f"weekly on Sunday at {settings.NOTIFICATION_WEEKLY_SUMMARY_HOUR:02d}:{settings.NOTIFICATION_WEEKLY_SUMMARY_MINUTE:02d} UTC",
-    )
+    # Subscribe to job completion events for alerting
+    _scheduler.subscribe(_handle_job_released, JobReleased)
 
-    # Job 2: Re-engagement notifications (daily at configured time)
-    await _scheduler.add_schedule(
-        re_engagement_job,
-        CronTrigger(
-            hour=settings.NOTIFICATION_RE_ENGAGEMENT_HOUR,
-            minute=settings.NOTIFICATION_RE_ENGAGEMENT_MINUTE,
-            timezone=UTC,
-        ),
-        id=JOB_RE_ENGAGEMENT,
-        conflict_policy=ConflictPolicy.replace,
-    )
-    logger.info(
-        "Added job",
-        job_name=JOB_RE_ENGAGEMENT,
-        schedule=f"daily at {settings.NOTIFICATION_RE_ENGAGEMENT_HOUR:02d}:{settings.NOTIFICATION_RE_ENGAGEMENT_MINUTE:02d} UTC",
-    )
-
-    # Job 3: Check expired subscriptions (every N minutes)
-    await _scheduler.add_schedule(
-        check_expired_subscriptions_job,
-        IntervalTrigger(minutes=settings.SUBSCRIPTION_CHECK_INTERVAL_MINUTES),
-        id=JOB_CHECK_EXPIRED_SUBSCRIPTIONS,
-        conflict_policy=ConflictPolicy.replace,
-    )
-    logger.info(
-        "Added job",
-        job_name=JOB_CHECK_EXPIRED_SUBSCRIPTIONS,
-        schedule=f"every {settings.SUBSCRIPTION_CHECK_INTERVAL_MINUTES} minutes",
-    )
-
-    # Job 4: Analytics cleanup - anonymization and retention (daily at configured time)
-    await _scheduler.add_schedule(
-        analytics_cleanup_job,
-        CronTrigger(
-            hour=settings.ANALYTICS_CLEANUP_HOUR,
-            minute=settings.ANALYTICS_CLEANUP_MINUTE,
-            timezone=UTC,
-        ),
-        id=JOB_ANALYTICS_CLEANUP,
-        conflict_policy=ConflictPolicy.replace,
-    )
-    logger.info(
-        "Added job",
-        job_name=JOB_ANALYTICS_CLEANUP,
-        schedule=f"daily at {settings.ANALYTICS_CLEANUP_HOUR:02d}:{settings.ANALYTICS_CLEANUP_MINUTE:02d} UTC",
-    )
-
-    # Job 5: Image cleanup - delete orphaned images older than 7 days (daily at 04:00 UTC)
-    await _scheduler.add_schedule(
-        image_cleanup_job,
-        CronTrigger(hour=4, minute=0, timezone=UTC),
-        id=JOB_IMAGE_CLEANUP,
-        conflict_policy=ConflictPolicy.replace,
-    )
-    logger.info("Added job", job_name=JOB_IMAGE_CLEANUP, schedule="daily at 04:00 UTC")
-
-    # Job 6: S3 reconciliation - find unreferenced objects (weekly Sunday at 05:00 UTC)
-    await _scheduler.add_schedule(
-        s3_reconciliation_job,
-        CronTrigger(day_of_week="sun", hour=5, minute=0, timezone=UTC),
-        id=JOB_S3_RECONCILIATION,
-        conflict_policy=ConflictPolicy.replace,
-    )
-    logger.info("Added job", job_name=JOB_S3_RECONCILIATION, schedule="weekly on Sunday at 05:00 UTC")
+    # Only re-register schedules when the version has changed
+    if await _needs_schedule_update():
+        logger.info("Schedule version changed, re-registering jobs", version=SCHEDULE_VERSION)
+        await _register_schedules(_scheduler)
+        await _store_schedule_version()
+    else:
+        logger.info("Schedule version unchanged, skipping re-registration", version=SCHEDULE_VERSION)
 
     # Start processing schedules in background
     await _scheduler.start_in_background()

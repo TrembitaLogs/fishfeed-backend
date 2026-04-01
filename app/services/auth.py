@@ -1,5 +1,6 @@
 """Authentication service with business logic for registration, login, and token management."""
 
+import secrets
 from typing import Literal
 from uuid import UUID
 
@@ -14,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models.user import User
 from app.schemas.auth import TokenResponse, UserResponse
+from app.services.email import send_password_reset_email
 from app.utils.jwt import create_access_token, create_refresh_token, decode_token
 from app.utils.password import hash_password, verify_password
 
@@ -66,6 +68,27 @@ class OAuthNotConfiguredError(AuthError):
         super().__init__(f"OAuth provider '{provider}' is not configured", status_code=500)
 
 
+class InvalidResetTokenError(AuthError):
+    """Raised when password reset token is invalid or expired."""
+
+    def __init__(self) -> None:
+        super().__init__("Invalid or expired reset token", status_code=400)
+
+
+class OAuthPasswordChangeError(AuthError):
+    """Raised when an OAuth user tries to change password."""
+
+    def __init__(self) -> None:
+        super().__init__("Cannot change password for OAuth accounts", status_code=400)
+
+
+class InvalidOldPasswordError(AuthError):
+    """Raised when old password does not match."""
+
+    def __init__(self) -> None:
+        super().__init__("Invalid old password", status_code=400)
+
+
 def _get_refresh_token_ttl() -> int:
     """Get refresh token TTL in seconds."""
     settings = get_settings()
@@ -75,6 +98,106 @@ def _get_refresh_token_ttl() -> int:
 def _redis_key(jti: str) -> str:
     """Build Redis key for refresh token."""
     return f"refresh:{jti}"
+
+
+def _reset_key(token: str) -> str:
+    """Build Redis key for password reset token."""
+    return f"password_reset:{token}"
+
+
+async def request_password_reset(
+    db: AsyncSession,
+    redis: Redis,
+    email: str,
+) -> None:
+    """Generate a password reset token and send reset email.
+
+    Always succeeds silently to prevent email enumeration.
+
+    Args:
+        db: Database session.
+        redis: Redis client.
+        email: Email address to send reset link to.
+    """
+    stmt = select(User).where(User.email == email, User.deleted_at.is_(None))
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
+
+    if user is None:
+        return
+
+    settings = get_settings()
+    token = secrets.token_urlsafe(32)
+    ttl = settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES * 60
+
+    await redis.set(_reset_key(token), str(user.id), ex=ttl)
+    await send_password_reset_email(email, token)
+
+
+async def confirm_password_reset(
+    db: AsyncSession,
+    redis: Redis,
+    token: str,
+    new_password: str,
+) -> None:
+    """Validate a password reset token and set the new password.
+
+    Args:
+        db: Database session.
+        redis: Redis client.
+        token: Password reset token from email link.
+        new_password: New password to set.
+
+    Raises:
+        InvalidResetTokenError: If token is invalid or expired.
+    """
+    key = _reset_key(token)
+    stored_user_id = await redis.get(key)
+    if stored_user_id is None:
+        raise InvalidResetTokenError()
+
+    await redis.delete(key)
+
+    user_id = UUID(stored_user_id)
+    stmt = select(User).where(User.id == user_id, User.deleted_at.is_(None))
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
+
+    if user is None:
+        raise InvalidResetTokenError()
+
+    user.password_hash = hash_password(new_password)
+    user.token_version += 1
+    await db.flush()
+
+
+async def change_password(
+    db: AsyncSession,
+    user: User,
+    old_password: str,
+    new_password: str,
+) -> None:
+    """Change the authenticated user's password.
+
+    Args:
+        db: Database session.
+        user: Authenticated user object.
+        old_password: Current password for verification.
+        new_password: New password to set.
+
+    Raises:
+        OAuthPasswordChangeError: If user is an OAuth account without a password.
+        InvalidOldPasswordError: If old password does not match.
+    """
+    if user.password_hash is None:
+        raise OAuthPasswordChangeError()
+
+    if not verify_password(old_password, user.password_hash):
+        raise InvalidOldPasswordError()
+
+    user.password_hash = hash_password(new_password)
+    user.token_version += 1
+    await db.flush()
 
 
 async def register_user(

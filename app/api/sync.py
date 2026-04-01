@@ -7,10 +7,13 @@ from uuid import uuid4
 import structlog
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Response, status
 from pydantic import ValidationError
+from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.dependencies import CurrentActiveUser
+from app.redis import get_redis
 from app.schemas.sync import (
     SyncRequest,
     SyncResponse,
@@ -21,6 +24,7 @@ from app.services.sync import (
     SyncValidationError,
     process_sync,
 )
+from app.utils.cache import invalidate_user_gamification_keys
 
 router = APIRouter(prefix="/sync", tags=["Sync"])
 
@@ -51,6 +55,7 @@ async def sync_data(
     response: Response,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: CurrentActiveUser,
+    redis: Annotated[Redis, Depends(get_redis)],
     if_none_match: Annotated[str | None, Header()] = None,
 ) -> SyncResponse:
     """Synchronize offline client changes with the server.
@@ -119,6 +124,14 @@ async def sync_data(
             duration_ms=round(duration_ms, 2),
             sync_token=sync_response.sync_token,
         )
+
+        # Invalidate gamification caches if client sent changes
+        if request.changes:
+            try:
+                keys = invalidate_user_gamification_keys(str(current_user.id))
+                await redis.delete(*keys)
+            except RedisError as e:
+                logger.warning("Redis gamification cache invalidation error", error=str(e))
 
         # ETag cache validation
         if (

@@ -7,10 +7,17 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    secrets:
+      - admin_username
+      - admin_password
+      - jwt_secret_key
+      - session_secret_key
+      - postgres_password
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres:5432/fishfeed
       - REDIS_URL=redis://redis:6379/0
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - SESSION_SECRET_KEY=${SESSION_SECRET_KEY}
       - DEBUG=false
       - ENVIRONMENT=production
       # Sentry
@@ -61,7 +68,7 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
     networks:
       - traefik_proxy
       - fishfeed-internal
@@ -98,6 +105,8 @@ services:
         max-size: "10m"
         max-file: "3"
     command: ["uv", "run", "python", "-m", "app.workers.feeding_worker"]
+    secrets:
+      - postgres_password
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres:5432/fishfeed
       - REDIS_URL=redis://redis:6379/0
@@ -129,7 +138,7 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
     networks:
       - fishfeed-internal
 
@@ -165,6 +174,18 @@ services:
       retries: 5
     networks:
       - fishfeed-internal
+
+secrets:
+  admin_username:
+    file: ./secrets/admin_username.txt
+  admin_password:
+    file: ./secrets/admin_password.txt
+  jwt_secret_key:
+    file: ./secrets/jwt_secret_key.txt
+  session_secret_key:
+    file: ./secrets/session_secret_key.txt
+  postgres_password:
+    file: ./secrets/postgres_password.txt
 
 networks:
   traefik_proxy:

@@ -9,6 +9,7 @@ from app.models.notification import NotificationPreference, PushToken
 from app.models.orphaned_image import OrphanedImage
 from app.models.purchase import WebhookTransaction
 from app.models.species import Species
+from app.models.sync_dead_letter import SyncDeadLetter
 from app.models.user import RefreshToken, User
 
 __all__ = [
@@ -33,4 +34,5 @@ __all__ = [
     "NotificationPreference",
     "WebhookTransaction",
     "OrphanedImage",
+    "SyncDeadLetter",
 ]
