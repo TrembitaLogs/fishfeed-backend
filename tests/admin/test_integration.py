@@ -4,12 +4,14 @@ Covers:
 - SQLAdmin UI loads after authentication
 - API admin router paths remain accessible after refactor to package
 - Session cookie security attributes
+- Session persistence across requests
 """
 
 import uuid
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
 TEST_USERNAME = "admin"
@@ -173,7 +175,7 @@ class TestSessionCookieAttributes:
 class _FakeSettings:
     def __init__(self, username: str, password: str):
         self.ADMIN_USERNAME = username
-        self.ADMIN_PASSWORD = password
+        self.ADMIN_PASSWORD = SecretStr(password)
 
 
 def _settings(

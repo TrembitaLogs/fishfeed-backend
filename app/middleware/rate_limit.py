@@ -32,9 +32,6 @@ BYPASS_PATHS = frozenset({
     "/openapi.json",
 })
 
-# Endpoint-specific rate limits (path prefix -> requests per minute)
-ENDPOINT_LIMITS: dict[str, int] = {}
-
 
 @dataclass
 class RateLimitInfo:
@@ -260,11 +257,6 @@ def _get_endpoint_limit(path: str) -> int | None:
         return settings.RATE_LIMIT_ANALYTICS_EVENTS_PER_MIN
     if path == "/analytics/events/batch":
         return settings.RATE_LIMIT_ANALYTICS_BATCH_PER_MIN
-
-    # Check configured endpoint limits
-    for prefix, limit in ENDPOINT_LIMITS.items():
-        if path.startswith(prefix):
-            return limit
 
     return None
 

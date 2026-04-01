@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic import SecretStr
 
 from app.admin.auth import AdminAuth
 
@@ -132,7 +133,7 @@ class TestAdminAuthenticate:
 class _FakeSettings:
     def __init__(self, username: str, password: str):
         self.ADMIN_USERNAME = username
-        self.ADMIN_PASSWORD = password
+        self.ADMIN_PASSWORD = SecretStr(password)
 
 
 def _settings(

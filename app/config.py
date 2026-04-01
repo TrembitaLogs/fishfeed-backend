@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import model_validator
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -148,7 +148,7 @@ class Settings(BaseSettings):
 
     # Admin Panel (static credentials for SQLAdmin)
     ADMIN_USERNAME: str = ""
-    ADMIN_PASSWORD: str = ""
+    ADMIN_PASSWORD: SecretStr = SecretStr("")
     SESSION_SECRET_KEY: str = ""
 
     # Worker settings

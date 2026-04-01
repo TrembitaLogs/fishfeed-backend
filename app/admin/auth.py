@@ -24,7 +24,7 @@ class AdminAuth(AuthenticationBackend):
         Returns True on success (sets session), False to re-show login form.
         """
         settings = get_settings()
-        if not settings.ADMIN_USERNAME or not settings.ADMIN_PASSWORD:
+        if not settings.ADMIN_USERNAME or not settings.ADMIN_PASSWORD.get_secret_value():
             return False
 
         form = await request.form()
@@ -35,7 +35,7 @@ class AdminAuth(AuthenticationBackend):
             return False
 
         username_ok = hmac.compare_digest(str(username), settings.ADMIN_USERNAME)
-        password_ok = verify_password(str(password), settings.ADMIN_PASSWORD)
+        password_ok = verify_password(str(password), settings.ADMIN_PASSWORD.get_secret_value())
 
         if not username_ok or not password_ok:
             return False

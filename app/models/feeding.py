@@ -109,6 +109,11 @@ class FeedingSchedule(Base, TimestampMixin):
             "active",
             postgresql_where=text("active = true"),
         ),
+        Index(
+            "idx_feeding_schedules_active_aquarium",
+            "active",
+            "aquarium_id",
+        ),
     )
 
 

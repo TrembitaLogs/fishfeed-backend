@@ -176,7 +176,11 @@ async def get_schedules(
     """Get feeding schedules for aquarium with optional active filter."""
     await check_access(db, aquarium_id, user_id)
 
-    stmt = select(FeedingSchedule).where(FeedingSchedule.aquarium_id == aquarium_id)
+    stmt = (
+        select(FeedingSchedule)
+        .where(FeedingSchedule.aquarium_id == aquarium_id)
+        .options(selectinload(FeedingSchedule.fish))
+    )
     if active is not None:
         stmt = stmt.where(FeedingSchedule.active == active)
 
@@ -244,9 +248,13 @@ async def update_schedule(
     """Update a single schedule by ID with partial data."""
     await check_access(db, aquarium_id, user_id)
 
-    stmt = select(FeedingSchedule).where(
-        FeedingSchedule.id == schedule_id,
-        FeedingSchedule.aquarium_id == aquarium_id,
+    stmt = (
+        select(FeedingSchedule)
+        .where(
+            FeedingSchedule.id == schedule_id,
+            FeedingSchedule.aquarium_id == aquarium_id,
+        )
+        .options(selectinload(FeedingSchedule.fish))
     )
     result = await db.execute(stmt)
     schedule = result.scalar_one_or_none()
