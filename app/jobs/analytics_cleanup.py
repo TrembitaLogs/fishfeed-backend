@@ -228,7 +228,10 @@ async def delete_old_events_job(dry_run: bool = False) -> dict:
         total_count = result.scalar_one()
 
         if dry_run:
-            logger.info("Would delete old events", dry_run=True, event_count=total_count, cutoff_date=cutoff_date.date())
+            logger.info(
+                "Would delete old events",
+                dry_run=True, event_count=total_count, cutoff_date=cutoff_date.date(),
+            )
             return {
                 "job": "delete_old_events",
                 "dry_run": True,

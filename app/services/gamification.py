@@ -468,7 +468,10 @@ async def check_achievements(db: AsyncSession, user_id: UUID) -> list[Achievemen
             )
             db.add(achievement)
             newly_unlocked.append(achievement)
-            logger.info("User unlocked achievement", user_id=user_id, achievement_type=definition.achievement_type.value)
+            logger.info(
+                "User unlocked achievement",
+                user_id=user_id, achievement_type=definition.achievement_type.value,
+            )
 
     if newly_unlocked:
         await db.flush()

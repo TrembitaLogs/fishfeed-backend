@@ -125,11 +125,11 @@ async def _handle_job_released(event: JobReleased) -> None:
 
             redis = get_redis_client()
             failure_key = f"{JOB_FAILURE_KEY_PREFIX}{schedule_id}"
-            await redis.lpush(
+            await redis.lpush(  # type: ignore[misc]
                 failure_key,
                 f"{event.timestamp.isoformat()}|{outcome.name}|{event.exception_message or ''}",
             )
-            await redis.ltrim(failure_key, 0, 49)  # Keep last 50 failures
+            await redis.ltrim(failure_key, 0, 49)  # type: ignore[misc]  # Keep last 50 failures
             await redis.expire(failure_key, JOB_FAILURE_TTL)
         except Exception:
             pass
@@ -194,7 +194,10 @@ async def _register_schedules(scheduler: AsyncScheduler) -> None:
     logger.info(
         "Added job",
         job_name=JOB_WEEKLY_SUMMARY,
-        schedule=f"weekly on Sunday at {settings.NOTIFICATION_WEEKLY_SUMMARY_HOUR:02d}:{settings.NOTIFICATION_WEEKLY_SUMMARY_MINUTE:02d} UTC",
+        schedule=(
+            f"weekly on Sunday at {settings.NOTIFICATION_WEEKLY_SUMMARY_HOUR:02d}"
+            f":{settings.NOTIFICATION_WEEKLY_SUMMARY_MINUTE:02d} UTC"
+        ),
     )
 
     # Job 2: Re-engagement notifications (daily at configured time)
@@ -211,7 +214,10 @@ async def _register_schedules(scheduler: AsyncScheduler) -> None:
     logger.info(
         "Added job",
         job_name=JOB_RE_ENGAGEMENT,
-        schedule=f"daily at {settings.NOTIFICATION_RE_ENGAGEMENT_HOUR:02d}:{settings.NOTIFICATION_RE_ENGAGEMENT_MINUTE:02d} UTC",
+        schedule=(
+            f"daily at {settings.NOTIFICATION_RE_ENGAGEMENT_HOUR:02d}"
+            f":{settings.NOTIFICATION_RE_ENGAGEMENT_MINUTE:02d} UTC"
+        ),
     )
 
     # Job 3: Check expired subscriptions (every N minutes)

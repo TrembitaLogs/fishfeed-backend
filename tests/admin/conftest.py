@@ -4,6 +4,8 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+
+
 @pytest_asyncio.fixture(loop_scope="session")
 async def admin_app(async_engine):
     """Create a minimal FastAPI app with SQLAdmin configured using test engine.

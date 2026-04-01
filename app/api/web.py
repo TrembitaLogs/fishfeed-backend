@@ -135,12 +135,16 @@ async def join_landing_page(invite_code: str) -> HTMLResponse:
     </div>
 
     <script>
-        // Try to open the app via custom scheme after a short delay.
-        // If App Links/Universal Links worked, user is already in the app
-        // and this page never fully loads.
-        setTimeout(function() {{
-            window.location.href = 'fishfeed://join/{invite_code}';
-        }}, 300);
+        // On Android, try custom scheme via hidden iframe (no error popup).
+        // On iOS, Safari blocks custom scheme redirects with an error dialog,
+        // so we only attempt this on non-iOS platforms.
+        if (!/iPhone|iPad|iPod/i.test(navigator.userAgent)) {{
+            var iframe = document.createElement('iframe');
+            iframe.style.display = 'none';
+            iframe.src = 'fishfeed://join/{invite_code}';
+            document.body.appendChild(iframe);
+            setTimeout(function() {{ document.body.removeChild(iframe); }}, 500);
+        }}
     </script>
 </body>
 </html>"""

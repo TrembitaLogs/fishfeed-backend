@@ -593,7 +593,10 @@ async def _apply_feeding_log_change(
 
     elif change.operation in ("update", "delete"):
         # FeedingLog records are immutable - ignore update/delete
-        logger.debug("Operation ignored for immutable feeding_log", operation=change.operation.upper(), entity_id=change.entity_id)
+        logger.debug(
+            "Operation ignored for immutable feeding_log",
+            operation=change.operation.upper(), entity_id=change.entity_id,
+        )
 
     return None
 
@@ -894,7 +897,10 @@ async def _apply_achievement_change(
 
     if change.operation == "create":
         if existing is not None:
-            logger.debug("Achievement already exists for user, skipping", achievement_type=achievement_type, user_id=user_id)
+            logger.debug(
+                "Achievement already exists for user, skipping",
+                achievement_type=achievement_type, user_id=user_id,
+            )
             return None
 
         unlocked_at = None
