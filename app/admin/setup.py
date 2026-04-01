@@ -34,7 +34,7 @@ def setup_admin(app: FastAPI) -> Admin:
     from app.database import engine
 
     settings = get_settings()
-    authentication_backend = AdminAuth(secret_key=settings.JWT_SECRET_KEY)
+    authentication_backend = AdminAuth(secret_key=settings.SESSION_SECRET_KEY)
 
     templates_dir = str(Path(__file__).resolve().parent / "templates")
 
