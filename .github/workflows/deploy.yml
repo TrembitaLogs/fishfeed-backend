@@ -18,7 +18,7 @@ jobs:
     uses: ./.github/workflows/test.yml
 
   build-and-push:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, org]
     needs: test
 
     permissions:
@@ -68,7 +68,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, org]
     needs: build-and-push
     environment: production
 
