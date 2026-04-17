@@ -31,6 +31,23 @@ async def cleanup_rate_limit_keys(redis: Redis) -> None:
             break
 
 
+@pytest.fixture(autouse=True)
+def freeze_rate_limit_window(monkeypatch):
+    """Pin RateLimiter's window to a fixed value for the duration of each test.
+
+    The production window key is minute-bucketed (datetime.now().strftime("%Y%m%d%H%M")).
+    Tests that prefill hundreds or thousands of counters racing a real wall-clock
+    minute boundary flake: the prefill lands in minute N and the assertion request
+    lands in minute N+1 (fresh bucket, count=1), so 429 never triggers.
+
+    Freezing the window makes all calls within a test share one bucket.
+    """
+    monkeypatch.setattr(
+        "app.middleware.rate_limit.RateLimiter._get_current_window",
+        lambda self: "test_window",
+    )
+
+
 @pytest.fixture
 def test_app_with_middleware(redis_client: Redis) -> FastAPI:
     """Create a test FastAPI app with rate limiting middleware."""
