@@ -52,6 +52,7 @@ coverage.xml
 
 # Claude local settings
 .claude/
+CLAUDE.md
 
 # Task Master (local)
 .taskmaster/
