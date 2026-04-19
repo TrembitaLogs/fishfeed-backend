@@ -129,6 +129,12 @@ class Settings(BaseSettings):
     S3_SECRET_KEY: str | None = None
     S3_BUCKET_NAME: str = "fishfeed-scans"
     S3_IMAGES_BUCKET_NAME: str = "fishfeed-images"
+    # Species photos live in a separate bucket so the public CDN domain
+    # (S3_PUBLIC_CDN_DOMAIN) can serve them without exposing private user content.
+    S3_SPECIES_BUCKET_NAME: str = "fishfeed-species"
+    # Optional public CDN domain mapped to the species bucket (e.g. cdn.fishfeed.club).
+    # When set, species image URLs are served directly without presigning.
+    S3_PUBLIC_CDN_DOMAIN: str | None = None
     S3_REGION: str = "eu-central"
     S3_RETENTION_DAYS: int = 30
     # Separate endpoint for presigned URLs, accessible outside Docker network.

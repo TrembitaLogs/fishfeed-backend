@@ -10,7 +10,7 @@ from PIL import Image
 from sqladmin import ModelView
 from starlette.requests import Request
 
-from app.admin.views._image_utils import presigned_url_sync, upload_species_image
+from app.admin.views._image_utils import species_image_url_sync, upload_species_image
 from app.models.species import Species
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ def _species_image_thumbnail(model: object, name: str) -> Markup:
     key = getattr(model, "image_url", None)
     if not key:
         return Markup('<span style="color:#999">—</span>')
-    url = presigned_url_sync(key)
+    url = species_image_url_sync(key)
     if not url:
         return Markup('<span style="color:#999">—</span>')
     return Markup(
@@ -38,7 +38,7 @@ def _species_image_detail(model: object, name: str) -> Markup:
     key = getattr(model, "image_url", None)
     if not key:
         return Markup('<span style="color:#999">No image</span>')
-    url = presigned_url_sync(key)
+    url = species_image_url_sync(key)
     if not url:
         return Markup('<span style="color:#999">No image</span>')
     return Markup(
