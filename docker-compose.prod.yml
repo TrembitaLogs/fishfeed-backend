@@ -37,6 +37,8 @@ services:
       - S3_SECRET_KEY=${S3_SECRET_KEY}
       - S3_BUCKET_NAME=${S3_BUCKET_NAME:-fishfeed-scans}
       - S3_IMAGES_BUCKET_NAME=${S3_IMAGES_BUCKET_NAME:-fishfeed-images}
+      - S3_SPECIES_BUCKET_NAME=${S3_SPECIES_BUCKET_NAME:-fishfeed-species}
+      - S3_PUBLIC_CDN_DOMAIN=${S3_PUBLIC_CDN_DOMAIN:-}
       - S3_REGION=${S3_REGION:-eu-central}
       - S3_PRESIGNED_ENDPOINT_URL=${S3_PRESIGNED_ENDPOINT_URL:-}
       # FCM (Android Push)
@@ -118,6 +120,8 @@ services:
       - S3_SECRET_KEY=${S3_SECRET_KEY}
       - S3_BUCKET_NAME=${S3_BUCKET_NAME:-fishfeed-scans}
       - S3_IMAGES_BUCKET_NAME=${S3_IMAGES_BUCKET_NAME:-fishfeed-images}
+      - S3_SPECIES_BUCKET_NAME=${S3_SPECIES_BUCKET_NAME:-fishfeed-species}
+      - S3_PUBLIC_CDN_DOMAIN=${S3_PUBLIC_CDN_DOMAIN:-}
       - S3_REGION=${S3_REGION:-eu-central}
       # Sentry
       - SENTRY_DSN=${SENTRY_DSN:-}
