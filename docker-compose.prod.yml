@@ -41,6 +41,9 @@ services:
       - S3_PUBLIC_CDN_DOMAIN=${S3_PUBLIC_CDN_DOMAIN:-}
       - S3_REGION=${S3_REGION:-eu-central}
       - S3_PRESIGNED_ENDPOINT_URL=${S3_PRESIGNED_ENDPOINT_URL:-}
+      # Database backups
+      - BACKUP_R2_BUCKET_NAME=${BACKUP_R2_BUCKET_NAME:-fishfeed-backups}
+      - BACKUP_LOCAL_DIR=${BACKUP_LOCAL_DIR:-/var/backups/fishfeed}
       # FCM (Android Push)
       - FCM_PROJECT_ID=${FCM_PROJECT_ID:-}
       - FCM_CREDENTIALS_PATH=/app/secrets/firebase-credentials.json
@@ -60,6 +63,7 @@ services:
     volumes:
       - ./secrets:/app/secrets:ro
       - ./mobile/releases:/app/mobile/releases:ro
+      - ./backups:/var/backups/fishfeed
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
       interval: 30s
@@ -123,6 +127,9 @@ services:
       - S3_SPECIES_BUCKET_NAME=${S3_SPECIES_BUCKET_NAME:-fishfeed-species}
       - S3_PUBLIC_CDN_DOMAIN=${S3_PUBLIC_CDN_DOMAIN:-}
       - S3_REGION=${S3_REGION:-eu-central}
+      # Database backups
+      - BACKUP_R2_BUCKET_NAME=${BACKUP_R2_BUCKET_NAME:-fishfeed-backups}
+      - BACKUP_LOCAL_DIR=${BACKUP_LOCAL_DIR:-/var/backups/fishfeed}
       # Sentry
       - SENTRY_DSN=${SENTRY_DSN:-}
       - SENTRY_TRACES_SAMPLE_RATE=${SENTRY_TRACES_SAMPLE_RATE:-0.1}
@@ -138,6 +145,7 @@ services:
       - APNS_USE_SANDBOX=false
     volumes:
       - ./secrets:/app/secrets:ro
+      - ./backups:/var/backups/fishfeed
     depends_on:
       postgres:
         condition: service_healthy

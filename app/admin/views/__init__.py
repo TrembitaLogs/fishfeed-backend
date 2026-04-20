@@ -3,6 +3,11 @@
 from app.admin.views.ai import AIScanAdmin
 from app.admin.views.analytics import AnalyticsEventAdmin
 from app.admin.views.aquarium import AquariumAdmin, AquariumMemberAdmin, FamilyInviteAdmin
+from app.admin.views.backup import (
+    BackupsDashboardView,
+    BackupSettingsAdmin,
+    DatabaseBackupAdmin,
+)
 from app.admin.views.feeding import FeedingLogAdmin, FeedingScheduleAdmin
 from app.admin.views.fish import FishAdmin
 from app.admin.views.gamification import AchievementAdmin, StreakAdmin, UserProgressAdmin
@@ -30,4 +35,7 @@ __all__ = [
     "AnalyticsEventAdmin",
     "WebhookTransactionAdmin",
     "ReleasesView",
+    "BackupsDashboardView",
+    "DatabaseBackupAdmin",
+    "BackupSettingsAdmin",
 ]

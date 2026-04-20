@@ -42,6 +42,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from app.config import get_settings
 from app.database import engine
 from app.jobs.analytics_cleanup import analytics_cleanup_job
+from app.jobs.backup_job import backup_database_job
 from app.jobs.image_cleanup import image_cleanup_job, s3_reconciliation_job
 from app.jobs.notification_jobs import re_engagement_job, weekly_summary_job
 from app.jobs.subscription_jobs import check_expired_subscriptions_job
@@ -52,7 +53,7 @@ settings = get_settings()
 # Increment this when schedule definitions change (triggers, timing, new/removed jobs).
 # On startup, schedules are only re-registered when this version differs from the
 # stored value in Redis, preventing unnecessary ConflictPolicy.replace churn.
-SCHEDULE_VERSION = 1
+SCHEDULE_VERSION = 2
 SCHEDULE_VERSION_KEY = "fishfeed:scheduler:schedule_version"
 
 # Redis keys for job outcome tracking
@@ -71,6 +72,7 @@ JOB_CHECK_EXPIRED_SUBSCRIPTIONS = "check_expired_subscriptions"
 JOB_ANALYTICS_CLEANUP = "analytics_cleanup"
 JOB_IMAGE_CLEANUP = "image_cleanup"
 JOB_S3_RECONCILIATION = "s3_reconciliation"
+JOB_BACKUP_DATABASE = "backup_database"
 
 
 def get_scheduler() -> AsyncScheduler | None:
@@ -267,6 +269,20 @@ async def _register_schedules(scheduler: AsyncScheduler) -> None:
         conflict_policy=ConflictPolicy.replace,
     )
     logger.info("Added job", job_name=JOB_S3_RECONCILIATION, schedule="weekly on Sunday at 05:00 UTC")
+
+    # Job 7: Database backup check (every N minutes; actual dump runs when the
+    # per-DB interval has elapsed so admins can tune it from the UI).
+    await scheduler.add_schedule(
+        backup_database_job,
+        IntervalTrigger(minutes=settings.BACKUP_CHECK_INTERVAL_MINUTES),
+        id=JOB_BACKUP_DATABASE,
+        conflict_policy=ConflictPolicy.replace,
+    )
+    logger.info(
+        "Added job",
+        job_name=JOB_BACKUP_DATABASE,
+        schedule=f"every {settings.BACKUP_CHECK_INTERVAL_MINUTES} minutes",
+    )
 
 
 async def start_scheduler() -> AsyncScheduler:

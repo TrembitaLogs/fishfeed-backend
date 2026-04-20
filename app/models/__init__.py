@@ -2,6 +2,12 @@ from app.models.ai import AIScan
 from app.models.analytics import AnalyticsEvent
 from app.models.aquarium import Aquarium, AquariumMember, FamilyInvite
 from app.models.base import Base, SoftDeleteMixin, TimestampMixin
+from app.models.database_backup import (
+    BackupSettings,
+    BackupStatus,
+    BackupStorage,
+    DatabaseBackup,
+)
 from app.models.feeding import FeedingLog, FeedingSchedule
 from app.models.fish import Fish
 from app.models.gamification import Achievement, Streak, UserProgress
@@ -35,4 +41,8 @@ __all__ = [
     "WebhookTransaction",
     "OrphanedImage",
     "SyncDeadLetter",
+    "DatabaseBackup",
+    "BackupSettings",
+    "BackupStatus",
+    "BackupStorage",
 ]

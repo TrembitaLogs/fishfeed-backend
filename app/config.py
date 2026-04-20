@@ -196,6 +196,12 @@ class Settings(BaseSettings):
     # Mobile Releases
     RELEASES_DIR: str = "/app/mobile/releases"
 
+    # Database Backups
+    BACKUP_LOCAL_DIR: str = "/var/backups/fishfeed"
+    BACKUP_R2_BUCKET_NAME: str = "fishfeed-backups"
+    BACKUP_PG_DUMP_PATH: str = "pg_dump"
+    BACKUP_CHECK_INTERVAL_MINUTES: int = 15
+
     # Analytics Cleanup (GDPR compliance)
     ANALYTICS_ANONYMIZE_AFTER_DAYS: int = 30  # Days before anonymizing events
     ANALYTICS_RETENTION_DAYS: int = 90  # Days before deleting events
