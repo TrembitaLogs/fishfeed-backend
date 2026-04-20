@@ -1,7 +1,29 @@
+# Production Docker Compose — nginx-on-host variant used on ff (Contabo).
+# The project runs behind a host-level nginx (not Traefik); the API is
+# published only on 127.0.0.1:8000 so the host-side nginx proxy is the
+# single public ingress.
+#
+# Prerequisites on the target host:
+#   1. ./secrets/*.txt files populated (admin_username, admin_password,
+#      jwt_secret_key, session_secret_key, postgres_password)
+#   2. ./.env populated from .env.example (S3 creds, APP_VERSION, etc.)
+#   3. ./backups/ directory writable by the container user (bind target for
+#      the database-backup service)
+#
+# Deploy:
+#   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# On ff this file is copied to docker-compose.yml so `scripts/deploy.sh`
+# (invoked by the GitHub Actions deploy workflow) finds it without needing
+# the `-f` flag.
+
 services:
   api:
-    image: ghcr.io/${GITHUB_REPOSITORY:-owner/fishfeed}:${IMAGE_TAG:-latest}
+    image: ghcr.io/${GITHUB_REPOSITORY:-TrembitaLogs/fishfeed-backend}:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"   # bind only to loopback; nginx on host proxies in
     logging:
       driver: json-file
       options:
@@ -13,53 +35,16 @@ services:
       - jwt_secret_key
       - session_secret_key
       - postgres_password
+    env_file: .env
     environment:
+      # Override DB / Redis to point at internal service names
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres:5432/fishfeed
       - REDIS_URL=redis://redis:6379/0
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
-      - SESSION_SECRET_KEY=${SESSION_SECRET_KEY}
       - DEBUG=false
       - ENVIRONMENT=production
-      # Sentry
-      - SENTRY_DSN=${SENTRY_DSN:-}
-      - SENTRY_TRACES_SAMPLE_RATE=${SENTRY_TRACES_SAMPLE_RATE:-0.1}
-      # OAuth
-      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
-      - APPLE_CLIENT_ID=${APPLE_CLIENT_ID:-}
-      # AI Provider
-      - AI_PROVIDER=${AI_PROVIDER:-google_vision}
-      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-}
-      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS:-}
-      - REPLICATE_API_TOKEN=${REPLICATE_API_TOKEN:-}
-      # S3 Storage
-      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL}
-      - S3_ACCESS_KEY=${S3_ACCESS_KEY}
-      - S3_SECRET_KEY=${S3_SECRET_KEY}
-      - S3_BUCKET_NAME=${S3_BUCKET_NAME:-fishfeed-scans}
-      - S3_IMAGES_BUCKET_NAME=${S3_IMAGES_BUCKET_NAME:-fishfeed-images}
-      - S3_SPECIES_BUCKET_NAME=${S3_SPECIES_BUCKET_NAME:-fishfeed-species}
-      - S3_PUBLIC_CDN_DOMAIN=${S3_PUBLIC_CDN_DOMAIN:-}
-      - S3_REGION=${S3_REGION:-eu-central}
-      - S3_PRESIGNED_ENDPOINT_URL=${S3_PRESIGNED_ENDPOINT_URL:-}
-      # Database backups
-      - BACKUP_R2_BUCKET_NAME=${BACKUP_R2_BUCKET_NAME:-fishfeed-backups}
-      - BACKUP_LOCAL_DIR=${BACKUP_LOCAL_DIR:-/var/backups/fishfeed}
-      # FCM (Android Push)
-      - FCM_PROJECT_ID=${FCM_PROJECT_ID:-}
       - FCM_CREDENTIALS_PATH=/app/secrets/firebase-credentials.json
-      - FCM_DRY_RUN=false
-      # APNs (iOS Push)
-      - APNS_KEY_ID=${APNS_KEY_ID:-}
-      - APNS_TEAM_ID=${APNS_TEAM_ID:-}
-      - APNS_BUNDLE_ID=${APNS_BUNDLE_ID:-}
       - APNS_KEY_PATH=/app/secrets/AuthKey.p8
-      - APNS_USE_SANDBOX=false
-      # RevenueCat
-      - REVENUECAT_API_KEY=${REVENUECAT_API_KEY:-}
-      - REVENUECAT_WEBHOOK_SECRET=${REVENUECAT_WEBHOOK_SECRET:-}
-      # Admin Panel
-      - ADMIN_USERNAME=${ADMIN_USERNAME:-}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/secrets/gcp-credentials.json
     volumes:
       - ./secrets:/app/secrets:ro
       - ./mobile/releases:/app/mobile/releases:ro
@@ -76,73 +61,28 @@ services:
       redis:
         condition: service_healthy
     networks:
-      - traefik_proxy
       - fishfeed-internal
-    labels:
-      - "traefik.enable=true"
-      - "traefik.docker.network=traefik_proxy"
-      - "traefik.http.services.fishfeed.loadbalancer.server.port=8000"
-      # API router
-      - "traefik.http.routers.fishfeed-api.rule=Host(`${API_DOMAIN}`)"
-      - "traefik.http.routers.fishfeed-api.entrypoints=websecure"
-      - "traefik.http.routers.fishfeed-api.tls=true"
-      - "traefik.http.routers.fishfeed-api.tls.certresolver=http"
-      # Admin router
-      - "traefik.http.routers.fishfeed-admin.rule=Host(`${ADMIN_DOMAIN}`)"
-      - "traefik.http.routers.fishfeed-admin.entrypoints=websecure"
-      - "traefik.http.routers.fishfeed-admin.tls=true"
-      - "traefik.http.routers.fishfeed-admin.tls.certresolver=http"
-      # HTTP to HTTPS redirects
-      - "traefik.http.routers.fishfeed-api-http.rule=Host(`${API_DOMAIN}`)"
-      - "traefik.http.routers.fishfeed-api-http.entrypoints=web"
-      - "traefik.http.routers.fishfeed-api-http.middlewares=https-redirect"
-      - "traefik.http.routers.fishfeed-admin-http.rule=Host(`${ADMIN_DOMAIN}`)"
-      - "traefik.http.routers.fishfeed-admin-http.entrypoints=web"
-      - "traefik.http.routers.fishfeed-admin-http.middlewares=https-redirect"
-      - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
-      - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"
 
   worker:
-    image: ghcr.io/${GITHUB_REPOSITORY:-owner/fishfeed}:${IMAGE_TAG:-latest}
+    image: ghcr.io/${GITHUB_REPOSITORY:-TrembitaLogs/fishfeed-backend}:${IMAGE_TAG:-latest}
     restart: unless-stopped
+    command: ["uv", "run", "python", "-m", "app.workers.feeding_worker"]
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-    command: ["uv", "run", "python", "-m", "app.workers.feeding_worker"]
     secrets:
       - postgres_password
+    env_file: .env
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres:5432/fishfeed
       - REDIS_URL=redis://redis:6379/0
       - WORKER_ENABLED=true
       - ENVIRONMENT=production
-      # S3 Storage (needed for image cleanup jobs)
-      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL}
-      - S3_ACCESS_KEY=${S3_ACCESS_KEY}
-      - S3_SECRET_KEY=${S3_SECRET_KEY}
-      - S3_BUCKET_NAME=${S3_BUCKET_NAME:-fishfeed-scans}
-      - S3_IMAGES_BUCKET_NAME=${S3_IMAGES_BUCKET_NAME:-fishfeed-images}
-      - S3_SPECIES_BUCKET_NAME=${S3_SPECIES_BUCKET_NAME:-fishfeed-species}
-      - S3_PUBLIC_CDN_DOMAIN=${S3_PUBLIC_CDN_DOMAIN:-}
-      - S3_REGION=${S3_REGION:-eu-central}
-      # Database backups
-      - BACKUP_R2_BUCKET_NAME=${BACKUP_R2_BUCKET_NAME:-fishfeed-backups}
-      - BACKUP_LOCAL_DIR=${BACKUP_LOCAL_DIR:-/var/backups/fishfeed}
-      # Sentry
-      - SENTRY_DSN=${SENTRY_DSN:-}
-      - SENTRY_TRACES_SAMPLE_RATE=${SENTRY_TRACES_SAMPLE_RATE:-0.1}
-      # FCM (Android Push)
-      - FCM_PROJECT_ID=${FCM_PROJECT_ID:-}
       - FCM_CREDENTIALS_PATH=/app/secrets/firebase-credentials.json
-      - FCM_DRY_RUN=false
-      # APNs (iOS Push)
-      - APNS_KEY_ID=${APNS_KEY_ID:-}
-      - APNS_TEAM_ID=${APNS_TEAM_ID:-}
-      - APNS_BUNDLE_ID=${APNS_BUNDLE_ID:-}
       - APNS_KEY_PATH=/app/secrets/AuthKey.p8
-      - APNS_USE_SANDBOX=false
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/secrets/gcp-credentials.json
     volumes:
       - ./secrets:/app/secrets:ro
       - ./backups:/var/backups/fishfeed
@@ -174,7 +114,7 @@ services:
       - fishfeed-internal
 
   redis:
-    image: redis:8.4-alpine
+    image: redis:8-alpine
     restart: unless-stopped
     command: redis-server --appendonly yes
     volumes:
@@ -200,8 +140,6 @@ secrets:
     file: ./secrets/postgres_password.txt
 
 networks:
-  traefik_proxy:
-    external: true
   fishfeed-internal:
     driver: bridge
 
