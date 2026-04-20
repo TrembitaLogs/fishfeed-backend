@@ -73,6 +73,29 @@ jobs:
     environment: production
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Sync docker-compose.prod.yml to ff
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.HETZNER_HOST }}
+          username: ${{ secrets.HETZNER_USER }}
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          source: docker-compose.prod.yml
+          target: /home/balaganov/docker/fishfeed/
+          strip_components: 0
+
+      - name: Sync deploy.sh to ff
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.HETZNER_HOST }}
+          username: ${{ secrets.HETZNER_USER }}
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          source: scripts/deploy.sh
+          target: /home/balaganov/docker/fishfeed/
+          strip_components: 1
+
       - name: Deploy to Hetzner
         uses: appleboy/ssh-action@v1
         with:
@@ -80,5 +103,10 @@ jobs:
           username: ${{ secrets.HETZNER_USER }}
           key: ${{ secrets.HETZNER_SSH_KEY }}
           script: |
+            set -euo pipefail
             cd /home/balaganov/docker/fishfeed
+            # Promote the just-synced production compose into the active
+            # filename deploy.sh expects. Atomic rename on same filesystem.
+            mv -f docker-compose.prod.yml docker-compose.yml
+            chmod +x deploy.sh
             ./deploy.sh
