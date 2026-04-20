@@ -177,8 +177,8 @@ async def test_start_scheduler_registers_all_jobs():
         ):
             await feeding_worker.start_scheduler()
 
-            # Should have 6 jobs registered
-            assert mock_scheduler.add_schedule.call_count == 6
+            # Should have 7 jobs registered
+            assert mock_scheduler.add_schedule.call_count == 7
 
             # Verify all expected jobs are registered
             job_ids = [
@@ -187,6 +187,7 @@ async def test_start_scheduler_registers_all_jobs():
             ]
             assert "image_cleanup" in job_ids
             assert "s3_reconciliation" in job_ids
+            assert "backup_database" in job_ids
             assert "reset_stale_streaks" not in job_ids
 
             mock_scheduler.start_in_background.assert_called_once()
