@@ -1,0 +1,153 @@
+{% extends "sqladmin/layout.html" %}
+
+{% block content %}
+<div class="container-xl">
+  <div class="page-header d-print-none">
+    <div class="row align-items-center">
+      <div class="col">
+        <h2 class="page-title">Database Backups</h2>
+      </div>
+    </div>
+  </div>
+
+  <div class="row row-cards mt-3">
+    {% set last = stats.last_backup %}
+    <div class="col-md-6 col-xl-5">
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">
+            {% if last and last.status.value == 'ok' %}
+              <span class="text-success">&#9989;</span>
+            {% elif last and last.status.value == 'failed' %}
+              <span class="text-danger">&#10060;</span>
+            {% elif last and last.status.value == 'running' %}
+              <span class="text-primary">&#9203;</span>
+            {% else %}
+              <span class="text-muted">&#9898;</span>
+            {% endif %}
+            Last Backup
+          </h3>
+        </div>
+        <div class="card-body">
+          {% if last %}
+            <table class="table table-sm table-borderless mb-0">
+              <tr>
+                <td class="text-muted" style="width:130px"><strong>Status</strong></td>
+                <td>{{ fmt_status(last.status.value) }}</td>
+              </tr>
+              <tr>
+                <td class="text-muted"><strong>Time</strong></td>
+                <td>{{ last.started_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}</td>
+              </tr>
+              <tr>
+                <td class="text-muted"><strong>File</strong></td>
+                <td><code class="small">{{ last.filename }}</code></td>
+              </tr>
+              <tr>
+                <td class="text-muted"><strong>Size</strong></td>
+                <td>{{ fmt_bytes(last.size_bytes) }}</td>
+              </tr>
+              <tr>
+                <td class="text-muted"><strong>Duration</strong></td>
+                <td>{{ fmt_duration(last.duration_seconds) }}</td>
+              </tr>
+              <tr>
+                <td class="text-muted"><strong>Storage</strong></td>
+                <td>{{ last.storage.value }}</td>
+              </tr>
+              <tr>
+                <td class="text-muted"><strong>Trigger</strong></td>
+                <td>{{ last.triggered_by }}</td>
+              </tr>
+              {% if last.error_message %}
+              <tr>
+                <td class="text-muted align-top"><strong>Error</strong></td>
+                <td class="text-danger small">{{ last.error_message }}</td>
+              </tr>
+              {% endif %}
+            </table>
+          {% else %}
+            <div class="text-muted text-center py-3">No backups yet</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="col-md-3 col-xl-3">
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title"><span class="text-info">&#128190;</span> Storage</h3>
+        </div>
+        <div class="card-body text-center">
+          <div class="display-4">{{ stats.total_count }}</div>
+          <div class="text-muted small">backups ({{ fmt_bytes(stats.total_bytes) }})</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-md-3 col-xl-4">
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title"><span class="text-warning">&#9654;</span> Manual Backup</h3>
+        </div>
+        <div class="card-body text-center">
+          <form action="{{ request.url_for('admin:backups-trigger') }}" method="post">
+            <button type="submit" class="btn btn-warning btn-lg">
+              &#9729; Backup Now
+            </button>
+          </form>
+          <div class="text-muted small mt-2">Runs asynchronously</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row mt-4">
+    <div class="col-md-8 col-xl-6">
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">&#9881; Backup Settings</h3>
+        </div>
+        <form class="card-body" action="{{ request.url_for('admin:backups-save-settings') }}" method="post">
+          <div class="row">
+            <div class="col-md-6 mb-3">
+              <label class="form-label">Backup Interval</label>
+              <select name="interval_hours" class="form-select">
+                {% for h in [1, 6, 12, 24, 48, 72, 168] %}
+                <option value="{{ h }}" {% if stats.settings.interval_hours == h %}selected{% endif %}>
+                  {% if h == 1 %}Every hour
+                  {% elif h < 24 %}Every {{ h }} hours
+                  {% elif h == 24 %}Every 24 hours
+                  {% elif h == 48 %}Every 2 days
+                  {% elif h == 72 %}Every 3 days
+                  {% elif h == 168 %}Every week
+                  {% endif %}
+                </option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-6 mb-3">
+              <label class="form-label">Retention Period</label>
+              <select name="retention_days" class="form-select">
+                {% for d in [1, 3, 7, 14, 30, 60, 90] %}
+                <option value="{{ d }}" {% if stats.settings.retention_days == d %}selected{% endif %}>
+                  {{ d }} day{{ 's' if d != 1 else '' }}
+                </option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-check form-switch">
+              <input type="checkbox" name="enabled" class="form-check-input"
+                {% if stats.settings.enabled %}checked{% endif %}>
+              <span class="form-check-label">Automatic backups enabled</span>
+            </label>
+          </div>
+          <button type="submit" class="btn btn-primary">&#128190; Save Settings</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -13,6 +13,9 @@ from app.admin.views import (
     AnalyticsEventAdmin,
     AquariumAdmin,
     AquariumMemberAdmin,
+    BackupsDashboardView,
+    BackupSettingsAdmin,
+    DatabaseBackupAdmin,
     FamilyInviteAdmin,
     FeedingLogAdmin,
     FeedingScheduleAdmin,
@@ -63,6 +66,9 @@ def setup_admin(app: FastAPI) -> Admin:
     admin.add_view(AnalyticsEventAdmin)
     admin.add_view(WebhookTransactionAdmin)
     admin.add_view(ReleasesView)
+    admin.add_view(BackupsDashboardView)
+    admin.add_view(DatabaseBackupAdmin)
+    admin.add_view(BackupSettingsAdmin)
 
     @app.get("/", include_in_schema=False)
     async def root_redirect() -> RedirectResponse:

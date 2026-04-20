@@ -9,6 +9,7 @@ services:
     volumes:
       - ./app:/app/app
       - ./mobile/releases:/app/mobile/releases:ro
+      - backups_data:/var/backups/fishfeed
     env_file:
       - .env
     environment:
@@ -78,6 +79,7 @@ services:
     command: ["uv", "run", "python", "-m", "app.workers.feeding_worker"]
     volumes:
       - ./app:/app/app
+      - backups_data:/var/backups/fishfeed
     networks:
       - fishfeed-network
     healthcheck:
@@ -152,3 +154,4 @@ volumes:
   postgres_data:
   redis_data:
   minio_data:
+  backups_data:
