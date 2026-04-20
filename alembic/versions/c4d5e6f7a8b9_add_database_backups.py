@@ -19,13 +19,31 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
-BACKUP_STATUS_ENUM = sa.Enum("running", "ok", "failed", name="backup_status")
-BACKUP_STORAGE_ENUM = sa.Enum("local", "r2", "both", name="backup_storage")
+# Use postgresql.ENUM with create_type=False so alembic does not emit
+# CREATE TYPE inside create_table. The raw DO-block below creates the
+# types exactly once, idempotently, sidestepping the DuplicateObjectError
+# that blocked the previous deploy.
+BACKUP_STATUS_ENUM = postgresql.ENUM(
+    "running", "ok", "failed", name="backup_status", create_type=False
+)
+BACKUP_STORAGE_ENUM = postgresql.ENUM(
+    "local", "r2", "both", name="backup_storage", create_type=False
+)
 
 
 def upgrade() -> None:
-    BACKUP_STATUS_ENUM.create(op.get_bind(), checkfirst=True)
-    BACKUP_STORAGE_ENUM.create(op.get_bind(), checkfirst=True)
+    op.execute(
+        """
+        DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'backup_status') THEN
+                CREATE TYPE backup_status AS ENUM ('running', 'ok', 'failed');
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'backup_storage') THEN
+                CREATE TYPE backup_storage AS ENUM ('local', 'r2', 'both');
+            END IF;
+        END $$;
+        """
+    )
 
     op.create_table(
         "database_backups",
@@ -95,5 +113,5 @@ def downgrade() -> None:
     op.drop_index("ix_database_backups_status", table_name="database_backups")
     op.drop_index("ix_database_backups_started_at", table_name="database_backups")
     op.drop_table("database_backups")
-    BACKUP_STORAGE_ENUM.drop(op.get_bind(), checkfirst=True)
-    BACKUP_STATUS_ENUM.drop(op.get_bind(), checkfirst=True)
+    op.execute("DROP TYPE IF EXISTS backup_storage")
+    op.execute("DROP TYPE IF EXISTS backup_status")
