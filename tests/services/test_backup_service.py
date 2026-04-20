@@ -23,7 +23,7 @@ async def _reset_tables(session: AsyncSession) -> None:
     await session.commit()
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_get_or_create_settings_seeds_row(async_session: AsyncSession) -> None:
     await _reset_tables(async_session)
 
@@ -35,7 +35,7 @@ async def test_get_or_create_settings_seeds_row(async_session: AsyncSession) -> 
     assert row.enabled is True
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_update_settings_validates_bounds(async_session: AsyncSession) -> None:
     await _reset_tables(async_session)
     await backup_service.get_or_create_settings()
@@ -50,7 +50,7 @@ async def test_update_settings_validates_bounds(async_session: AsyncSession) -> 
         )
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_update_settings_persists(async_session: AsyncSession) -> None:
     await _reset_tables(async_session)
     await backup_service.get_or_create_settings()
@@ -64,7 +64,7 @@ async def test_update_settings_persists(async_session: AsyncSession) -> None:
     assert updated.enabled is False
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_get_backup_stats_empty(async_session: AsyncSession) -> None:
     await _reset_tables(async_session)
 
@@ -76,7 +76,7 @@ async def test_get_backup_stats_empty(async_session: AsyncSession) -> None:
     assert isinstance(stats["settings"], BackupSettings)
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_get_backup_stats_with_records(async_session: AsyncSession) -> None:
     await _reset_tables(async_session)
     await backup_service.get_or_create_settings()
@@ -111,7 +111,7 @@ async def test_get_backup_stats_with_records(async_session: AsyncSession) -> Non
     assert last.filename == "newer.dump"
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_cleanup_expired_backups_removes_old(async_session: AsyncSession) -> None:
     await _reset_tables(async_session)
     await backup_service.update_settings(
@@ -142,7 +142,7 @@ async def test_cleanup_expired_backups_removes_old(async_session: AsyncSession) 
     assert summary["rows_removed"] == 1
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_run_backup_records_failure(
     async_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
@@ -166,7 +166,7 @@ async def test_run_backup_records_failure(
     assert "pg_dump missing" in record.error_message
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_run_backup_skips_r2_when_not_configured(
     async_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
