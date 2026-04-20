@@ -23,6 +23,14 @@ class BackupStorage(str, enum.Enum):
     BOTH = "both"
 
 
+# SQLAlchemy defaults to sending the Python enum NAME (e.g. "OK") to
+# PostgreSQL, but the DB enum stores the lowercase VALUE ("ok"). Without
+# values_callable every query for a status comparison fails with
+# InvalidTextRepresentationError.
+def _enum_values(enum_cls: type[enum.Enum]) -> list[str]:
+    return [str(member.value) for member in enum_cls]
+
+
 class DatabaseBackup(Base, TimestampMixin):
     __tablename__ = "database_backups"
 
@@ -33,14 +41,14 @@ class DatabaseBackup(Base, TimestampMixin):
     size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     duration_seconds: Mapped[float | None] = mapped_column(nullable=True)
     storage: Mapped[BackupStorage] = mapped_column(
-        Enum(BackupStorage, name="backup_storage"),
+        Enum(BackupStorage, name="backup_storage", values_callable=_enum_values),
         nullable=False,
         default=BackupStorage.LOCAL,
     )
     r2_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     local_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[BackupStatus] = mapped_column(
-        Enum(BackupStatus, name="backup_status"),
+        Enum(BackupStatus, name="backup_status", values_callable=_enum_values),
         nullable=False,
         default=BackupStatus.RUNNING,
     )

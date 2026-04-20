@@ -24,6 +24,74 @@ async def _reset_tables(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_backup_status_enum_uses_lowercase_values(
+    async_session: AsyncSession,
+) -> None:
+    """Regression: backup_status PG enum must have lowercase values.
+
+    The alembic migration creates ``backup_status`` with values ``running``,
+    ``ok``, ``failed`` (lowercase). The Python enum members are uppercase
+    (``RUNNING``, ``OK``, ``FAILED``) but their ``.value`` fields are
+    lowercase. Without ``values_callable`` on the SQLAlchemy Enum column,
+    SQLAlchemy sends the enum NAME (e.g. ``"OK"``) at query time, producing
+    ``InvalidTextRepresentationError`` against the real enum. Keeping
+    ``values_callable`` aligns Base.metadata.create_all (used by tests)
+    with the migration so this regression never resurfaces.
+    """
+    for typname, expected in (
+        ("backup_status", ["running", "ok", "failed"]),
+        ("backup_storage", ["local", "r2", "both"]),
+    ):
+        result = await async_session.execute(
+            text(
+                "SELECT enumlabel FROM pg_enum "
+                "JOIN pg_type ON pg_type.oid = pg_enum.enumtypid "
+                "WHERE pg_type.typname = :t "
+                "ORDER BY pg_enum.enumsortorder"
+            ),
+            {"t": typname},
+        )
+        labels = [row[0] for row in result]
+        assert labels == expected, (
+            f"PG enum {typname} has values {labels}, expected {expected}. "
+            "Check that values_callable is set on the Enum column in "
+            "app/models/database_backup.py."
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_backup_status_query_roundtrip(
+    async_session: AsyncSession,
+) -> None:
+    """Regression: WHERE status = BackupStatus.OK must not raise.
+
+    This is the exact query pattern from get_backup_stats that broke the
+    admin dashboard with ``invalid input value for enum backup_status: "OK"``.
+    """
+    await _reset_tables(async_session)
+
+    record = DatabaseBackup(
+        filename="roundtrip.dump",
+        size_bytes=42,
+        storage=BackupStorage.LOCAL,
+        status=BackupStatus.OK,
+        started_at=datetime.now(UTC),
+        completed_at=datetime.now(UTC),
+    )
+    async_session.add(record)
+    await async_session.commit()
+
+    from sqlalchemy import select
+
+    result = await async_session.execute(
+        select(DatabaseBackup).where(DatabaseBackup.status == BackupStatus.OK)
+    )
+    rows = list(result.scalars())
+    assert len(rows) == 1
+    assert rows[0].filename == "roundtrip.dump"
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_get_or_create_settings_seeds_row(async_session: AsyncSession) -> None:
     await _reset_tables(async_session)
 
