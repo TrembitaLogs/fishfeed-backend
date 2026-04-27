@@ -439,10 +439,18 @@ async def process_webhook(db: AsyncSession, event: WebhookEvent) -> None:
     elif event_type == "NON_RENEWING_PURCHASE":
         # One-time non-subscription purchase (e.g. fishfeed_remove_ads).
         # Grants a permanent entitlement with no expiry.
+        # For non-subscriptions we want the store SKU (transaction.product_id /
+        # event-level product_id), not entitlement.product_identifier — those
+        # describe the granted entitlement, not the purchased product.
+        nonsub_product_id = (
+            (event_data.transaction.product_id if event_data.transaction else None)
+            or event_data.product_id
+            or product_id
+        )
         await _grant_non_subscription_entitlement(
             db=db,
             user=user,
-            product_id=product_id,
+            product_id=nonsub_product_id,
             entitlement_ids=[e.product_identifier for e in event_data.entitlements],
             transaction_id=event_data.transaction_id,
         )

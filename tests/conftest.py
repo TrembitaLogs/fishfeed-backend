@@ -26,6 +26,7 @@ from app.api import (
     sync_router,
     users_router,
 )
+from app.api.well_known import router as well_known_router
 from app.database import get_db
 from app.models import Base
 from app.models.species import Species
@@ -129,9 +130,10 @@ async def app(async_engine, redis_client) -> AsyncGenerator[FastAPI]:
     """Create FastAPI app for testing."""
     app = FastAPI()
 
-    # Health and releases are not versioned
+    # Health, releases and well-known endpoints are not versioned
     app.include_router(health_router)
     app.include_router(releases_router)
+    app.include_router(well_known_router)
 
     # All API routes under /api/v1
     api_v1 = APIRouter(prefix="/api/v1")
