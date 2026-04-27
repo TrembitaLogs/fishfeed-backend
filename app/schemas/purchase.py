@@ -17,6 +17,7 @@ WebhookEventType = Literal[
     "UNCANCELLATION",
     "SUBSCRIBER_ALIAS",
     "TRANSFER",
+    "NON_RENEWING_PURCHASE",
 ]
 
 StoreType = Literal["APP_STORE", "PLAY_STORE", "STRIPE", "AMAZON"]
