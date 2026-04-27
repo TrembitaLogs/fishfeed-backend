@@ -67,7 +67,8 @@ jobs:
 
       - name: Run pip-audit (dependency vulnerability scan)
         if: ${{ inputs.run-pip-audit }}
-        run: uv run pip-audit --strict
+        # CVE-2026-3219 (pip): no fix release available yet, tracked for future bump.
+        run: uv run pip-audit --strict --ignore-vuln CVE-2026-3219
 
       - name: Run ruff (lint)
         run: uv run ruff check . --output-format=github
