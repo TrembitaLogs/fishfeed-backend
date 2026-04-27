@@ -22,7 +22,7 @@ async def android_asset_links() -> JSONResponse:
                 "relation": ["delegate_permission/common.handle_all_urls"],
                 "target": {
                     "namespace": "android_app",
-                    "package_name": "com.fishfeed.fishfeed",
+                    "package_name": settings.ANDROID_PACKAGE_NAME,
                     "sha256_cert_fingerprints": settings.APP_LINK_FINGERPRINTS,
                 },
             },
@@ -45,7 +45,7 @@ async def apple_app_site_association() -> JSONResponse:
                 "apps": [],
                 "details": [
                     {
-                        "appID": f"{settings.APPLE_TEAM_ID}.com.fishfeed.fishfeed",
+                        "appID": f"{settings.APPLE_TEAM_ID}.{settings.IOS_BUNDLE_ID}",
                         "paths": ["/join/*"],
                     },
                 ],

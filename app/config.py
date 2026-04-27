@@ -73,6 +73,8 @@ class Settings(BaseSettings):
     INVITE_BASE_URL: str = "https://api.fishfeed.club/join"
 
     # App Links / Universal Links verification
+    ANDROID_PACKAGE_NAME: str = "com.fishfeed.fishfeed"
+    IOS_BUNDLE_ID: str = "com.fishfeed.mobile"
     APP_LINK_FINGERPRINTS: list[str] = [
         # Release keystore
         "92:C9:AF:3C:24:8B:D3:C8:1C:DE:B6:42:9B:BF:E4:CC:F5:9C:C5:02:6E:0A:A3:8F:ED:F4:87:B6:A2:C0:36:78",

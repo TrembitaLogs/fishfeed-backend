@@ -280,6 +280,50 @@ async def _clear_downgrade_info(db: AsyncSession, user_id: UUID) -> None:
         logger.info("Cleared downgrade info for user", user_id=user_id)
 
 
+async def _grant_non_subscription_entitlement(
+    db: AsyncSession,
+    user: User,
+    product_id: str | None,
+    entitlement_ids: list[str],
+    transaction_id: str | None,
+) -> None:
+    """Grant a permanent (non-subscription) entitlement to the user.
+
+    Used for one-time purchases such as fishfeed_remove_ads. The entitlement
+    is stored in user.settings.non_subscriptions as a deduplicated list of
+    product IDs and as a flat list of entitlement IDs for fast lookup.
+    """
+    settings_dict = dict(user.settings)
+    non_sub = dict(settings_dict.get("non_subscriptions", {}))
+
+    products: list[str] = list(non_sub.get("products", []))
+    if product_id and product_id not in products:
+        products.append(product_id)
+    non_sub["products"] = products
+
+    entitlements: list[str] = list(non_sub.get("entitlements", []))
+    for ent_id in entitlement_ids:
+        if ent_id and ent_id not in entitlements:
+            entitlements.append(ent_id)
+    non_sub["entitlements"] = entitlements
+
+    non_sub["updated_at"] = datetime.now(UTC).isoformat()
+    if transaction_id:
+        non_sub["last_transaction_id"] = transaction_id
+
+    settings_dict["non_subscriptions"] = non_sub
+    user.settings = settings_dict
+    await db.flush()
+
+    logger.info(
+        "Granted non-subscription entitlement",
+        user_id=user.id,
+        product_id=product_id,
+        entitlements=entitlement_ids,
+        transaction_id=transaction_id,
+    )
+
+
 async def process_webhook(db: AsyncSession, event: WebhookEvent) -> None:
     """Process RevenueCat webhook event.
 
@@ -291,6 +335,7 @@ async def process_webhook(db: AsyncSession, event: WebhookEvent) -> None:
     - BILLING_ISSUE: Log billing problem
     - PRODUCT_CHANGE: Update product_id
     - UNCANCELLATION: Restore will_renew=True
+    - NON_RENEWING_PURCHASE: Grant permanent non-subscription entitlement
 
     Args:
         db: Database session.
@@ -390,6 +435,25 @@ async def process_webhook(db: AsyncSession, event: WebhookEvent) -> None:
     elif event_type == "TRANSFER":
         # Transfer event - subscription transferred between users
         logger.info("Transfer event", app_user_id=app_user_id)
+
+    elif event_type == "NON_RENEWING_PURCHASE":
+        # One-time non-subscription purchase (e.g. fishfeed_remove_ads).
+        # Grants a permanent entitlement with no expiry.
+        # For non-subscriptions we want the store SKU (transaction.product_id /
+        # event-level product_id), not entitlement.product_identifier — those
+        # describe the granted entitlement, not the purchased product.
+        nonsub_product_id = (
+            (event_data.transaction.product_id if event_data.transaction else None)
+            or event_data.product_id
+            or product_id
+        )
+        await _grant_non_subscription_entitlement(
+            db=db,
+            user=user,
+            product_id=nonsub_product_id,
+            entitlement_ids=[e.product_identifier for e in event_data.entitlements],
+            transaction_id=event_data.transaction_id,
+        )
 
     else:
         logger.warning("Unhandled webhook event type", event_type=event_type)

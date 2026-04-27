@@ -421,6 +421,65 @@ class TestProcessWebhook:
             await cleanup_users(async_session)
 
     @pytest.mark.asyncio(loop_scope="session")
+    async def test_non_renewing_purchase_grants_remove_ads(self, async_session: AsyncSession):
+        """Test NON_RENEWING_PURCHASE stores entitlement and product in user settings."""
+        await cleanup_users(async_session)
+        try:
+            user = await create_test_user(async_session)
+
+            event = WebhookEvent(
+                event=WebhookEventData(
+                    type="NON_RENEWING_PURCHASE",
+                    app_user_id=str(user.id),
+                    transaction_id="txn_remove_ads_1",
+                    product_id="fishfeed_remove_ads",
+                    entitlements=[
+                        WebhookEntitlement(product_identifier="remove_ads")
+                    ],
+                )
+            )
+
+            await process_webhook(async_session, event)
+
+            await async_session.refresh(user)
+            non_sub = user.settings.get("non_subscriptions", {})
+            assert "fishfeed_remove_ads" in non_sub.get("products", [])
+            assert "remove_ads" in non_sub.get("entitlements", [])
+            assert non_sub.get("last_transaction_id") == "txn_remove_ads_1"
+            # Subscription state must remain untouched.
+            assert user.subscription_status == "free"
+        finally:
+            await cleanup_users(async_session)
+
+    @pytest.mark.asyncio(loop_scope="session")
+    async def test_non_renewing_purchase_is_idempotent(self, async_session: AsyncSession):
+        """Test NON_RENEWING_PURCHASE deduplicates products on repeated processing."""
+        await cleanup_users(async_session)
+        try:
+            user = await create_test_user(async_session)
+
+            event = WebhookEvent(
+                event=WebhookEventData(
+                    type="NON_RENEWING_PURCHASE",
+                    app_user_id=str(user.id),
+                    product_id="fishfeed_remove_ads",
+                    entitlements=[
+                        WebhookEntitlement(product_identifier="remove_ads")
+                    ],
+                )
+            )
+
+            await process_webhook(async_session, event)
+            await process_webhook(async_session, event)
+
+            await async_session.refresh(user)
+            non_sub = user.settings.get("non_subscriptions", {})
+            assert non_sub.get("products", []).count("fishfeed_remove_ads") == 1
+            assert non_sub.get("entitlements", []).count("remove_ads") == 1
+        finally:
+            await cleanup_users(async_session)
+
+    @pytest.mark.asyncio(loop_scope="session")
     async def test_handles_unknown_user_gracefully(self, async_session: AsyncSession):
         """Test webhook processing handles unknown user without raising error."""
         await cleanup_users(async_session)
