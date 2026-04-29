@@ -29,7 +29,7 @@ from app.services.purchase import (
     process_webhook,
     release_idempotency_lock,
     restore_purchases,
-    verify_webhook_signature,
+    verify_webhook_authorization,
 )
 
 logger = structlog.get_logger(__name__)
@@ -42,7 +42,7 @@ async def handle_webhook(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     redis: Annotated[Redis, Depends(get_redis)],
-    x_revenuecat_signature: Annotated[str | None, Header()] = None,
+    authorization: Annotated[str | None, Header()] = None,
 ) -> WebhookResponse:
     """Process RevenueCat webhook events.
 
@@ -56,41 +56,40 @@ async def handle_webhook(
     - UNCANCELLATION: Cancellation reversed
 
     Security:
-    - Validates X-RevenueCat-Signature header using HMAC-SHA256
+    - Validates Authorization header against REVENUECAT_WEBHOOK_SECRET (constant-time compare)
     - Implements idempotency to handle duplicate webhooks
     - Uses Redis lock for race condition protection
 
-    Note: Always returns 200 OK to prevent RevenueCat retries.
-    Errors are logged but don't cause HTTP error responses.
+    Note: Always returns 200 OK on accepted events to prevent RevenueCat retries.
+    Auth failures return 401 so RevenueCat retries (or surfaces) the misconfiguration.
     """
     settings = get_settings()
     correlation_id = str(uuid.uuid4())
     lock_key: str | None = None
 
-    # Read raw body for signature verification
+    # Read raw body for downstream parsing
     body = await request.body()
 
-    # Validate webhook signature
+    # Validate Authorization header against configured secret
     if not settings.REVENUECAT_WEBHOOK_SECRET:
         logger.warning(
-            "REVENUECAT_WEBHOOK_SECRET is not configured — webhook signature validation is disabled. "
+            "REVENUECAT_WEBHOOK_SECRET is not configured — webhook authorization is disabled. "
             "Set this secret in production to prevent unauthorized webhook calls.",
         )
     else:
-        if not x_revenuecat_signature:
+        if not authorization:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Missing X-RevenueCat-Signature header",
+                detail="Missing Authorization header",
             )
 
-        if not verify_webhook_signature(
-            payload=body,
-            signature=x_revenuecat_signature,
+        if not verify_webhook_authorization(
+            authorization=authorization,
             secret=settings.REVENUECAT_WEBHOOK_SECRET,
         ):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid webhook signature",
+                detail="Invalid Authorization header",
             )
 
     # Parse webhook event
