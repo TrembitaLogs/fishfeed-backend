@@ -1,8 +1,6 @@
 """Tests for purchase API endpoints (webhook security, idempotency, logging)."""
 
 import asyncio
-import hashlib
-import hmac
 import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
@@ -61,26 +59,17 @@ def create_webhook_payload(
     }
 
 
-def generate_signature(payload: bytes, secret: str) -> str:
-    """Generate HMAC-SHA256 signature for webhook payload."""
-    return hmac.new(
-        key=secret.encode("utf-8"),
-        msg=payload,
-        digestmod=hashlib.sha256,
-    ).hexdigest()
-
-
-class TestWebhookSignatureValidation:
-    """Tests for webhook signature validation."""
+class TestWebhookAuthorization:
+    """Tests for webhook Authorization header validation."""
 
     @pytest.mark.asyncio(loop_scope="session")
-    async def test_valid_signature_processes_webhook(
+    async def test_valid_authorization_processes_webhook(
         self,
         client: AsyncClient,
         async_session: AsyncSession,
         redis_client: Redis,
     ):
-        """Test webhook with valid signature is processed successfully."""
+        """Test webhook with matching Authorization header is processed successfully."""
         await cleanup_test_data(async_session)
         await redis_client.flushdb()
 
@@ -89,11 +78,10 @@ class TestWebhookSignatureValidation:
             payload = create_webhook_payload(
                 event_type="INITIAL_PURCHASE",
                 app_user_id=str(user.id),
-                transaction_id="txn_valid_sig_001",
+                transaction_id="txn_valid_auth_001",
             )
             payload_bytes = json.dumps(payload).encode("utf-8")
-            secret = "test_webhook_secret"
-            signature = generate_signature(payload_bytes, secret)
+            secret = "Bearer test_webhook_secret"
 
             with patch("app.api.purchase.get_settings") as mock_settings:
                 mock_settings.return_value.REVENUECAT_WEBHOOK_SECRET = secret
@@ -103,7 +91,7 @@ class TestWebhookSignatureValidation:
                     content=payload_bytes,
                     headers={
                         "Content-Type": "application/json",
-                        "X-RevenueCat-Signature": signature,
+                        "Authorization": secret,
                     },
                 )
 
@@ -120,12 +108,12 @@ class TestWebhookSignatureValidation:
             await redis_client.flushdb()
 
     @pytest.mark.asyncio(loop_scope="session")
-    async def test_invalid_signature_returns_401(
+    async def test_invalid_authorization_returns_401(
         self,
         client: AsyncClient,
         async_session: AsyncSession,
     ):
-        """Test webhook with invalid signature returns 401 Unauthorized."""
+        """Test webhook with mismatching Authorization header returns 401 Unauthorized."""
         await cleanup_test_data(async_session)
 
         try:
@@ -135,7 +123,7 @@ class TestWebhookSignatureValidation:
                 app_user_id=str(user.id),
             )
             payload_bytes = json.dumps(payload).encode("utf-8")
-            secret = "test_webhook_secret"
+            secret = "Bearer test_webhook_secret"
 
             with patch("app.api.purchase.get_settings") as mock_settings:
                 mock_settings.return_value.REVENUECAT_WEBHOOK_SECRET = secret
@@ -145,23 +133,23 @@ class TestWebhookSignatureValidation:
                     content=payload_bytes,
                     headers={
                         "Content-Type": "application/json",
-                        "X-RevenueCat-Signature": "invalid_signature",
+                        "Authorization": "Bearer wrong_value",
                     },
                 )
 
             assert response.status_code == 401
-            assert "Invalid webhook signature" in response.json()["detail"]
+            assert "Invalid Authorization" in response.json()["detail"]
 
         finally:
             await cleanup_test_data(async_session)
 
     @pytest.mark.asyncio(loop_scope="session")
-    async def test_missing_signature_returns_401(
+    async def test_missing_authorization_returns_401(
         self,
         client: AsyncClient,
         async_session: AsyncSession,
     ):
-        """Test webhook with missing signature returns 401 Unauthorized."""
+        """Test webhook with missing Authorization header returns 401 Unauthorized."""
         await cleanup_test_data(async_session)
 
         try:
@@ -171,7 +159,7 @@ class TestWebhookSignatureValidation:
                 app_user_id=str(user.id),
             )
             payload_bytes = json.dumps(payload).encode("utf-8")
-            secret = "test_webhook_secret"
+            secret = "Bearer test_webhook_secret"
 
             with patch("app.api.purchase.get_settings") as mock_settings:
                 mock_settings.return_value.REVENUECAT_WEBHOOK_SECRET = secret
@@ -183,7 +171,7 @@ class TestWebhookSignatureValidation:
                 )
 
             assert response.status_code == 401
-            assert "Missing X-RevenueCat-Signature" in response.json()["detail"]
+            assert "Missing Authorization" in response.json()["detail"]
 
         finally:
             await cleanup_test_data(async_session)
@@ -493,6 +481,253 @@ class TestWebhookTransactionLogging:
             assert transaction is not None
             assert transaction.event_type == "INITIAL_PURCHASE"
             assert transaction.processing_result == "success"
+
+        finally:
+            await cleanup_test_data(async_session)
+            await redis_client.flushdb()
+
+
+class TestWebhookEventTypes:
+    """Tests for each RevenueCat event type's effect on user subscription state."""
+
+    @pytest.mark.asyncio(loop_scope="session")
+    async def test_initial_purchase_sets_premium(
+        self,
+        client: AsyncClient,
+        async_session: AsyncSession,
+        redis_client: Redis,
+    ):
+        """INITIAL_PURCHASE: status=premium, expires_at set, will_renew=True, product_id stored."""
+        await cleanup_test_data(async_session)
+        await redis_client.flushdb()
+
+        try:
+            user = await create_test_user(async_session)
+            expires_at = datetime.now(UTC) + timedelta(days=30)
+            payload = {
+                "event": {
+                    "type": "INITIAL_PURCHASE",
+                    "app_user_id": str(user.id),
+                    "transaction_id": "txn_initial_001",
+                    "entitlements": [
+                        {
+                            "product_identifier": "fishfeed_premium_monthly",
+                            "expires_at": expires_at.isoformat(),
+                        }
+                    ],
+                }
+            }
+            payload_bytes = json.dumps(payload).encode("utf-8")
+
+            with patch("app.api.purchase.get_settings") as mock_settings:
+                mock_settings.return_value.REVENUECAT_WEBHOOK_SECRET = None
+
+                response = await client.post(
+                    "/api/v1/purchases/webhook",
+                    content=payload_bytes,
+                    headers={"Content-Type": "application/json"},
+                )
+
+            assert response.status_code == 200
+            assert response.json()["success"] is True
+
+            await async_session.refresh(user)
+            assert user.subscription_status == "premium"
+            assert user.subscription_expires_at is not None
+            subscription = user.settings.get("subscription", {})
+            assert subscription.get("will_renew") is True
+            assert subscription.get("product_id") == "fishfeed_premium_monthly"
+
+        finally:
+            await cleanup_test_data(async_session)
+            await redis_client.flushdb()
+
+    @pytest.mark.asyncio(loop_scope="session")
+    async def test_renewal_extends_expiry(
+        self,
+        client: AsyncClient,
+        async_session: AsyncSession,
+        redis_client: Redis,
+    ):
+        """RENEWAL: expires_at moves forward, status stays premium, will_renew=True."""
+        await cleanup_test_data(async_session)
+        await redis_client.flushdb()
+
+        try:
+            old_expiry = datetime.now(UTC) + timedelta(days=1)
+            user = User(
+                email="renewal_test@example.com",
+                password_hash="test_hash",
+                subscription_status="premium",
+                subscription_expires_at=old_expiry,
+                settings={
+                    "subscription": {
+                        "product_id": "fishfeed_premium_monthly",
+                        "will_renew": True,
+                    }
+                },
+            )
+            async_session.add(user)
+            await async_session.commit()
+            await async_session.refresh(user)
+
+            new_expiry = datetime.now(UTC) + timedelta(days=31)
+            payload = {
+                "event": {
+                    "type": "RENEWAL",
+                    "app_user_id": str(user.id),
+                    "transaction_id": "txn_renewal_001",
+                    "entitlements": [
+                        {
+                            "product_identifier": "fishfeed_premium_monthly",
+                            "expires_at": new_expiry.isoformat(),
+                        }
+                    ],
+                }
+            }
+            payload_bytes = json.dumps(payload).encode("utf-8")
+
+            with patch("app.api.purchase.get_settings") as mock_settings:
+                mock_settings.return_value.REVENUECAT_WEBHOOK_SECRET = None
+
+                response = await client.post(
+                    "/api/v1/purchases/webhook",
+                    content=payload_bytes,
+                    headers={"Content-Type": "application/json"},
+                )
+
+            assert response.status_code == 200
+            await async_session.refresh(user)
+            assert user.subscription_status == "premium"
+            assert user.subscription_expires_at is not None
+            assert user.subscription_expires_at > old_expiry
+            assert user.settings["subscription"]["will_renew"] is True
+
+        finally:
+            await cleanup_test_data(async_session)
+            await redis_client.flushdb()
+
+    @pytest.mark.asyncio(loop_scope="session")
+    async def test_cancellation_keeps_premium_until_expiry(
+        self,
+        client: AsyncClient,
+        async_session: AsyncSession,
+        redis_client: Redis,
+    ):
+        """CANCELLATION: status=premium (still), will_renew=False, expires_at unchanged."""
+        await cleanup_test_data(async_session)
+        await redis_client.flushdb()
+
+        try:
+            expires_at = datetime.now(UTC) + timedelta(days=15)
+            user = User(
+                email="cancel_test@example.com",
+                password_hash="test_hash",
+                subscription_status="premium",
+                subscription_expires_at=expires_at,
+                settings={
+                    "subscription": {
+                        "product_id": "fishfeed_premium_monthly",
+                        "will_renew": True,
+                    }
+                },
+            )
+            async_session.add(user)
+            await async_session.commit()
+            await async_session.refresh(user)
+
+            payload = {
+                "event": {
+                    "type": "CANCELLATION",
+                    "app_user_id": str(user.id),
+                    "transaction_id": "txn_cancel_001",
+                    "entitlements": [
+                        {
+                            "product_identifier": "fishfeed_premium_monthly",
+                            "expires_at": expires_at.isoformat(),
+                        }
+                    ],
+                }
+            }
+            payload_bytes = json.dumps(payload).encode("utf-8")
+
+            with patch("app.api.purchase.get_settings") as mock_settings:
+                mock_settings.return_value.REVENUECAT_WEBHOOK_SECRET = None
+
+                response = await client.post(
+                    "/api/v1/purchases/webhook",
+                    content=payload_bytes,
+                    headers={"Content-Type": "application/json"},
+                )
+
+            assert response.status_code == 200
+            await async_session.refresh(user)
+            assert user.subscription_status == "premium"
+            assert user.subscription_expires_at == expires_at
+            assert user.settings["subscription"]["will_renew"] is False
+
+        finally:
+            await cleanup_test_data(async_session)
+            await redis_client.flushdb()
+
+    @pytest.mark.asyncio(loop_scope="session")
+    async def test_expiration_reverts_to_free(
+        self,
+        client: AsyncClient,
+        async_session: AsyncSession,
+        redis_client: Redis,
+    ):
+        """EXPIRATION: status=free, expires_at cleared, will_renew=False."""
+        await cleanup_test_data(async_session)
+        await redis_client.flushdb()
+
+        try:
+            past_expiry = datetime.now(UTC) - timedelta(hours=1)
+            user = User(
+                email="expire_test@example.com",
+                password_hash="test_hash",
+                subscription_status="premium",
+                subscription_expires_at=past_expiry,
+                settings={
+                    "subscription": {
+                        "product_id": "fishfeed_premium_monthly",
+                        "will_renew": False,
+                    }
+                },
+            )
+            async_session.add(user)
+            await async_session.commit()
+            await async_session.refresh(user)
+
+            payload = {
+                "event": {
+                    "type": "EXPIRATION",
+                    "app_user_id": str(user.id),
+                    "transaction_id": "txn_expire_001",
+                    "entitlements": [
+                        {
+                            "product_identifier": "fishfeed_premium_monthly",
+                            "expires_at": past_expiry.isoformat(),
+                        }
+                    ],
+                }
+            }
+            payload_bytes = json.dumps(payload).encode("utf-8")
+
+            with patch("app.api.purchase.get_settings") as mock_settings:
+                mock_settings.return_value.REVENUECAT_WEBHOOK_SECRET = None
+
+                response = await client.post(
+                    "/api/v1/purchases/webhook",
+                    content=payload_bytes,
+                    headers={"Content-Type": "application/json"},
+                )
+
+            assert response.status_code == 200
+            await async_session.refresh(user)
+            assert user.subscription_status == "free"
+            assert user.subscription_expires_at is None
+            assert user.settings["subscription"]["will_renew"] is False
 
         finally:
             await cleanup_test_data(async_session)

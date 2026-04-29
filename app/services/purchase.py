@@ -1,6 +1,5 @@
 """Purchase service for RevenueCat webhook processing and subscription management."""
 
-import hashlib
 import hmac
 from datetime import UTC, datetime
 from uuid import UUID
@@ -115,27 +114,17 @@ def _set_subscription_settings(user: User, subscription_data: dict) -> None:
     user.settings = settings
 
 
-def verify_webhook_signature(payload: bytes, signature: str, secret: str) -> bool:
-    """Verify RevenueCat webhook signature using HMAC-SHA256.
+def verify_webhook_authorization(authorization: str, secret: str) -> bool:
+    """Verify RevenueCat webhook Authorization header against configured secret.
 
-    Args:
-        payload: Raw request body bytes.
-        signature: X-RevenueCat-Signature header value.
-        secret: REVENUECAT_WEBHOOK_SECRET from configuration.
-
-    Returns:
-        True if signature is valid, False otherwise.
+    RevenueCat sends the Authorization header value verbatim (the exact string
+    configured in the webhook integration's "Authorization header value" field),
+    so the comparison is a constant-time string equality check, not HMAC.
     """
-    if not signature or not secret:
+    if not authorization or not secret:
         return False
 
-    expected_signature = hmac.new(
-        key=secret.encode("utf-8"),
-        msg=payload,
-        digestmod=hashlib.sha256,
-    ).hexdigest()
-
-    return hmac.compare_digest(expected_signature, signature)
+    return hmac.compare_digest(authorization, secret)
 
 
 async def check_idempotency(
