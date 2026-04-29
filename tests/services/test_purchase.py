@@ -29,7 +29,7 @@ from app.services.purchase import (
     restore_purchases,
     revert_to_free,
     update_subscription_status,
-    verify_webhook_signature,
+    verify_webhook_authorization,
 )
 
 
@@ -715,74 +715,39 @@ class TestPurchaseExceptions:
         assert "txn_123" in error.message
 
 
-class TestVerifyWebhookSignature:
-    """Tests for verify_webhook_signature function."""
+class TestVerifyWebhookAuthorization:
+    """Tests for verify_webhook_authorization function."""
 
-    def test_valid_signature_returns_true(self):
-        """Test that valid HMAC-SHA256 signature returns True."""
-        import hashlib
-        import hmac
+    def test_matching_authorization_returns_true(self):
+        """Test that Authorization equal to secret returns True."""
+        secret = "Bearer test_webhook_secret_value"
 
-        payload = b'{"test": "payload"}'
-        secret = "test_secret_key"
-        signature = hmac.new(
-            key=secret.encode("utf-8"),
-            msg=payload,
-            digestmod=hashlib.sha256,
-        ).hexdigest()
+        assert verify_webhook_authorization(secret, secret) is True
 
-        result = verify_webhook_signature(payload, signature, secret)
-        assert result is True
+    def test_mismatching_authorization_returns_false(self):
+        """Test that Authorization different from secret returns False."""
+        secret = "Bearer test_webhook_secret_value"
 
-    def test_invalid_signature_returns_false(self):
-        """Test that invalid signature returns False."""
-        payload = b'{"test": "payload"}'
-        secret = "test_secret_key"
-        invalid_signature = "invalid_signature_value"
+        assert verify_webhook_authorization("Bearer wrong_value", secret) is False
 
-        result = verify_webhook_signature(payload, invalid_signature, secret)
-        assert result is False
-
-    def test_empty_signature_returns_false(self):
-        """Test that empty signature returns False."""
-        payload = b'{"test": "payload"}'
-        secret = "test_secret_key"
-
-        result = verify_webhook_signature(payload, "", secret)
-        assert result is False
+    def test_empty_authorization_returns_false(self):
+        """Test that empty Authorization returns False."""
+        assert verify_webhook_authorization("", "test_secret_key") is False
 
     def test_empty_secret_returns_false(self):
         """Test that empty secret returns False."""
-        payload = b'{"test": "payload"}'
-        signature = "some_signature"
+        assert verify_webhook_authorization("some_value", "") is False
 
-        result = verify_webhook_signature(payload, signature, "")
-        assert result is False
+    def test_none_authorization_returns_false(self):
+        """Test that None Authorization returns False."""
+        assert verify_webhook_authorization(None, "test_secret_key") is False  # type: ignore
 
-    def test_none_signature_returns_false(self):
-        """Test that None signature returns False."""
-        payload = b'{"test": "payload"}'
-        secret = "test_secret_key"
+    def test_constant_time_comparison(self):
+        """Test that comparison uses hmac.compare_digest (constant-time)."""
+        secret = "Bearer test_webhook_secret_value"
 
-        result = verify_webhook_signature(payload, None, secret)  # type: ignore
-        assert result is False
-
-    def test_timing_attack_safe(self):
-        """Test that signature comparison is timing-safe (uses compare_digest)."""
-        import hashlib
-        import hmac
-
-        payload = b'{"test": "payload"}'
-        secret = "test_secret_key"
-        correct_signature = hmac.new(
-            key=secret.encode("utf-8"),
-            msg=payload,
-            digestmod=hashlib.sha256,
-        ).hexdigest()
-
-        # This should use compare_digest internally
-        result = verify_webhook_signature(payload, correct_signature, secret)
-        assert result is True
+        assert verify_webhook_authorization(secret, secret) is True
+        assert verify_webhook_authorization(secret + "x", secret) is False
 
 
 class TestCheckIdempotency:
