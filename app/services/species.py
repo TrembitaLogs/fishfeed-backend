@@ -1,6 +1,7 @@
 """Species service with business logic for fish species management."""
 
 import json
+from datetime import datetime
 
 import structlog
 from redis.asyncio import Redis
@@ -8,6 +9,7 @@ from redis.exceptions import RedisError
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.models.species import Species
 from app.schemas.species import (
     SpeciesCreate,
@@ -84,29 +86,58 @@ POPULAR_SPECIES_IDS = [
 ]
 
 
+def _species_public_cdn_url(key: str, updated_at: datetime, cdn_domain: str) -> str:
+    """Build a public CDN URL for a species image with cache-buster.
+
+    The cache-buster (`?v=<unix_ts>`) is the species' `updated_at` timestamp so
+    Cloudflare's edge cache invalidates whenever an admin updates the photo.
+    """
+    return f"https://{cdn_domain}/{key}?v={int(updated_at.timestamp())}"
+
+
 async def _resolve_species_image_urls(
     species_list: list[SpeciesResponse],
 ) -> list[SpeciesResponse]:
-    """Replace S3 keys in image_url with presigned URLs.
+    """Replace S3 keys in image_url with viewable URLs.
 
-    Species images are stored as S3 keys (e.g., 'species/betta/photo.webp').
-    This function generates presigned GET URLs so clients can display them.
+    Species images are stored as S3 keys (e.g., 'species/betta/photo.webp')
+    in the dedicated `S3_SPECIES_BUCKET_NAME` bucket. Resolution strategy:
+
+    - If `S3_PUBLIC_CDN_DOMAIN` is configured (production), build a public CDN
+      URL directly. The CDN is mapped to the species bucket and serves objects
+      without signing — no expiration, edge-cached, no AccessDenied 403s from
+      cross-bucket presigning. Cache-buster `?v=<updated_at>` invalidates on
+      photo updates.
+    - Otherwise (dev / unconfigured CDN), fall back to presigned URLs. Note
+      that the legacy presigner targets `S3_IMAGES_BUCKET_NAME` and only
+      works in setups where species objects live there too.
 
     Args:
         species_list: List of SpeciesResponse with S3 keys in image_url.
 
     Returns:
-        List of SpeciesResponse with presigned URLs in image_url.
+        List of SpeciesResponse with viewable URLs in image_url.
     """
-    keys = [s.image_url for s in species_list if s.image_url]
-    if not keys:
+    keyed = [s for s in species_list if s.image_url]
+    if not keyed:
         return species_list
 
-    try:
-        url_map = await batch_generate_presigned_urls(keys)
-    except Exception:
-        logger.warning("failed_to_generate_species_image_urls", count=len(keys))
-        return species_list
+    settings = get_settings()
+    cdn_domain = settings.S3_PUBLIC_CDN_DOMAIN
+
+    if cdn_domain:
+        url_map: dict[str, str] = {
+            s.image_url: _species_public_cdn_url(s.image_url, s.updated_at, cdn_domain)
+            for s in keyed
+            if s.image_url is not None
+        }
+    else:
+        keys = [s.image_url for s in keyed if s.image_url]
+        try:
+            url_map = await batch_generate_presigned_urls(keys)
+        except Exception:
+            logger.warning("failed_to_generate_species_image_urls", count=len(keys))
+            return species_list
 
     return [
         s.model_copy(update={"image_url": url_map[s.image_url]})
