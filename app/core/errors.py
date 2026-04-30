@@ -42,6 +42,29 @@ class ErrorCode(str, Enum):
     AUTH_OAUTH_PASSWORD_CHANGE_DISALLOWED = "auth.oauth_password_change_disallowed"
     AUTH_INVALID_OLD_PASSWORD = "auth.invalid_old_password"
 
+    # Aquarium namespace
+    AQUARIUM_NOT_FOUND = "aquarium.not_found"
+    AQUARIUM_ACCESS_DENIED = "aquarium.access_denied"
+    AQUARIUM_OWNER_REQUIRED = "aquarium.owner_required"
+
+    # Fish namespace
+    FISH_NOT_FOUND = "fish.not_found"
+
+    # Species namespace
+    SPECIES_NOT_FOUND = "species.not_found"
+    SPECIES_ALREADY_EXISTS = "species.already_exists"
+
+    # Sync namespace
+    SYNC_VALIDATION = "sync.validation_error"
+    SYNC_ACCESS_DENIED = "sync.access_denied"
+    SYNC_FAILED = "sync.processing_failed"
+
+    # Feeding namespace
+    FEEDING_VALIDATION = "feeding.validation_error"
+    FEEDING_SCHEDULE_NOT_FOUND = "feeding.schedule_not_found"
+    FEEDING_LOG_CONFLICT = "feeding.log_conflict"
+    FEEDING_DATE_RANGE_TOO_LARGE = "feeding.date_range_too_large"
+
 
 class AppError(Exception):
     """Base class for errors that map to HTTP responses with stable error codes."""

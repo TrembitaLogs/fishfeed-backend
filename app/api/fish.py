@@ -3,16 +3,13 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.dependencies import CurrentActiveUser
 from app.schemas.fish import FishCreate, FishResponse, FishUpdate
-from app.services.aquarium import AquariumAccessDeniedError, AquariumNotFoundError
 from app.services.fish import (
-    FishNotFoundError,
-    SpeciesNotFoundError,
     add_fish,
     get_fish,
     list_fish,
@@ -40,13 +37,8 @@ async def list_aquarium_fish(
     current_user: CurrentActiveUser,
 ) -> list[FishResponse]:
     """Get all fish in an aquarium."""
-    try:
-        fish_list = await list_fish(db, aquarium_id, current_user.id)
-        return [FishResponse.model_validate(f) for f in fish_list]
-    except AquariumNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumAccessDeniedError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    fish_list = await list_fish(db, aquarium_id, current_user.id)
+    return [FishResponse.model_validate(f) for f in fish_list]
 
 
 @router.post(
@@ -69,15 +61,8 @@ async def add_fish_to_aquarium(
     current_user: CurrentActiveUser,
 ) -> FishResponse:
     """Add a fish to an aquarium."""
-    try:
-        fish = await add_fish(db, aquarium_id, current_user.id, data)
-        return FishResponse.model_validate(fish)
-    except AquariumNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumAccessDeniedError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except SpeciesNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    fish = await add_fish(db, aquarium_id, current_user.id, data)
+    return FishResponse.model_validate(fish)
 
 
 @router.get(
@@ -97,13 +82,8 @@ async def get_fish_details(
     current_user: CurrentActiveUser,
 ) -> FishResponse:
     """Get details of a specific fish."""
-    try:
-        fish = await get_fish(db, fish_id, current_user.id)
-        return FishResponse.model_validate(fish)
-    except FishNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumAccessDeniedError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    fish = await get_fish(db, fish_id, current_user.id)
+    return FishResponse.model_validate(fish)
 
 
 @router.put(
@@ -125,13 +105,8 @@ async def update_fish_details(
     current_user: CurrentActiveUser,
 ) -> FishResponse:
     """Update a fish's details."""
-    try:
-        fish = await update_fish(db, fish_id, current_user.id, data)
-        return FishResponse.model_validate(fish)
-    except FishNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumAccessDeniedError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    fish = await update_fish(db, fish_id, current_user.id, data)
+    return FishResponse.model_validate(fish)
 
 
 @router.delete(
@@ -151,9 +126,4 @@ async def delete_fish(
     current_user: CurrentActiveUser,
 ) -> None:
     """Soft delete a fish from an aquarium."""
-    try:
-        await remove_fish(db, fish_id, current_user.id)
-    except FishNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumAccessDeniedError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    await remove_fish(db, fish_id, current_user.id)

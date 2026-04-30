@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.errors import AppError, ErrorCode
 from app.jobs.notification_jobs import family_feeding_trigger
 from app.models.feeding import FeedingLog, FeedingSchedule
 from app.models.fish import Fish
@@ -26,20 +27,31 @@ DEFAULT_TIMES: dict[int, list[str]] = {
 }
 
 
-class FeedingError(Exception):
-    """Base exception for feeding errors."""
+class FeedingError(AppError):
+    """Base for feeding errors.
 
-    def __init__(self, message: str, status_code: int = 400):
-        self.message = message
-        self.status_code = status_code
-        super().__init__(message)
+    Generic raises (for ad-hoc domain validation) default to
+    ``ErrorCode.FEEDING_VALIDATION``. Subclasses override the code.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int = 400,
+        code: ErrorCode = ErrorCode.FEEDING_VALIDATION,
+    ):
+        super().__init__(code, message, status_code)
 
 
 class ScheduleNotFoundError(FeedingError):
     """Raised when feeding schedule is not found."""
 
     def __init__(self, schedule_id: UUID):
-        super().__init__(f"Feeding schedule '{schedule_id}' not found", status_code=404)
+        super().__init__(
+            f"Feeding schedule '{schedule_id}' not found",
+            status_code=404,
+            code=ErrorCode.FEEDING_SCHEDULE_NOT_FOUND,
+        )
 
 
 class FeedingLogConflictError(FeedingError):
@@ -48,7 +60,11 @@ class FeedingLogConflictError(FeedingError):
     def __init__(self, existing_log: FeedingLog, acted_by_user_name: str | None = None):
         self.existing_log = existing_log
         self.acted_by_user_name = acted_by_user_name
-        super().__init__("Feeding log already exists for this schedule and time", status_code=409)
+        super().__init__(
+            "Feeding log already exists for this schedule and time",
+            status_code=409,
+            code=ErrorCode.FEEDING_LOG_CONFLICT,
+        )
 
 
 def _compute_even_times(frequency: int) -> list[str]:

@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.errors import AppError, ErrorCode
 from app.models.fish import Fish
 from app.models.species import Species
 from app.schemas.fish import FishCreate, FishUpdate
@@ -16,27 +17,30 @@ from app.services.aquarium import AquariumOwnerRequiredError, check_access
 logger = structlog.get_logger(__name__)
 
 
-class FishError(Exception):
-    """Base exception for fish errors."""
-
-    def __init__(self, message: str, status_code: int = 400):
-        self.message = message
-        self.status_code = status_code
-        super().__init__(message)
+class FishError(AppError):
+    """Base class for fish errors. Subclass per concrete failure mode."""
 
 
 class FishNotFoundError(FishError):
     """Raised when fish is not found."""
 
     def __init__(self, fish_id: UUID):
-        super().__init__(f"Fish with id '{fish_id}' not found", status_code=404)
+        super().__init__(
+            ErrorCode.FISH_NOT_FOUND,
+            f"Fish with id '{fish_id}' not found",
+            status_code=404,
+        )
 
 
 class SpeciesNotFoundError(FishError):
-    """Raised when species is not found."""
+    """Raised when species referenced by a fish payload is missing."""
 
     def __init__(self, species_id: str):
-        super().__init__(f"Species with id '{species_id}' not found", status_code=404)
+        super().__init__(
+            ErrorCode.SPECIES_NOT_FOUND,
+            f"Species with id '{species_id}' not found",
+            status_code=404,
+        )
 
 
 async def add_fish(

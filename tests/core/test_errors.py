@@ -88,3 +88,26 @@ def test_error_code_values_are_stable() -> None:
     assert ErrorCode.AUTH_INVALID_OLD_PASSWORD.value == "auth.invalid_old_password"
     assert ErrorCode.RATE_LIMITED.value == "rate_limited"
     assert ErrorCode.VALIDATION_ERROR.value == "validation.error"
+
+    # Aquarium namespace
+    assert ErrorCode.AQUARIUM_NOT_FOUND.value == "aquarium.not_found"
+    assert ErrorCode.AQUARIUM_ACCESS_DENIED.value == "aquarium.access_denied"
+    assert ErrorCode.AQUARIUM_OWNER_REQUIRED.value == "aquarium.owner_required"
+
+    # Fish namespace
+    assert ErrorCode.FISH_NOT_FOUND.value == "fish.not_found"
+
+    # Species namespace
+    assert ErrorCode.SPECIES_NOT_FOUND.value == "species.not_found"
+    assert ErrorCode.SPECIES_ALREADY_EXISTS.value == "species.already_exists"
+
+    # Sync namespace
+    assert ErrorCode.SYNC_VALIDATION.value == "sync.validation_error"
+    assert ErrorCode.SYNC_ACCESS_DENIED.value == "sync.access_denied"
+    assert ErrorCode.SYNC_FAILED.value == "sync.processing_failed"
+
+    # Feeding namespace
+    assert ErrorCode.FEEDING_VALIDATION.value == "feeding.validation_error"
+    assert ErrorCode.FEEDING_SCHEDULE_NOT_FOUND.value == "feeding.schedule_not_found"
+    assert ErrorCode.FEEDING_LOG_CONFLICT.value == "feeding.log_conflict"
+    assert ErrorCode.FEEDING_DATE_RANGE_TOO_LARGE.value == "feeding.date_range_too_large"

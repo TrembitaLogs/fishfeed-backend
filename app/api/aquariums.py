@@ -3,7 +3,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -16,9 +16,6 @@ from app.schemas.aquarium import (
 )
 from app.schemas.feeding import ScheduleResponse
 from app.services.aquarium import (
-    AquariumAccessDeniedError,
-    AquariumNotFoundError,
-    AquariumOwnerRequiredError,
     create_aquarium,
     delete_aquarium,
     get_aquarium_with_fish,
@@ -89,17 +86,12 @@ async def get_aquarium_details(
     current_user: CurrentActiveUser,
 ) -> AquariumWithFish:
     """Get aquarium details including fish and feeding schedule."""
-    try:
-        aquarium = await get_aquarium_with_fish(db, aquarium_id, current_user.id)
-        schedules = await get_schedules(db, aquarium_id, current_user.id)
+    aquarium = await get_aquarium_with_fish(db, aquarium_id, current_user.id)
+    schedules = await get_schedules(db, aquarium_id, current_user.id)
 
-        response = AquariumWithFish.model_validate(aquarium)
-        response.schedules = [ScheduleResponse.model_validate(s) for s in schedules]
-        return response
-    except AquariumNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumAccessDeniedError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    response = AquariumWithFish.model_validate(aquarium)
+    response.schedules = [ScheduleResponse.model_validate(s) for s in schedules]
+    return response
 
 
 @router.put(
@@ -121,13 +113,8 @@ async def update_aquarium_details(
     current_user: CurrentActiveUser,
 ) -> AquariumResponse:
     """Update an aquarium. Only owner can update."""
-    try:
-        aquarium = await update_aquarium(db, aquarium_id, current_user.id, data)
-        return AquariumResponse.model_validate(aquarium)
-    except AquariumNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except (AquariumAccessDeniedError, AquariumOwnerRequiredError) as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    aquarium = await update_aquarium(db, aquarium_id, current_user.id, data)
+    return AquariumResponse.model_validate(aquarium)
 
 
 @router.delete(
@@ -147,9 +134,4 @@ async def delete_aquarium_endpoint(
     current_user: CurrentActiveUser,
 ) -> None:
     """Soft delete an aquarium. Only owner can delete."""
-    try:
-        await delete_aquarium(db, aquarium_id, current_user.id)
-    except AquariumNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except (AquariumAccessDeniedError, AquariumOwnerRequiredError) as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    await delete_aquarium(db, aquarium_id, current_user.id)

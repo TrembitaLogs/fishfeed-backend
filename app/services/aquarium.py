@@ -8,6 +8,7 @@ from sqlalchemy import case, literal_column, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.errors import AppError, ErrorCode
 from app.models.aquarium import Aquarium, AquariumMember
 from app.models.fish import Fish
 from app.schemas.aquarium import AquariumCreate, AquariumUpdate
@@ -15,27 +16,30 @@ from app.schemas.aquarium import AquariumCreate, AquariumUpdate
 logger = structlog.get_logger(__name__)
 
 
-class AquariumError(Exception):
-    """Base exception for aquarium errors."""
-
-    def __init__(self, message: str, status_code: int = 400):
-        self.message = message
-        self.status_code = status_code
-        super().__init__(message)
+class AquariumError(AppError):
+    """Base class for aquarium errors. Subclass per concrete failure mode."""
 
 
 class AquariumNotFoundError(AquariumError):
     """Raised when aquarium is not found."""
 
     def __init__(self, aquarium_id: UUID):
-        super().__init__(f"Aquarium with id '{aquarium_id}' not found", status_code=404)
+        super().__init__(
+            ErrorCode.AQUARIUM_NOT_FOUND,
+            f"Aquarium with id '{aquarium_id}' not found",
+            status_code=404,
+        )
 
 
 class AquariumAccessDeniedError(AquariumError):
     """Raised when user doesn't have access to aquarium."""
 
     def __init__(self, aquarium_id: UUID):
-        super().__init__(f"Access denied to aquarium '{aquarium_id}'", status_code=403)
+        super().__init__(
+            ErrorCode.AQUARIUM_ACCESS_DENIED,
+            f"Access denied to aquarium '{aquarium_id}'",
+            status_code=403,
+        )
 
 
 class AquariumOwnerRequiredError(AquariumError):
@@ -43,7 +47,9 @@ class AquariumOwnerRequiredError(AquariumError):
 
     def __init__(self, aquarium_id: UUID):
         super().__init__(
-            f"Owner role required for aquarium '{aquarium_id}'", status_code=403
+            ErrorCode.AQUARIUM_OWNER_REQUIRED,
+            f"Owner role required for aquarium '{aquarium_id}'",
+            status_code=403,
         )
 
 
