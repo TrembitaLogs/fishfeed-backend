@@ -12,6 +12,7 @@ import structlog
 from botocore.exceptions import ClientError
 
 from app.config import get_settings
+from app.core.errors import AppError, ErrorCode
 
 if TYPE_CHECKING:
     from types_aiobotocore_s3 import S3Client as S3ClientType
@@ -20,7 +21,13 @@ logger = structlog.get_logger(__name__)
 
 
 class StorageError(Exception):
-    """Base exception for storage operations."""
+    """Base exception for storage operations.
+
+    Generic storage failures (upload, delete, presign) — keep as plain
+    Exception so callers like ``ai.py`` can swallow them without affecting
+    the request. Use :class:`StorageNotConfiguredError` for the misconfig
+    path, which surfaces as 503 via the global error handler.
+    """
 
     def __init__(self, message: str, status_code: int = 500):
         self.message = message
@@ -28,11 +35,12 @@ class StorageError(Exception):
         super().__init__(message)
 
 
-class StorageNotConfiguredError(StorageError):
-    """Raised when S3 storage is not configured."""
+class StorageNotConfiguredError(AppError):
+    """Raised when S3 storage is not configured. Maps to 503 via handler."""
 
     def __init__(self) -> None:
         super().__init__(
+            ErrorCode.STORAGE_NOT_CONFIGURED,
             "S3 storage is not configured. Set S3_ENDPOINT_URL, S3_ACCESS_KEY, and S3_SECRET_KEY.",
             status_code=503,
         )

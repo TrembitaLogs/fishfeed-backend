@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.core.errors import AppError, ErrorCode
 from app.models.aquarium import Aquarium, AquariumMember, FamilyInvite
 from app.models.user import User
 from app.schemas.family import FamilyMemberResponse, InviteDetailResponse, InviteResponse
@@ -31,13 +32,8 @@ PREMIUM_MEMBER_LIMIT = 5
 INVITE_TTL_DAYS = 7
 
 
-class FamilyError(Exception):
-    """Base exception for family errors."""
-
-    def __init__(self, message: str, status_code: int = 400):
-        self.message = message
-        self.status_code = status_code
-        super().__init__(message)
+class FamilyError(AppError):
+    """Base class for family errors. Subclass per concrete failure mode."""
 
 
 class MemberLimitExceededError(FamilyError):
@@ -45,6 +41,7 @@ class MemberLimitExceededError(FamilyError):
 
     def __init__(self, current: int, limit: int):
         super().__init__(
+            ErrorCode.FAMILY_MEMBER_LIMIT_EXCEEDED,
             f"Member limit exceeded: {current}/{limit} members",
             status_code=403,
         )
@@ -57,6 +54,7 @@ class InviteNotFoundError(FamilyError):
 
     def __init__(self, invite_code: str):
         super().__init__(
+            ErrorCode.FAMILY_INVITE_NOT_FOUND,
             f"Invite code '{invite_code}' not found",
             status_code=404,
         )
@@ -68,6 +66,7 @@ class InviteExpiredError(FamilyError):
 
     def __init__(self, invite_code: str):
         super().__init__(
+            ErrorCode.FAMILY_INVITE_EXPIRED,
             f"Invite code '{invite_code}' has expired",
             status_code=400,
         )
@@ -79,6 +78,7 @@ class AlreadyMemberError(FamilyError):
 
     def __init__(self, aquarium_id: UUID, user_id: UUID):
         super().__init__(
+            ErrorCode.FAMILY_ALREADY_MEMBER,
             f"User '{user_id}' is already a member of aquarium '{aquarium_id}'",
             status_code=400,
         )
@@ -91,6 +91,7 @@ class MemberNotFoundError(FamilyError):
 
     def __init__(self, aquarium_id: UUID, user_id: UUID):
         super().__init__(
+            ErrorCode.FAMILY_MEMBER_NOT_FOUND,
             f"Member '{user_id}' not found in aquarium '{aquarium_id}'",
             status_code=404,
         )
@@ -103,6 +104,7 @@ class CannotRemoveOwnerError(FamilyError):
 
     def __init__(self, aquarium_id: UUID):
         super().__init__(
+            ErrorCode.FAMILY_CANNOT_REMOVE_OWNER,
             f"Cannot remove owner from aquarium '{aquarium_id}'",
             status_code=400,
         )

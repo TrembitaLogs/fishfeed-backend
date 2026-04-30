@@ -111,3 +111,21 @@ def test_error_code_values_are_stable() -> None:
     assert ErrorCode.FEEDING_SCHEDULE_NOT_FOUND.value == "feeding.schedule_not_found"
     assert ErrorCode.FEEDING_LOG_CONFLICT.value == "feeding.log_conflict"
     assert ErrorCode.FEEDING_DATE_RANGE_TOO_LARGE.value == "feeding.date_range_too_large"
+
+    # User namespace
+    assert ErrorCode.USER_NOT_FOUND.value == "user.not_found"
+
+    # GDPR namespace
+    assert ErrorCode.GDPR_EXPORT_FAILED.value == "gdpr.export_failed"
+    assert ErrorCode.GDPR_DELETE_FAILED.value == "gdpr.delete_failed"
+
+    # Server-level
+    assert ErrorCode.STORAGE_NOT_CONFIGURED.value == "server.storage_not_configured"
+
+    # Family namespace
+    assert ErrorCode.FAMILY_MEMBER_LIMIT_EXCEEDED.value == "family.member_limit_exceeded"
+    assert ErrorCode.FAMILY_INVITE_NOT_FOUND.value == "family.invite_not_found"
+    assert ErrorCode.FAMILY_INVITE_EXPIRED.value == "family.invite_expired"
+    assert ErrorCode.FAMILY_ALREADY_MEMBER.value == "family.already_member"
+    assert ErrorCode.FAMILY_MEMBER_NOT_FOUND.value == "family.member_not_found"
+    assert ErrorCode.FAMILY_CANNOT_REMOVE_OWNER.value == "family.cannot_remove_owner"
