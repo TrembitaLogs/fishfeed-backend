@@ -28,6 +28,7 @@ from app.api import (
     users_router,
 )
 from app.config import get_settings
+from app.core.errors import register_error_handlers
 from app.database import close_db, init_db
 from app.logging import configure_logging, get_logger
 from app.middleware import (
@@ -84,6 +85,9 @@ app = FastAPI(
     redoc_url=None if _is_production else "/redoc",
     openapi_url=None if _is_production else "/openapi.json",
 )
+
+# Standardized error responses with stable error_code (consumed by mobile l10n)
+register_error_handlers(app)
 
 # SQLAdmin panel (must be mounted before middleware/routers)
 setup_admin(app)

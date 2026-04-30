@@ -13,6 +13,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.core.errors import AppError, ErrorCode
 from app.models.user import User
 from app.schemas.auth import TokenResponse, UserResponse
 from app.services.email import send_password_reset_email
@@ -24,69 +25,80 @@ APPLE_JWKS_URL = "https://appleid.apple.com/auth/keys"
 APPLE_ISSUER = "https://appleid.apple.com"
 
 
-class AuthError(Exception):
-    """Base exception for authentication errors."""
-
-    def __init__(self, message: str, status_code: int = 400):
-        self.message = message
-        self.status_code = status_code
-        super().__init__(message)
+class AuthError(AppError):
+    """Base class for auth errors. Subclass per concrete failure mode."""
 
 
 class EmailAlreadyExistsError(AuthError):
     """Raised when email is already registered."""
 
     def __init__(self) -> None:
-        super().__init__("Email already registered", status_code=409)
+        super().__init__(ErrorCode.AUTH_EMAIL_EXISTS, "Email already registered", status_code=409)
 
 
 class InvalidCredentialsError(AuthError):
     """Raised when login credentials are invalid."""
 
     def __init__(self) -> None:
-        super().__init__("Invalid email or password", status_code=401)
+        super().__init__(ErrorCode.AUTH_INVALID_CREDENTIALS, "Invalid email or password", status_code=401)
 
 
 class InvalidRefreshTokenError(AuthError):
     """Raised when refresh token is invalid or expired."""
 
     def __init__(self) -> None:
-        super().__init__("Invalid or expired refresh token", status_code=401)
+        super().__init__(
+            ErrorCode.AUTH_INVALID_REFRESH_TOKEN,
+            "Invalid or expired refresh token",
+            status_code=401,
+        )
 
 
 class InvalidOAuthTokenError(AuthError):
     """Raised when OAuth token validation fails."""
 
-    def __init__(self, message: str = "Invalid OAuth token"):
-        super().__init__(message, status_code=401)
+    def __init__(self, message: str = "Invalid OAuth token") -> None:
+        super().__init__(ErrorCode.AUTH_INVALID_OAUTH_TOKEN, message, status_code=401)
 
 
 class OAuthNotConfiguredError(AuthError):
     """Raised when OAuth provider is not configured."""
 
-    def __init__(self, provider: str):
-        super().__init__(f"OAuth provider '{provider}' is not configured", status_code=500)
+    def __init__(self, provider: str) -> None:
+        super().__init__(
+            ErrorCode.AUTH_OAUTH_NOT_CONFIGURED,
+            f"OAuth provider '{provider}' is not configured",
+            status_code=500,
+        )
 
 
 class InvalidResetTokenError(AuthError):
     """Raised when password reset token is invalid or expired."""
 
     def __init__(self) -> None:
-        super().__init__("Invalid or expired reset token", status_code=400)
+        super().__init__(
+            ErrorCode.AUTH_INVALID_RESET_TOKEN,
+            "Invalid or expired reset token",
+            status_code=400,
+        )
 
 
 class OAuthPasswordChangeError(AuthError):
     """Raised when an OAuth user tries to change password."""
 
     def __init__(self) -> None:
-        super().__init__("Cannot change password for OAuth accounts", status_code=400)
+        super().__init__(
+            ErrorCode.AUTH_OAUTH_PASSWORD_CHANGE_DISALLOWED,
+            "Cannot change password for OAuth accounts",
+            status_code=400,
+        )
 
 
 class InvalidOldPasswordError(AuthError):
     """Raised when old password does not match."""
 
     def __init__(self) -> None:
-        super().__init__("Invalid old password", status_code=400)
+        super().__init__(ErrorCode.AUTH_INVALID_OLD_PASSWORD, "Invalid old password", status_code=400)
 
 
 def _get_refresh_token_ttl() -> int:
