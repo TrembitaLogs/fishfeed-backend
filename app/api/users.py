@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -10,14 +10,8 @@ from app.dependencies import CurrentActiveUser
 from app.schemas.analytics import DataExportResponse
 from app.schemas.gamification import StreakResponse
 from app.schemas.user import UserProfileResponse, UserProfileUpdateRequest
-from app.services.analytics import (
-    GDPRError,
-    UserNotFoundError,
-    delete_user_data,
-    export_user_data,
-)
+from app.services.analytics import delete_user_data, export_user_data
 from app.services.gamification import get_achievements, get_or_create_streak
-from app.services.storage import StorageNotConfiguredError
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -130,18 +124,7 @@ async def get_data_export(
 
     The download URL is valid for 24 hours.
     """
-    try:
-        return await export_user_data(db, current_user.id)
-    except StorageNotConfiguredError:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Storage service is not configured",
-        ) from None
-    except GDPRError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail=e.message,
-        ) from None
+    return await export_user_data(db, current_user.id)
 
 
 @router.delete(
@@ -167,15 +150,4 @@ async def delete_all_data(
     After deletion, the user will be logged out and unable to access
     the service with their current credentials.
     """
-    try:
-        await delete_user_data(db, current_user.id)
-    except UserNotFoundError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail=e.message,
-        ) from None
-    except GDPRError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail=e.message,
-        ) from None
+    await delete_user_data(db, current_user.id)

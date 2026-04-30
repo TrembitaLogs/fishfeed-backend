@@ -28,7 +28,12 @@ from app.services.image_processing import (
     preprocess_for_ai,
     process_upload_file,
 )
-from app.services.storage import S3StorageService, StorageError, get_storage_service
+from app.services.storage import (
+    S3StorageService,
+    StorageError,
+    StorageNotConfiguredError,
+    get_storage_service,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -334,7 +339,7 @@ async def scan_image(
         storage = get_storage_service()
     try:
         image_url = await storage.upload_image(preprocessed_bytes, image_hash)
-    except StorageError as e:
+    except (StorageError, StorageNotConfiguredError) as e:
         logger.warning("Failed to upload image to S3", error_message=e.message)
         # Continue without image URL - scan is still valid
 

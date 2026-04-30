@@ -3,7 +3,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -15,18 +15,7 @@ from app.schemas.family import (
     InviteListResponse,
     InviteResponse,
 )
-from app.services.aquarium import (
-    AquariumAccessDeniedError,
-    AquariumNotFoundError,
-    AquariumOwnerRequiredError,
-)
 from app.services.family import (
-    AlreadyMemberError,
-    CannotRemoveOwnerError,
-    InviteExpiredError,
-    InviteNotFoundError,
-    MemberLimitExceededError,
-    MemberNotFoundError,
     accept_invite,
     cancel_invite,
     create_invite,
@@ -59,13 +48,8 @@ async def list_family_members(
     Available for owner and members.
     Returns owner first, then members sorted by join date.
     """
-    try:
-        members = await get_family_members(db, aquarium_id, current_user.id)
-        return FamilyListResponse(aquarium_id=aquarium_id, members=members)
-    except AquariumNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumAccessDeniedError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    members = await get_family_members(db, aquarium_id, current_user.id)
+    return FamilyListResponse(aquarium_id=aquarium_id, members=members)
 
 
 @router.post(
@@ -91,20 +75,7 @@ async def create_family_invite(
     Checks member limit before creating (Free: 2, Premium: 5).
     Returns 403 if member limit is exceeded.
     """
-    try:
-        invite = await create_invite(db, aquarium_id, current_user.id)
-        return invite
-    except AquariumNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumAccessDeniedError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumOwnerRequiredError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except MemberLimitExceededError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail=f"Member limit exceeded ({e.current}/{e.limit}). Upgrade to Premium for more members.",
-        ) from None
+    return await create_invite(db, aquarium_id, current_user.id)
 
 
 @router.get(
@@ -127,15 +98,8 @@ async def list_family_invites(
 
     Only owner can list invites.
     """
-    try:
-        invites = await get_invites(db, aquarium_id, current_user.id)
-        return InviteListResponse(aquarium_id=aquarium_id, invites=invites)
-    except AquariumNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumAccessDeniedError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumOwnerRequiredError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    invites = await get_invites(db, aquarium_id, current_user.id)
+    return InviteListResponse(aquarium_id=aquarium_id, invites=invites)
 
 
 @router.delete(
@@ -159,16 +123,7 @@ async def cancel_family_invite(
 
     Only owner can cancel invites.
     """
-    try:
-        await cancel_invite(db, aquarium_id, invite_id, current_user.id)
-    except AquariumNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumAccessDeniedError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumOwnerRequiredError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except InviteNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    await cancel_invite(db, aquarium_id, invite_id, current_user.id)
 
 
 @router.post(
@@ -194,22 +149,8 @@ async def accept_family_invite(
     Checks member limit before joining (Free: 2, Premium: 5).
     Returns 403 if member limit is exceeded.
     """
-    try:
-        aquarium = await accept_invite(db, data.invite_code, current_user.id)
-        return AquariumResponse.model_validate(aquarium)
-    except InviteNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except InviteExpiredError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AlreadyMemberError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except MemberLimitExceededError as e:
-        raise HTTPException(
-            status_code=e.status_code,
-            detail=f"Member limit exceeded ({e.current}/{e.limit}). Ask the owner to upgrade to Premium.",
-        ) from None
+    aquarium = await accept_invite(db, data.invite_code, current_user.id)
+    return AquariumResponse.model_validate(aquarium)
 
 
 @router.delete(
@@ -235,15 +176,4 @@ async def remove_family_member(
     Only owner can remove members.
     Owner cannot remove themselves.
     """
-    try:
-        await remove_member(db, aquarium_id, user_id, current_user.id)
-    except AquariumNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumAccessDeniedError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except AquariumOwnerRequiredError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except CannotRemoveOwnerError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except MemberNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    await remove_member(db, aquarium_id, user_id, current_user.id)

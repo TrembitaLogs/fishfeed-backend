@@ -65,6 +65,24 @@ class ErrorCode(str, Enum):
     FEEDING_LOG_CONFLICT = "feeding.log_conflict"
     FEEDING_DATE_RANGE_TOO_LARGE = "feeding.date_range_too_large"
 
+    # User namespace
+    USER_NOT_FOUND = "user.not_found"
+
+    # GDPR namespace
+    GDPR_EXPORT_FAILED = "gdpr.export_failed"
+    GDPR_DELETE_FAILED = "gdpr.delete_failed"
+
+    # Server-level
+    STORAGE_NOT_CONFIGURED = "server.storage_not_configured"
+
+    # Family namespace
+    FAMILY_MEMBER_LIMIT_EXCEEDED = "family.member_limit_exceeded"
+    FAMILY_INVITE_NOT_FOUND = "family.invite_not_found"
+    FAMILY_INVITE_EXPIRED = "family.invite_expired"
+    FAMILY_ALREADY_MEMBER = "family.already_member"
+    FAMILY_MEMBER_NOT_FOUND = "family.member_not_found"
+    FAMILY_CANNOT_REMOVE_OWNER = "family.cannot_remove_owner"
+
 
 class AppError(Exception):
     """Base class for errors that map to HTTP responses with stable error codes."""

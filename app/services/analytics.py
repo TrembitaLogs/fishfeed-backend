@@ -13,6 +13,7 @@ from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.core.errors import AppError, ErrorCode
 from app.models.ai import AIScan
 from app.models.analytics import AnalyticsEvent
 from app.models.aquarium import Aquarium, AquariumMember, FamilyInvite
@@ -249,17 +250,41 @@ async def forward_to_external(events: list[dict]) -> None:
                 raise
 
 
-class GDPRError(AnalyticsError):
-    """Raised when GDPR operation fails."""
-
-    pass
+class GDPRError(AppError):
+    """Base class for GDPR operation failures. Subclass per failure mode."""
 
 
-class UserNotFoundError(GDPRError):
-    """Raised when user is not found for GDPR operation."""
+class GDPRExportFailedError(GDPRError):
+    """Raised when GDPR data export fails (S3, encoding, etc.)."""
+
+    def __init__(self, reason: str):
+        super().__init__(
+            ErrorCode.GDPR_EXPORT_FAILED,
+            f"Failed to export user data: {reason}",
+            status_code=500,
+        )
+
+
+class GDPRDeleteFailedError(GDPRError):
+    """Raised when GDPR data deletion fails."""
+
+    def __init__(self, reason: str):
+        super().__init__(
+            ErrorCode.GDPR_DELETE_FAILED,
+            f"Failed to delete user data: {reason}",
+            status_code=500,
+        )
+
+
+class UserNotFoundError(AppError):
+    """Raised when a user is not found (typically for GDPR operations)."""
 
     def __init__(self, user_id: UUID):
-        super().__init__(f"User {user_id} not found", status_code=404)
+        super().__init__(
+            ErrorCode.USER_NOT_FOUND,
+            f"User {user_id} not found",
+            status_code=404,
+        )
 
 
 EXPORT_URL_TTL_SECONDS = 86400  # 24 hours
@@ -319,7 +344,7 @@ async def export_user_data(
         raise
     except Exception as e:
         logger.error("GDPR export failed for user", user_id=user_id, error=str(e))
-        raise GDPRError(f"Failed to export user data: {e}") from None
+        raise GDPRExportFailedError(str(e)) from None
 
     expires_at = datetime.now(UTC) + timedelta(seconds=EXPORT_URL_TTL_SECONDS)
 
@@ -735,4 +760,4 @@ async def delete_user_data(db: AsyncSession, user_id: UUID) -> None:
 
     except Exception as e:
         logger.error("GDPR deletion failed for user", user_id=user_id, error=str(e))
-        raise GDPRError(f"Failed to delete user data: {e}") from None
+        raise GDPRDeleteFailedError(str(e)) from None
