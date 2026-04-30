@@ -27,6 +27,7 @@ from app.api import (
     users_router,
 )
 from app.api.well_known import router as well_known_router
+from app.core.errors import register_error_handlers
 from app.database import get_db
 from app.models import Base
 from app.models.species import Species
@@ -129,6 +130,9 @@ async def redis_client() -> AsyncGenerator[Redis]:
 async def app(async_engine, redis_client) -> AsyncGenerator[FastAPI]:
     """Create FastAPI app for testing."""
     app = FastAPI()
+
+    # Mirror prod main.py: register error handlers so AppError → standardized JSON
+    register_error_handlers(app)
 
     # Health, releases and well-known endpoints are not versioned
     app.include_router(health_router)

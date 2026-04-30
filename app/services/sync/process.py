@@ -5,6 +5,7 @@ from uuid import UUID
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import ErrorCode
 from app.schemas.sync import SyncRequest, SyncResponse
 
 from .changes import apply_changes
@@ -108,4 +109,8 @@ async def process_sync(
     except Exception as e:
         # Re-raise as SyncError (rollback handled by get_db dependency)
         logger.error("Sync failed for user", user_id=user_id, error=str(e), exc_info=True)
-        raise SyncError(f"Sync processing failed: {e}") from e
+        raise SyncError(
+            ErrorCode.SYNC_FAILED,
+            f"Sync processing failed: {e}",
+            status_code=500,
+        ) from e

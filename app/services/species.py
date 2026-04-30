@@ -10,6 +10,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.core.errors import AppError, ErrorCode
 from app.models.species import Species
 from app.schemas.species import (
     SpeciesCreate,
@@ -36,20 +37,19 @@ from app.utils.cache import (
 logger = structlog.get_logger(__name__)
 
 
-class SpeciesError(Exception):
-    """Base exception for species errors."""
-
-    def __init__(self, message: str, status_code: int = 400):
-        self.message = message
-        self.status_code = status_code
-        super().__init__(message)
+class SpeciesError(AppError):
+    """Base class for species errors. Subclass per concrete failure mode."""
 
 
 class SpeciesNotFoundError(SpeciesError):
     """Raised when species is not found."""
 
     def __init__(self, species_id: str):
-        super().__init__(f"Species with id '{species_id}' not found", status_code=404)
+        super().__init__(
+            ErrorCode.SPECIES_NOT_FOUND,
+            f"Species with id '{species_id}' not found",
+            status_code=404,
+        )
 
 
 class SpeciesAlreadyExistsError(SpeciesError):
@@ -57,7 +57,9 @@ class SpeciesAlreadyExistsError(SpeciesError):
 
     def __init__(self, species_id: str):
         super().__init__(
-            f"Species with id '{species_id}' already exists", status_code=409
+            ErrorCode.SPECIES_ALREADY_EXISTS,
+            f"Species with id '{species_id}' already exists",
+            status_code=409,
         )
 
 

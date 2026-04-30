@@ -11,6 +11,7 @@ from redis.asyncio import Redis
 from redis.exceptions import RedisError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import AppError, ErrorCode
 from app.database import get_db
 from app.dependencies import CurrentActiveUser
 from app.redis import get_redis
@@ -19,9 +20,7 @@ from app.schemas.sync import (
     SyncResponse,
 )
 from app.services.sync import (
-    SyncAccessDeniedError,
     SyncError,
-    SyncValidationError,
     process_sync,
 )
 from app.utils.cache import invalidate_user_gamification_keys
@@ -82,6 +81,8 @@ async def sync_data(
             correlation_id=correlation_id,
             error=str(e),
         )
+        # Body() validation runs after the global RequestValidationError handler,
+        # so we manually shape the payload to match the standard contract.
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=e.errors(),
@@ -149,6 +150,8 @@ async def sync_data(
                 if_none_match=if_none_match,
                 duration_ms=round(duration_ms, 2),
             )
+            # 304 Not Modified is a control-flow status, not an application error.
+            # FastAPI's HTTPException is the appropriate primitive here.
             raise HTTPException(
                 status_code=status.HTTP_304_NOT_MODIFIED,
                 headers={"ETag": f'"{sync_response.sync_token}"'},
@@ -160,47 +163,18 @@ async def sync_data(
 
         return sync_response
 
-    except SyncValidationError as e:
-        duration_ms = (time.monotonic() - start_time) * 1000
-        log.warning(
-            "sync_validation_error",
-            error=e.message,
-            duration_ms=round(duration_ms, 2),
-        )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=e.message,
-        ) from None
-
-    except SyncAccessDeniedError as e:
-        duration_ms = (time.monotonic() - start_time) * 1000
-        log.warning(
-            "sync_access_denied",
-            error=e.message,
-            duration_ms=round(duration_ms, 2),
-        )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=e.message,
-        ) from None
-
     except SyncError as e:
+        # SyncError is now an AppError — log and re-raise so the global
+        # handler formats the standardized error_code/detail response.
         duration_ms = (time.monotonic() - start_time) * 1000
-        log.error(
+        log.warning(
             "sync_error",
+            code=e.code.value,
             error=e.message,
             status_code=e.status_code,
             duration_ms=round(duration_ms, 2),
         )
-        if e.status_code == 409:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=e.message,
-            ) from None
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Sync processing failed",
-        ) from None
+        raise
 
     except HTTPException:
         # Re-raise HTTP exceptions (like 304 Not Modified)
@@ -213,7 +187,8 @@ async def sync_data(
             error=str(e),
             duration_ms=round(duration_ms, 2),
         )
-        raise HTTPException(
+        raise AppError(
+            code=ErrorCode.SYNC_FAILED,
+            message="Sync processing failed",
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Sync processing failed",
         ) from None

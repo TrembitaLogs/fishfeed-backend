@@ -4,10 +4,11 @@ from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import AppError, ErrorCode
 from app.database import get_db
 from app.dependencies import CurrentActiveUser
 from app.schemas.feeding import (
@@ -18,11 +19,8 @@ from app.schemas.feeding import (
     ScheduleResponse,
     ScheduleUpdate,
 )
-from app.services.aquarium import AquariumAccessDeniedError, AquariumNotFoundError
 from app.services.feeding import (
-    FeedingError,
     FeedingLogConflictError,
-    ScheduleNotFoundError,
     create_feeding_log,
     create_schedule,
     delete_schedule,
@@ -33,16 +31,6 @@ from app.services.feeding import (
 )
 
 router = APIRouter(tags=["Feeding"])
-
-
-def _handle_feeding_error(e: FeedingError) -> HTTPException:
-    """Convert FeedingError to HTTPException."""
-    return HTTPException(status_code=e.status_code, detail=e.message)
-
-
-def _handle_aquarium_error(e: AquariumNotFoundError | AquariumAccessDeniedError) -> HTTPException:
-    """Convert aquarium errors to HTTPException."""
-    return HTTPException(status_code=e.status_code, detail=e.message)
 
 
 # ── Schedule endpoints ──────────────────────────────────────────────
@@ -66,11 +54,8 @@ async def list_schedules(
     active: bool | None = Query(default=None),
 ) -> list[ScheduleResponse]:
     """Get feeding schedules for an aquarium. Filter by active status optionally."""
-    try:
-        schedules = await get_schedules(db, aquarium_id, current_user.id, active=active)
-        return [ScheduleResponse.model_validate(s) for s in schedules]
-    except (AquariumNotFoundError, AquariumAccessDeniedError) as e:
-        raise _handle_aquarium_error(e) from None
+    schedules = await get_schedules(db, aquarium_id, current_user.id, active=active)
+    return [ScheduleResponse.model_validate(s) for s in schedules]
 
 
 @router.post(
@@ -93,13 +78,8 @@ async def create_aquarium_schedule(
     current_user: CurrentActiveUser,
 ) -> ScheduleResponse:
     """Create a new feeding schedule for an aquarium."""
-    try:
-        schedule = await create_schedule(db, aquarium_id, current_user.id, data)
-        return ScheduleResponse.model_validate(schedule)
-    except (AquariumNotFoundError, AquariumAccessDeniedError) as e:
-        raise _handle_aquarium_error(e) from None
-    except FeedingError as e:
-        raise _handle_feeding_error(e) from None
+    schedule = await create_schedule(db, aquarium_id, current_user.id, data)
+    return ScheduleResponse.model_validate(schedule)
 
 
 @router.patch(
@@ -122,15 +102,8 @@ async def update_aquarium_schedule(
     current_user: CurrentActiveUser,
 ) -> ScheduleResponse:
     """Partially update a feeding schedule."""
-    try:
-        schedule = await update_schedule(db, aquarium_id, schedule_id, current_user.id, data)
-        return ScheduleResponse.model_validate(schedule)
-    except (AquariumNotFoundError, AquariumAccessDeniedError) as e:
-        raise _handle_aquarium_error(e) from None
-    except ScheduleNotFoundError as e:
-        raise _handle_feeding_error(e) from None
-    except FeedingError as e:
-        raise _handle_feeding_error(e) from None
+    schedule = await update_schedule(db, aquarium_id, schedule_id, current_user.id, data)
+    return ScheduleResponse.model_validate(schedule)
 
 
 @router.delete(
@@ -151,12 +124,7 @@ async def delete_aquarium_schedule(
     current_user: CurrentActiveUser,
 ) -> None:
     """Delete a feeding schedule."""
-    try:
-        await delete_schedule(db, aquarium_id, schedule_id, current_user.id)
-    except (AquariumNotFoundError, AquariumAccessDeniedError) as e:
-        raise _handle_aquarium_error(e) from None
-    except ScheduleNotFoundError as e:
-        raise _handle_feeding_error(e) from None
+    await delete_schedule(db, aquarium_id, schedule_id, current_user.id)
 
 
 @router.post(
@@ -176,11 +144,8 @@ async def generate_aquarium_schedules(
     current_user: CurrentActiveUser,
 ) -> list[ScheduleResponse]:
     """Auto-generate feeding schedules based on fish species in aquarium."""
-    try:
-        schedules = await generate_schedule(db, aquarium_id, current_user.id)
-        return [ScheduleResponse.model_validate(s) for s in schedules]
-    except (AquariumNotFoundError, AquariumAccessDeniedError) as e:
-        raise _handle_aquarium_error(e) from None
+    schedules = await generate_schedule(db, aquarium_id, current_user.id)
+    return [ScheduleResponse.model_validate(s) for s in schedules]
 
 
 # ── FeedingLog endpoints ────────────────────────────────────────────
@@ -210,22 +175,19 @@ async def list_feeding_logs(
     # Validate max date range
     delta = to_date - from_date
     if delta.days > 366:
-        raise HTTPException(status_code=400, detail="Date range cannot exceed 366 days")
-
-    try:
-        logs = await get_feeding_logs(
-            db, aquarium_id, current_user.id, from_date, to_date, fish_id
+        raise AppError(
+            code=ErrorCode.FEEDING_DATE_RANGE_TOO_LARGE,
+            message="Date range cannot exceed 366 days",
+            status_code=400,
         )
-        responses = []
-        for log in logs:
-            resp = FeedingLogResponse.model_validate(log)
-            resp.acted_by_user_name = (
-                log.acted_by_user.nickname if log.acted_by_user else None
-            )
-            responses.append(resp)
-        return responses
-    except (AquariumNotFoundError, AquariumAccessDeniedError) as e:
-        raise _handle_aquarium_error(e) from None
+
+    logs = await get_feeding_logs(db, aquarium_id, current_user.id, from_date, to_date, fish_id)
+    responses = []
+    for log in logs:
+        resp = FeedingLogResponse.model_validate(log)
+        resp.acted_by_user_name = log.acted_by_user.nickname if log.acted_by_user else None
+        responses.append(resp)
+    return responses
 
 
 @router.post(
@@ -250,14 +212,9 @@ async def create_aquarium_feeding_log(
     """Create a feeding log entry. Returns 409 on duplicate (schedule_id, scheduled_for)."""
     try:
         log = await create_feeding_log(db, aquarium_id, current_user.id, data)
-        resp = FeedingLogResponse.model_validate(log)
-        resp.acted_by_user_name = (
-            log.acted_by_user.nickname if log.acted_by_user else None
-        )
-        return resp
-    except (AquariumNotFoundError, AquariumAccessDeniedError) as e:
-        raise _handle_aquarium_error(e) from None
     except FeedingLogConflictError as e:
+        # Conflict response carries the existing log so the client can resolve.
+        # This payload diverges from the standard error_code/detail contract by design.
         existing_resp = FeedingLogResponse.model_validate(e.existing_log)
         existing_resp.acted_by_user_name = e.acted_by_user_name
         conflict = FeedingLogConflictResponse(
@@ -269,3 +226,7 @@ async def create_aquarium_feeding_log(
             status_code=409,
             content=conflict.model_dump(mode="json"),
         )
+
+    resp = FeedingLogResponse.model_validate(log)
+    resp.acted_by_user_name = log.acted_by_user.nickname if log.acted_by_user else None
+    return resp

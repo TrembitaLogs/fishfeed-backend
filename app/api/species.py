@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query, status
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,8 +19,6 @@ from app.schemas.species import (
     WaterType,
 )
 from app.services.species import (
-    SpeciesAlreadyExistsError,
-    SpeciesNotFoundError,
     create_species,
     delete_species,
     get_popular_species,
@@ -120,10 +118,7 @@ async def get_species_endpoint(
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> SpeciesResponse:
     """Get detailed information about a specific fish species. Cached for 24 hours."""
-    try:
-        return await get_species_cached(db, species_id, redis=redis)
-    except SpeciesNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    return await get_species_cached(db, species_id, redis=redis)
 
 
 # Admin endpoints
@@ -151,11 +146,8 @@ async def create_species_endpoint(
 
     Requires admin privileges. Invalidates species list cache.
     """
-    try:
-        species = await create_species(db, data, redis=redis)
-        return SpeciesResponse.model_validate(species)
-    except SpeciesAlreadyExistsError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    species = await create_species(db, data, redis=redis)
+    return SpeciesResponse.model_validate(species)
 
 
 @admin_router.put(
@@ -181,11 +173,8 @@ async def update_species_endpoint(
 
     Requires admin privileges. All fields are optional. Invalidates cache.
     """
-    try:
-        species = await update_species(db, species_id, data, redis=redis)
-        return SpeciesResponse.model_validate(species)
-    except SpeciesNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    species = await update_species(db, species_id, data, redis=redis)
+    return SpeciesResponse.model_validate(species)
 
 
 @admin_router.delete(
@@ -209,7 +198,4 @@ async def delete_species_endpoint(
 
     Requires admin privileges. Invalidates all species cache.
     """
-    try:
-        await delete_species(db, species_id, redis=redis)
-    except SpeciesNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    await delete_species(db, species_id, redis=redis)

@@ -3,11 +3,12 @@
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.core.errors import AppError, ErrorCode
 from app.database import get_db
 from app.dependencies import CurrentActiveUser
 from app.middleware.rate_limit import RateLimiter, _get_client_ip, _hash_ip
@@ -23,14 +24,6 @@ from app.schemas.auth import (
     TokenResponse,
 )
 from app.services.auth import (
-    EmailAlreadyExistsError,
-    InvalidCredentialsError,
-    InvalidOAuthTokenError,
-    InvalidOldPasswordError,
-    InvalidRefreshTokenError,
-    InvalidResetTokenError,
-    OAuthNotConfiguredError,
-    OAuthPasswordChangeError,
     change_password,
     confirm_password_reset,
     login_user,
@@ -59,7 +52,7 @@ async def _check_auth_rate_limit(
         key_type: Rate limit key type (e.g. 'auth_login', 'auth_register').
 
     Raises:
-        HTTPException: 429 if rate limit exceeded.
+        AppError: 429 if rate limit exceeded.
     """
     settings = get_settings()
     client_ip = _get_client_ip(http_request)
@@ -69,9 +62,10 @@ async def _check_auth_rate_limit(
     result = await limiter.check_rate_limit(ip_hash, key_type, limit)
 
     if not result.allowed:
-        raise HTTPException(
+        raise AppError(
+            code=ErrorCode.RATE_LIMITED,
+            message="Too many requests. Please try again later.",
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many requests. Please try again later.",
             headers={"Retry-After": str(result.retry_after or 60)},
         )
 
@@ -101,11 +95,8 @@ async def register(
     settings = get_settings()
     await _check_auth_rate_limit(http_request, redis, settings.RATE_LIMIT_REGISTER_PER_MIN, "auth_register")
 
-    try:
-        await register_user(db, request.email, request.password)
-        return await login_user(db, redis, request.email, request.password)
-    except EmailAlreadyExistsError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    await register_user(db, request.email, request.password)
+    return await login_user(db, redis, request.email, request.password)
 
 
 @router.post(
@@ -131,10 +122,7 @@ async def login(
     settings = get_settings()
     await _check_auth_rate_limit(http_request, redis, settings.RATE_LIMIT_LOGIN_PER_MIN, "auth_login")
 
-    try:
-        return await login_user(db, redis, request.email, request.password)
-    except InvalidCredentialsError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    return await login_user(db, redis, request.email, request.password)
 
 
 @router.post(
@@ -158,10 +146,7 @@ async def oauth(
     Validates the OAuth token, creates a new user if not exists,
     and returns access and refresh tokens.
     """
-    try:
-        return await oauth_login(db, redis, request.provider, request.token)
-    except (InvalidOAuthTokenError, OAuthNotConfiguredError) as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    return await oauth_login(db, redis, request.provider, request.token)
 
 
 @router.post(
@@ -184,10 +169,7 @@ async def refresh(
     Implements token rotation: the old refresh token is invalidated
     and a new pair of tokens is issued.
     """
-    try:
-        return await refresh_tokens(db, redis, request.refresh_token)
-    except InvalidRefreshTokenError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    return await refresh_tokens(db, redis, request.refresh_token)
 
 
 @router.post(
@@ -259,10 +241,7 @@ async def password_reset_confirm(
     Validates the reset token and sets the new password.
     The token is single-use and expires after use.
     """
-    try:
-        await confirm_password_reset(db, redis, request.token, request.new_password)
-    except InvalidResetTokenError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    await confirm_password_reset(db, redis, request.token, request.new_password)
 
     return {"message": "Password has been reset successfully"}
 
@@ -287,10 +266,7 @@ async def password_change(
     Requires the current password for verification before
     setting the new password.
     """
-    try:
-        await change_password(db, current_user, request.old_password, request.new_password)
-    except (OAuthPasswordChangeError, InvalidOldPasswordError) as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+    await change_password(db, current_user, request.old_password, request.new_password)
 
     return {"message": "Password changed successfully"}
 
