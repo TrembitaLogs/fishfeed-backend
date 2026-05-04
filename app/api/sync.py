@@ -83,7 +83,7 @@ async def sync_data(
             if not isinstance(item, dict):
                 # Let Pydantic produce a descriptive 422 for non-dict items;
                 # we only want to rescue the entity_id-malformed case.
-                valid_raw.append(item)  # type: ignore[arg-type]
+                valid_raw.append(item)
                 continue
 
             raw_id = item.get("entity_id")

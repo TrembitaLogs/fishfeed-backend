@@ -1,5 +1,3 @@
-from datetime import UTC, datetime
-from uuid import uuid4
 
 from app.schemas.sync import (
     DeletedEntities,
