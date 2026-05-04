@@ -2,7 +2,7 @@
 
 import time
 from typing import Annotated, Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import structlog
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Response, status
@@ -16,6 +16,7 @@ from app.database import get_db
 from app.dependencies import CurrentActiveUser
 from app.redis import get_redis
 from app.schemas.sync import (
+    FailedChange,
     SyncRequest,
     SyncResponse,
 )
@@ -72,17 +73,48 @@ async def sync_data(
     correlation_id = _generate_correlation_id()
     start_time = time.monotonic()
 
-    # Parse into SyncRequest
+    # Pre-split changes by entity_id parseability so that ONE bad UUID does not
+    # block the entire batch. Everything else still goes through strict Pydantic.
+    raw_changes = body.get("changes", [])
+    valid_raw: list[dict[str, Any]] = []
+    failed_items: list[FailedChange] = []
+    if isinstance(raw_changes, list):
+        for idx, item in enumerate(raw_changes):
+            if not isinstance(item, dict):
+                # Let Pydantic produce a descriptive 422 for non-dict items;
+                # we only want to rescue the entity_id-malformed case.
+                valid_raw.append(item)  # type: ignore[arg-type]
+                continue
+
+            raw_id = item.get("entity_id")
+            try:
+                if isinstance(raw_id, str):
+                    UUID(raw_id)
+                else:
+                    raise ValueError("entity_id must be a string")
+            except (ValueError, TypeError) as exc:
+                failed_items.append(
+                    FailedChange(
+                        index=idx,
+                        entity_type=str(item.get("entity_type", "")),
+                        entity_id=str(raw_id) if raw_id is not None else "",
+                        error_code=ErrorCode.SYNC_INVALID_ENTITY_ID.value,
+                        error_message=f"entity_id is not a valid UUID: {exc}",
+                    )
+                )
+                continue
+            valid_raw.append(item)
+
+    rebuilt = {**body, "changes": valid_raw}
+
     try:
-        request = SyncRequest.model_validate(body)
+        request = SyncRequest.model_validate(rebuilt)
     except ValidationError as e:
         logger.warning(
             "sync_validation_error",
             correlation_id=correlation_id,
             error=str(e),
         )
-        # Body() validation runs after the global RequestValidationError handler,
-        # so we manually shape the payload to match the standard contract.
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=e.errors(),
@@ -156,6 +188,15 @@ async def sync_data(
                 status_code=status.HTTP_304_NOT_MODIFIED,
                 headers={"ETag": f'"{sync_response.sync_token}"'},
             )
+
+        if failed_items:
+            log.warning(
+                "sync_partial_accept",
+                failed_count=len(failed_items),
+                failed_indices=[f.index for f in failed_items],
+            )
+
+        sync_response = sync_response.model_copy(update={"failed": failed_items})
 
         # Set ETag header for cache validation
         response.headers["ETag"] = f'"{sync_response.sync_token}"'
