@@ -43,6 +43,7 @@ dev = [
     "ruff>=0.14.11",
     "mypy>=1.14.0",
     "pip-audit>=2.7.0",
+    "schemathesis>=4.17.0",
 ]
 
 [tool.ruff]
@@ -63,6 +64,14 @@ select = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["F841", "E501"]  # Unused variables and long lines OK in tests
 "app/api/**/*.py" = ["B008"]  # FastAPI Query/Depends in default args is idiomatic
+
+[tool.pytest.ini_options]
+markers = [
+    "schemathesis: OpenAPI conformance fuzz tests (slow; opt-in via -m schemathesis)",
+]
+# Exclude schemathesis-marked tests from the default run so the main test suite
+# stays fast. Run them explicitly with `uv run pytest -m schemathesis`.
+addopts = "-m 'not schemathesis'"
 
 [tool.mypy]
 python_version = "3.14"
