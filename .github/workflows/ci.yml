@@ -76,6 +76,13 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
+      - name: Apply database migrations
+        # Conformance tests hit live handlers that read from real tables. The
+        # main test job builds schema via SQLAlchemy metadata in conftest, but
+        # this job invokes pytest directly without that fixture path, so we
+        # apply migrations explicitly to match production layout.
+        run: uv run alembic upgrade head
+
       - name: Run Schemathesis conformance suite
         # `-m schemathesis` overrides the default `addopts = -m 'not schemathesis'`
         # in pyproject.toml. `--no-cov` skips the 80% coverage gate that lives in
