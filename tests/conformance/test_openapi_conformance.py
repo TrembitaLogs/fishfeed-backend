@@ -31,9 +31,18 @@ import schemathesis.openapi as schemathesis_openapi
 
 from app.main import app
 
-# Loading from the live ASGI app means the schema and the handlers are
-# always the same version — there is no separate spec file to drift.
-_schema = schemathesis_openapi.from_asgi("/openapi.json", app)
+# Build the schema directly from `app.openapi()` rather than `from_asgi`.
+# `from_asgi` issues an actual ASGI request to fetch /openapi.json at module
+# import time, which routes through the Prometheus instrumentator and adds a
+# `handler="/openapi.json"` sample to the process-wide default registry. That
+# pollutes unrelated metrics tests that read the same global registry. Going
+# through `app.openapi()` keeps schema construction in-process with no
+# middleware involvement.
+_schema = schemathesis_openapi.from_dict(app.openapi())
+# Wire the ASGI app back so `case.call_and_validate()` dispatches through it
+# (the same transport `from_asgi` would have set).
+_schema.app = app
+_schema.location = "/openapi.json"
 
 # Cap the example budget. Default is 100 examples per operation, which
 # multiplied across ~67 endpoints is several minutes of CI time. Five
