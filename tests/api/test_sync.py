@@ -920,3 +920,124 @@ class TestSyncFeedingLogs:
         assert schedule2 is not None
         assert schedule2["food_type"] == "pellets"
 
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestSyncPartialAccept:
+    """Sync must accept the valid changes and report invalid ones in `failed`."""
+
+    async def test_one_invalid_entity_id_does_not_block_valid_changes(
+        self, client: AsyncClient
+    ):
+        email = f"sync-partial-{uuid.uuid4()}@example.com"
+        tokens = await register_and_login(client, email)
+        hdrs = auth_headers(tokens)
+        now = datetime.now(UTC)
+
+        aquarium_id = str(uuid.uuid4())
+        bad_schedule_id = f"{uuid.uuid4()}_1530"   # contaminated id
+
+        body = {
+            "changes": [
+                {
+                    "entity_type": "aquarium",
+                    "entity_id": aquarium_id,
+                    "operation": "create",
+                    "data": {
+                        "name": "Reef",
+                        "water_type": "freshwater",
+                        "size_liters": 100,
+                        "user_id": tokens["user_id"] if "user_id" in tokens else None,
+                    },
+                    "client_updated_at": now.isoformat(),
+                },
+                {
+                    "entity_type": "schedule",
+                    "entity_id": bad_schedule_id,
+                    "operation": "create",
+                    "data": {},
+                    "client_updated_at": now.isoformat(),
+                },
+            ]
+        }
+        resp = await client.post("/api/v1/sync", json=body, headers=hdrs)
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+
+        assert "failed" in data
+        assert len(data["failed"]) == 1
+        assert data["failed"][0]["index"] == 1
+        assert data["failed"][0]["entity_id"] == bad_schedule_id
+        assert data["failed"][0]["error_code"] == "sync.invalid_entity_id"
+
+        assert aquarium_id in data["synced_ids"]
+        assert bad_schedule_id not in data["synced_ids"]
+
+    async def test_all_invalid_returns_200_with_failed_only(
+        self, client: AsyncClient
+    ):
+        email = f"sync-allbad-{uuid.uuid4()}@example.com"
+        tokens = await register_and_login(client, email)
+        hdrs = auth_headers(tokens)
+        now = datetime.now(UTC)
+
+        body = {
+            "changes": [
+                {
+                    "entity_type": "schedule",
+                    "entity_id": f"{uuid.uuid4()}_0900",
+                    "operation": "create",
+                    "data": {},
+                    "client_updated_at": now.isoformat(),
+                },
+                {
+                    "entity_type": "schedule",
+                    "entity_id": "definitely-not-a-uuid",
+                    "operation": "create",
+                    "data": {},
+                    "client_updated_at": now.isoformat(),
+                },
+            ]
+        }
+        resp = await client.post("/api/v1/sync", json=body, headers=hdrs)
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["failed"]) == 2
+        assert {f["index"] for f in data["failed"]} == {0, 1}
+        assert data["synced_ids"] == []
+
+    async def test_valid_only_request_has_empty_failed(self, client: AsyncClient):
+        email = f"sync-valid-{uuid.uuid4()}@example.com"
+        tokens = await register_and_login(client, email)
+        hdrs = auth_headers(tokens)
+
+        resp = await client.post(
+            "/api/v1/sync",
+            json={"changes": []},
+            headers=hdrs,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["failed"] == []
+
+    async def test_other_validation_errors_still_422(self, client: AsyncClient):
+        """A change with valid entity_id but missing required field must still 422.
+
+        Partial-accept only kicks in for entity_id parsing. Everything else
+        still goes through Pydantic strict validation.
+        """
+        email = f"sync-422-{uuid.uuid4()}@example.com"
+        tokens = await register_and_login(client, email)
+        hdrs = auth_headers(tokens)
+
+        body = {
+            "changes": [
+                {
+                    "entity_type": "aquarium",
+                    "entity_id": str(uuid.uuid4()),
+                    # missing operation + data + client_updated_at
+                }
+            ]
+        }
+        resp = await client.post("/api/v1/sync", json=body, headers=hdrs)
+        assert resp.status_code == 422

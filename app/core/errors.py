@@ -58,6 +58,7 @@ class ErrorCode(str, Enum):
     SYNC_VALIDATION = "sync.validation_error"
     SYNC_ACCESS_DENIED = "sync.access_denied"
     SYNC_FAILED = "sync.processing_failed"
+    SYNC_INVALID_ENTITY_ID = "sync.invalid_entity_id"
 
     # Feeding namespace
     FEEDING_VALIDATION = "feeding.validation_error"

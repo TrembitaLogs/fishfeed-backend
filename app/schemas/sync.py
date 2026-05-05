@@ -51,6 +51,21 @@ class ConflictItem(BaseModel):
     )
 
 
+class FailedChange(BaseModel):
+    """Schema for a single change rejected during pre-validation.
+
+    Returned in ``SyncResponse.failed`` when the server could not parse a
+    change (e.g. ``entity_id`` is not a valid UUID). The client should
+    remove or repair the offending local record so the next sync succeeds.
+    """
+
+    index: int = Field(description="Position of the rejected change in the request `changes` array")
+    entity_type: str = Field(description="Type as sent by the client; not validated against the EntityType enum")
+    entity_id: str = Field(description="The raw entity_id string the client sent (may be malformed)")
+    error_code: str = Field(description="Stable error code, e.g. 'sync.invalid_entity_id'")
+    error_message: str = Field(description="Human-readable diagnostic for logs / breadcrumbs")
+
+
 class DeletedEntities(BaseModel):
     """Schema for tracking deleted entities in delta sync."""
 
@@ -84,6 +99,10 @@ class SyncResponse(BaseModel):
     synced_ids: list[UUID] = Field(
         default_factory=list,
         description="Entity IDs successfully accepted by the server (no conflict). Client should mark these as synced.",
+    )
+    failed: list[FailedChange] = Field(
+        default_factory=list,
+        description="Per-item rejections that did NOT block other changes. Client must repair or drop these locally.",
     )
     sync_token: str = Field(description="Token to use for the next sync request")
     has_more: bool = Field(default=False, description="Whether there are more items to fetch (pagination)")
