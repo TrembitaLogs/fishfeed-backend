@@ -1,0 +1,87 @@
+name: OpenAPI Conformance
+
+# Schemathesis fuzz suite — verifies every endpoint's responses match the
+# declared OpenAPI schema. Runs only on pushes to main so PR check rollups
+# stay clean while the contract migration is still in flight. Drift that
+# slips into main is caught here on the post-merge run; GitHub notifies on
+# failed workflows.
+#
+# Promote to `pull_request` trigger once the suite is consistently green.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  conformance:
+    name: openapi-conformance
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: fishfeed_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/fishfeed_test
+      REDIS_URL: redis://localhost:6379/0
+      JWT_SECRET_KEY: test-secret-key-for-ci-minimum-32-chars
+      SESSION_SECRET_KEY: test-session-secret-for-ci-min-32-chars
+      JWT_ALGORITHM: HS256
+      ENVIRONMENT: test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: |
+            **/pyproject.toml
+            **/uv.lock
+
+      - name: Install Python
+        run: uv python install 3.14
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Apply database migrations
+        # Conformance hits live handlers that read from real tables. Match
+        # production layout via alembic rather than the conftest's
+        # SQLAlchemy metadata.create_all path used by the unit-test job.
+        run: uv run alembic upgrade head
+
+      - name: Run Schemathesis conformance suite
+        # `-m schemathesis` overrides the default `addopts = -m 'not schemathesis'`
+        # in pyproject.toml. `--no-cov` skips the 80% coverage gate that lives in
+        # the main test job; coverage on a fuzz-only run isn't meaningful.
+        run: uv run pytest tests/conformance/ -m schemathesis --no-cov -v
