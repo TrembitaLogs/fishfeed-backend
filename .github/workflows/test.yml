@@ -67,10 +67,7 @@ jobs:
 
       - name: Run pip-audit (dependency vulnerability scan)
         if: ${{ inputs.run-pip-audit }}
-        # PYSEC-2026-161 (starlette BadHost): fix only in starlette 1.0.1, which the
-        # current FastAPI/sqladmin pins cannot resolve to; deferred to the starlette 1.0
-        # migration. Host header is validated by the nginx/traefik reverse proxy meanwhile.
-        run: uv run pip-audit --strict --ignore-vuln PYSEC-2026-161
+        run: uv run pip-audit --strict
 
       - name: Run ruff (lint)
         run: uv run ruff check . --output-format=github
