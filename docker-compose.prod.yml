@@ -37,6 +37,10 @@ services:
       - postgres_password
     env_file: .env
     environment:
+      # api serves HTTP/admin only; the scheduler runs solely in the worker service.
+      # Without this the api also starts APScheduler (WORKER_ENABLED defaults to True),
+      # duplicating the worker and risking a busy-loop CPU spin.
+      - WORKER_ENABLED=false
       # Override DB / Redis to point at internal service names
       - DATABASE_URL=postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@postgres:5432/fishfeed
       - REDIS_URL=redis://redis:6379/0
