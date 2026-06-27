@@ -10,7 +10,7 @@ from app.schemas.sync import SyncRequest, SyncResponse
 
 from .changes import apply_changes
 from .exceptions import SyncAccessDeniedError, SyncError, SyncValidationError
-from .state import _apply_pagination, get_server_state
+from .state import get_paginated_server_state
 from .utils import _generate_sync_token
 from .validation import _validate_entity_ownership
 
@@ -65,11 +65,12 @@ async def process_sync(
         # Schedules are created by the client (offline-first architecture).
         # Server only stores what client sends via sync.
 
-        # Step 3: Get server state (delta sync if last_sync_at provided)
-        server_state = await get_server_state(db, user_id, request.last_sync_at)
-
-        # Step 4: Apply pagination
-        paginated_state, has_more, next_cursor = _apply_pagination(server_state, request.page_size, request.cursor)
+        # Step 3+4: Get a single page of server state with DB-level pagination
+        # (delta sync if last_sync_at provided). This pushes OFFSET/LIMIT down to
+        # the database instead of loading the full state and slicing in Python.
+        paginated_state, has_more, next_cursor = await get_paginated_server_state(
+            db, user_id, request.last_sync_at, request.page_size, request.cursor
+        )
 
         # Step 5: Compute synced_ids (accepted changes without conflicts)
         conflict_entity_ids = {c.entity_id for c in conflicts}
