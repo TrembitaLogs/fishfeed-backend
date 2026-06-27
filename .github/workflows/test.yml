@@ -67,7 +67,10 @@ jobs:
 
       - name: Run pip-audit (dependency vulnerability scan)
         if: ${{ inputs.run-pip-audit }}
-        run: uv run pip-audit --strict
+        # CVE-2026-31072 (apscheduler): no fixed release available — 4.0.0a6 is
+        # the latest published version. Ignored to unblock CI; revisit when
+        # upstream ships a patched release.
+        run: uv run pip-audit --strict --ignore-vuln CVE-2026-31072
 
       - name: Run ruff (lint)
         run: uv run ruff check . --output-format=github
