@@ -659,6 +659,32 @@
         "title": "DeletedEntities",
         "type": "object"
       },
+      "ErrorResponse": {
+        "description": "Standardized error envelope returned by the API exception handlers.",
+        "properties": {
+          "detail": {
+            "description": "Human-readable error message.",
+            "type": "string"
+          },
+          "error_code": {
+            "description": "Stable machine-readable error code.",
+            "type": "string"
+          },
+          "errors": {
+            "description": "Field-level validation errors (present on 422 validation failures).",
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "error_code",
+          "detail"
+        ],
+        "title": "ErrorResponse",
+        "type": "object"
+      },
       "FailedChange": {
         "description": "Schema for a single change rejected during pre-validation.\n\nReturned in ``SyncResponse.failed`` when the server could not parse a\nchange (e.g. ``entity_id`` is not a valid UUID). The client should\nremove or repair the offending local record so the next sync succeeds.",
         "properties": {
@@ -1417,6 +1443,7 @@
           "new_password": {
             "maxLength": 128,
             "minLength": 8,
+            "pattern": "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d).+$",
             "title": "New Password",
             "type": "string"
           },
@@ -1438,6 +1465,7 @@
           "new_password": {
             "maxLength": 128,
             "minLength": 8,
+            "pattern": "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d).+$",
             "title": "New Password",
             "type": "string"
           },
@@ -1662,6 +1690,7 @@
           "password": {
             "maxLength": 128,
             "minLength": 8,
+            "pattern": "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d).+$",
             "title": "Password",
             "type": "string"
           }
@@ -3232,6 +3261,9 @@
             },
             "description": "Achievement shared successfully"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
@@ -3241,15 +3273,21 @@
           "404": {
             "description": "Achievement not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -3292,15 +3330,33 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -3344,15 +3400,33 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -3396,15 +3470,33 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -3433,6 +3525,24 @@
               }
             },
             "description": "Successful Response"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -3472,11 +3582,17 @@
             },
             "description": "Species created successfully"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
           "403": {
             "description": "Admin privileges required"
+          },
+          "404": {
+            "description": "Not Found"
           },
           "409": {
             "description": "Species with this ID already exists"
@@ -3485,11 +3601,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -3522,6 +3641,9 @@
           "204": {
             "description": "Species deleted successfully"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
@@ -3531,15 +3653,21 @@
           "404": {
             "description": "Species not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -3587,6 +3715,9 @@
             },
             "description": "Species updated successfully"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
@@ -3596,15 +3727,21 @@
           "404": {
             "description": "Species not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -3645,15 +3782,33 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -3705,15 +3860,33 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -3755,15 +3928,33 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -3815,15 +4006,33 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -3865,15 +4074,33 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -3922,11 +4149,20 @@
           "402": {
             "description": "No remaining scans (payment required)"
           },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
@@ -3984,11 +4220,20 @@
           "402": {
             "description": "No remaining scans (payment required)"
           },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
@@ -4053,18 +4298,33 @@
             },
             "description": "Scan history retrieved"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
           },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -4093,8 +4353,23 @@
             },
             "description": "Remaining scans retrieved"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -4135,6 +4410,9 @@
             },
             "description": "Scan retrieved"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
@@ -4144,15 +4422,21 @@
           "404": {
             "description": "Scan not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -4196,6 +4480,9 @@
           "204": {
             "description": "Species confirmed successfully"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
@@ -4205,15 +4492,21 @@
           "404": {
             "description": "Scan or species not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -4246,8 +4539,23 @@
             },
             "description": "List of aquariums"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -4284,11 +4592,33 @@
             },
             "description": "Aquarium created"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
             "description": "Validation error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -4322,6 +4652,9 @@
           "204": {
             "description": "Aquarium deleted"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
@@ -4331,15 +4664,21 @@
           "404": {
             "description": "Aquarium not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -4378,6 +4717,9 @@
             },
             "description": "Aquarium details with fish and schedule"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
@@ -4387,15 +4729,21 @@
           "404": {
             "description": "Aquarium not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -4444,6 +4792,9 @@
             },
             "description": "Aquarium updated"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
@@ -4453,8 +4804,21 @@
           "404": {
             "description": "Aquarium not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
             "description": "Validation error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -4495,6 +4859,9 @@
             },
             "description": "List of family members"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
@@ -4504,15 +4871,21 @@
           "404": {
             "description": "Aquarium not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -4553,6 +4926,9 @@
             },
             "description": "Invite created"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
@@ -4562,15 +4938,21 @@
           "404": {
             "description": "Aquarium not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -4611,6 +4993,9 @@
             },
             "description": "List of active invites"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
@@ -4620,15 +5005,21 @@
           "404": {
             "description": "Aquarium not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -4672,6 +5063,9 @@
           "204": {
             "description": "Invite cancelled"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
@@ -4681,15 +5075,21 @@
           "404": {
             "description": "Aquarium or invite not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -4745,15 +5145,21 @@
           "404": {
             "description": "Aquarium or member not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -4847,15 +5253,21 @@
           "404": {
             "description": "Aquarium not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -4904,6 +5316,9 @@
             },
             "description": "Feeding log created"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
@@ -4927,11 +5342,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -4976,6 +5394,9 @@
             },
             "description": "List of fish"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
@@ -4985,15 +5406,21 @@
           "404": {
             "description": "Aquarium not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -5042,6 +5469,9 @@
             },
             "description": "Fish added"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
@@ -5051,8 +5481,21 @@
           "404": {
             "description": "Aquarium or species not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
             "description": "Validation error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -5113,6 +5556,9 @@
             },
             "description": "List of feeding schedules"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
@@ -5122,15 +5568,21 @@
           "404": {
             "description": "Aquarium not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -5191,15 +5643,21 @@
           "404": {
             "description": "Aquarium not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -5244,6 +5702,9 @@
             },
             "description": "Schedules generated"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
@@ -5253,15 +5714,21 @@
           "404": {
             "description": "Aquarium not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -5305,6 +5772,9 @@
           "204": {
             "description": "Schedule deleted"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
@@ -5314,15 +5784,21 @@
           "404": {
             "description": "Schedule not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -5393,15 +5869,21 @@
           "404": {
             "description": "Schedule not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -5423,8 +5905,23 @@
           "204": {
             "description": "Account deleted successfully"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -5463,18 +5960,33 @@
             },
             "description": "Login successful"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Invalid credentials"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
           },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "summary": "Login user",
@@ -5501,18 +6013,33 @@
           "204": {
             "description": "Logout successful"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
           },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -5551,21 +6078,33 @@
             },
             "description": "OAuth login successful"
           },
+          "400": {
+            "description": "OAuth provider not configured"
+          },
           "401": {
             "description": "Invalid OAuth token"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
           },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
           },
-          "500": {
-            "description": "OAuth provider not configured"
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "summary": "OAuth login",
@@ -5609,15 +6148,27 @@
           "401": {
             "description": "Not authenticated"
           },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -5660,15 +6211,33 @@
             },
             "description": "Password reset email sent (if email exists)"
           },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "summary": "Request password reset",
@@ -5709,15 +6278,30 @@
           "400": {
             "description": "Invalid or expired reset token"
           },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "summary": "Confirm password reset",
@@ -5751,18 +6335,33 @@
             },
             "description": "Tokens refreshed successfully"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Invalid or expired refresh token"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
           },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "summary": "Refresh access token",
@@ -5796,11 +6395,33 @@
             },
             "description": "User registered successfully"
           },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
           "409": {
             "description": "Email already exists"
           },
           "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
             "description": "Validation error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "summary": "Register a new user",
@@ -5846,15 +6467,21 @@
           "404": {
             "description": "Invite not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -5888,6 +6515,9 @@
           "204": {
             "description": "Fish deleted"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
@@ -5897,15 +6527,21 @@
           "404": {
             "description": "Fish not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -5944,6 +6580,9 @@
             },
             "description": "Fish details"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
@@ -5953,15 +6592,21 @@
           "404": {
             "description": "Fish not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -6010,6 +6655,9 @@
             },
             "description": "Fish updated"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
@@ -6019,8 +6667,21 @@
           "404": {
             "description": "Fish not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
             "description": "Validation error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -6071,6 +6732,9 @@
           "404": {
             "description": "Entity not found"
           },
+          "409": {
+            "description": "Conflict"
+          },
           "413": {
             "description": "File size exceeds limit"
           },
@@ -6081,7 +6745,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
@@ -6133,15 +6797,27 @@
           "401": {
             "description": "Not authenticated"
           },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -6180,15 +6856,33 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -6216,6 +6910,24 @@
               }
             },
             "description": "Successful Response"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -6262,15 +6974,33 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "summary": "Handle Webhook",
@@ -6297,21 +7027,33 @@
           "204": {
             "description": "Token removed successfully"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
+          "403": {
+            "description": "Forbidden"
+          },
           "404": {
             "description": "Token not found"
+          },
+          "409": {
+            "description": "Conflict"
           },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -6348,11 +7090,33 @@
             },
             "description": "Token registered successfully"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
             "description": "Validation error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -6379,6 +7143,7 @@
             "schema": {
               "default": 1,
               "description": "Page number",
+              "maximum": 1000000,
               "minimum": 1,
               "title": "Page",
               "type": "integer"
@@ -6456,15 +7221,33 @@
             },
             "description": "Paginated list of species"
           },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "summary": "List all species",
@@ -6491,6 +7274,24 @@
               }
             },
             "description": "List of popular species for onboarding"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "summary": "Get popular species",
@@ -6533,8 +7334,33 @@
             },
             "description": "List of matching species"
           },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
             "description": "Query too short (minimum 2 characters)"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "summary": "Search species",
@@ -6569,18 +7395,33 @@
             },
             "description": "Species details"
           },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
           "404": {
             "description": "Species not found"
+          },
+          "409": {
+            "description": "Conflict"
           },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "summary": "Get species by ID",
@@ -6646,6 +7487,9 @@
           "403": {
             "description": "Access denied to one or more entities"
           },
+          "404": {
+            "description": "Not Found"
+          },
           "409": {
             "description": "Sync conflicts requiring client resolution"
           },
@@ -6653,11 +7497,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -6686,8 +7533,23 @@
             },
             "description": "User profile retrieved successfully"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -6724,11 +7586,33 @@
             },
             "description": "User profile updated successfully"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
             "description": "Validation error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -6761,8 +7645,23 @@
             },
             "description": "Achievements retrieved successfully"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -6784,11 +7683,23 @@
           "204": {
             "description": "All user data deleted successfully"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
+          "403": {
+            "description": "Forbidden"
+          },
           "404": {
             "description": "User not found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -6817,8 +7728,23 @@
             },
             "description": "Data export URL generated successfully"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "429": {
+            "description": "Too Many Requests"
           },
           "503": {
             "description": "Storage service not configured"
@@ -6850,8 +7776,23 @@
             },
             "description": "Current notification preferences"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -6888,11 +7829,33 @@
             },
             "description": "Preferences updated successfully"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
           },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
           "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
             "description": "Validation error"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -6921,8 +7884,23 @@
             },
             "description": "User stats retrieved successfully"
           },
+          "400": {
+            "description": "Bad Request"
+          },
           "401": {
             "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "429": {
+            "description": "Too Many Requests"
           }
         },
         "security": [
@@ -7012,11 +7990,14 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "description": "Not Found"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
@@ -7043,6 +8024,9 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "description": "Forbidden"
           }
         },
         "summary": "Releases Page",
@@ -7063,6 +8047,12 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
           }
         },
         "summary": "Releases Index",
@@ -7095,11 +8085,17 @@
             },
             "description": "Successful Response"
           },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
@@ -7136,11 +8132,17 @@
             },
             "description": "Successful Response"
           },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },

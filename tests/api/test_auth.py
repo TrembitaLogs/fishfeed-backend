@@ -514,8 +514,8 @@ class TestOAuth:
         assert response.status_code == 401
         assert "Token validation failed" in response.json()["detail"]
 
-    async def test_oauth_not_configured_returns_500(self, client: AsyncClient):
-        """Test that unconfigured OAuth provider returns 500."""
+    async def test_oauth_not_configured_returns_400(self, client: AsyncClient):
+        """Test that an unconfigured OAuth provider is a client error (400), not 5xx."""
         with patch(
             "app.services.auth._verify_google_token",
             side_effect=OAuthNotConfiguredError("google"),
@@ -525,7 +525,7 @@ class TestOAuth:
                 json={"provider": "google", "token": "some_token"},
             )
 
-        assert response.status_code == 500
+        assert response.status_code == 400
         assert "not configured" in response.json()["detail"]
 
     async def test_oauth_invalid_provider_returns_422(self, client: AsyncClient):

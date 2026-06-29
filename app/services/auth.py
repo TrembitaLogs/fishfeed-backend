@@ -68,7 +68,9 @@ class OAuthNotConfiguredError(AuthError):
         super().__init__(
             ErrorCode.AUTH_OAUTH_NOT_CONFIGURED,
             f"OAuth provider '{provider}' is not configured",
-            status_code=500,
+            # A provider that isn't configured/supported is a client-side
+            # condition (bad request), not a server fault — must not be 5xx.
+            status_code=400,
         )
 
 
