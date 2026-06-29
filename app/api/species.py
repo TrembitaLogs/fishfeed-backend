@@ -44,7 +44,10 @@ admin_router = APIRouter(prefix="/admin/species", tags=["Admin Species"])
 async def list_species_endpoint(
     db: Annotated[AsyncSession, Depends(get_db)],
     redis: Annotated[Redis, Depends(get_redis)],
-    page: int = Query(default=1, ge=1, description="Page number"),
+    # Upper-bound page so OFFSET = (page - 1) * per_page can never overflow
+    # int64 in the DB query (this list is public, so an unbounded page reaches
+    # the query directly). 1_000_000 * 100 stays well within range.
+    page: int = Query(default=1, ge=1, le=1_000_000, description="Page number"),
     per_page: int = Query(default=20, ge=1, le=100, description="Items per page"),
     care_level: CareLevel | None = Query(default=None, description="Filter by care level"),
     water_type: WaterType | None = Query(default=None, description="Filter by water type"),

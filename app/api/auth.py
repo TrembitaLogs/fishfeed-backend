@@ -132,8 +132,8 @@ async def login(
     summary="OAuth login",
     responses={
         200: {"description": "OAuth login successful"},
+        400: {"description": "OAuth provider not configured"},
         401: {"description": "Invalid OAuth token"},
-        500: {"description": "OAuth provider not configured"},
     },
 )
 async def oauth(

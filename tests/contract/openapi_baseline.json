@@ -6079,7 +6079,7 @@
             "description": "OAuth login successful"
           },
           "400": {
-            "description": "Bad Request"
+            "description": "OAuth provider not configured"
           },
           "401": {
             "description": "Invalid OAuth token"
@@ -6105,9 +6105,6 @@
           },
           "429": {
             "description": "Too Many Requests"
-          },
-          "500": {
-            "description": "OAuth provider not configured"
           }
         },
         "summary": "OAuth login",
@@ -7146,6 +7143,7 @@
             "schema": {
               "default": 1,
               "description": "Page number",
+              "maximum": 1000000,
               "minimum": 1,
               "title": "Page",
               "type": "integer"
