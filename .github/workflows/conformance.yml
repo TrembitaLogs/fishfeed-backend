@@ -1,14 +1,12 @@
 name: OpenAPI Conformance
 
 # Schemathesis fuzz suite — verifies every endpoint's responses match the
-# declared OpenAPI schema. Runs only on pushes to main so PR check rollups
-# stay clean while the contract migration is still in flight. Drift that
-# slips into main is caught here on the post-merge run; GitHub notifies on
-# failed workflows.
-#
-# Promote to `pull_request` trigger once the suite is consistently green.
+# declared OpenAPI schema. The suite is consistently green, so it now gates
+# pull requests (catching contract drift BEFORE merge) and also runs on
+# pushes to main as a post-merge safety net.
 
 on:
+  pull_request:
   push:
     branches: [main]
   workflow_dispatch:
