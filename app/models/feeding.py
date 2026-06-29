@@ -198,4 +198,7 @@ class FeedingLog(Base):
         Index("idx_feeding_logs_fish_id", "fish_id"),
         Index("idx_feeding_logs_scheduled_for", "scheduled_for"),
         Index("idx_feeding_logs_acted_at", "acted_at"),
+        # Supports the delta-sync filter (aquarium_id + created_at >= since) and the
+        # paginated ORDER BY (created_at, id) used by get_paginated_server_state.
+        Index("idx_feeding_logs_aquarium_created", "aquarium_id", "created_at"),
     )

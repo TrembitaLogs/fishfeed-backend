@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String, func
+from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -77,6 +77,12 @@ class Aquarium(Base, TimestampMixin, SoftDeleteMixin):
         "FeedingLog",
         back_populates="aquarium",
         cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        # Postgres does not auto-index FK columns; the sync ownership lookup
+        # filters/joins on owner_id (Aquarium.owner_id == user_id).
+        Index("idx_aquariums_owner_id", "owner_id"),
     )
 
 

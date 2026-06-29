@@ -19,7 +19,7 @@ from .changes import (
 )
 from .exceptions import SyncAccessDeniedError, SyncError, SyncValidationError
 from .process import process_sync
-from .state import _apply_pagination, get_server_state
+from .state import _apply_pagination, get_paginated_server_state, get_server_state
 from .utils import (
     _entity_to_dict,
     _generate_sync_token,
@@ -49,6 +49,7 @@ __all__ = [
     "_ensure_schedules_for_user",
     # Server state
     "get_server_state",
+    "get_paginated_server_state",
     "_apply_pagination",
     # Utilities
     "_generate_sync_token",

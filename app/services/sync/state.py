@@ -5,7 +5,7 @@ from typing import Any
 from uuid import UUID
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -229,6 +229,241 @@ async def get_server_state(
         progress=progress_data,
         user_profile=user_profile_data,
         deleted=deleted,
+    )
+
+
+async def get_paginated_server_state(
+    db: AsyncSession,
+    user_id: UUID,
+    since: datetime | None,
+    page_size: int,
+    cursor: str | None,
+) -> tuple[ServerState, bool, str | None]:
+    """Get a single page of server state using DB-level pagination.
+
+    Unlike :func:`get_server_state` (which loads the entire server state and is
+    then sliced in Python by :func:`_apply_pagination`), this function pushes the
+    pagination down to the database. It preserves the exact wire protocol so the
+    mobile client needs no changes:
+
+    The cursor is a global integer OFFSET (encoded as a string) into the
+    concatenation of the four active aquarium-scoped lists in the FIXED order
+    ``[aquariums, fish, feeding_logs, schedules]``. Only the slice overlapping
+    the requested ``[start, start + page_size)`` window is fetched, each type
+    with its own ``OFFSET``/``LIMIT`` and a deterministic ``ORDER BY``.
+
+    User-scoped entities (streaks, achievements, progress, user_profile) and the
+    delta ``deleted`` set are NOT paginated — they are returned in full on every
+    page, identical to :func:`get_server_state`.
+
+    Args:
+        db: Database session.
+        user_id: User ID.
+        since: If provided, return only changes after this timestamp (delta sync).
+        page_size: Maximum number of paginated items per page.
+        cursor: Global integer offset (as string) from the previous response,
+            or None for the first page.
+
+    Returns:
+        Tuple of (server_state, has_more, next_cursor).
+    """
+    logger.debug("get_paginated_server_state for user", user_id=user_id, since=since, cursor=cursor)
+
+    # For delta sync, include deleted aquariums to track deletions.
+    include_deleted = since is not None
+    user_aquarium_ids = await _get_user_aquarium_ids(db, user_id, include_deleted=include_deleted)
+
+    # --- User-scoped entities (always returned in full, never paginated) ---
+    streaks_data: list[dict[str, Any]] = []
+    achievements_data: list[dict[str, Any]] = []
+    progress_data: list[dict[str, Any]] = []
+
+    streak_stmt = select(Streak).where(Streak.user_id == user_id)
+    if since is not None:
+        streak_stmt = streak_stmt.where(Streak.updated_at >= since)
+    for streak in (await db.execute(streak_stmt)).scalars().all():
+        streaks_data.append(_entity_to_dict(streak))
+
+    achievement_stmt = select(Achievement).where(Achievement.user_id == user_id)
+    if since is not None:
+        achievement_stmt = achievement_stmt.where(Achievement.unlocked_at >= since)
+    for achievement in (await db.execute(achievement_stmt)).scalars().all():
+        achievements_data.append(_entity_to_dict(achievement))
+
+    progress_stmt = select(UserProgress).where(UserProgress.user_id == user_id)
+    if since is not None:
+        progress_stmt = progress_stmt.where(UserProgress.updated_at >= since)
+    for progress in (await db.execute(progress_stmt)).scalars().all():
+        progress_data.append(_entity_to_dict(progress))
+
+    user_profile_data: dict[str, Any] | None = None
+    user_stmt = select(User).where(User.id == user_id)
+    if since is not None:
+        user_stmt = user_stmt.where(User.updated_at >= since)
+    user_entity = (await db.execute(user_stmt)).scalar_one_or_none()
+    if user_entity is not None:
+        user_profile_data = _entity_to_dict(user_entity)
+
+    # Mirror get_server_state's early return when the user has no aquariums.
+    if not user_aquarium_ids:
+        logger.debug("No aquariums found for user", user_id=user_id)
+        return (
+            ServerState(
+                aquariums=[],
+                fish=[],
+                feeding_logs=[],
+                schedules=[],
+                streaks=streaks_data,
+                achievements=achievements_data,
+                progress=progress_data,
+                user_profile=user_profile_data,
+                deleted=DeletedEntities(),
+            ),
+            False,
+            None,
+        )
+
+    # --- Deleted entities (delta only, always returned in full) ---
+    deleted = DeletedEntities()
+    if since is not None:
+        deleted_aquarium_stmt = select(Aquarium).where(
+            Aquarium.id.in_(user_aquarium_ids),
+            Aquarium.deleted_at.is_not(None),
+            Aquarium.deleted_at >= since,
+        )
+        deleted.aquariums = [aq.id for aq in (await db.execute(deleted_aquarium_stmt)).scalars().all()]
+
+        deleted_fish_stmt = select(Fish).where(
+            Fish.aquarium_id.in_(user_aquarium_ids),
+            Fish.deleted_at.is_not(None),
+            Fish.deleted_at >= since,
+        )
+        deleted.fish = [f.id for f in (await db.execute(deleted_fish_stmt)).scalars().all()]
+
+        inactive_schedule_stmt = select(FeedingSchedule).where(
+            FeedingSchedule.aquarium_id.in_(user_aquarium_ids),
+            FeedingSchedule.active.is_(False),
+            FeedingSchedule.updated_at >= since,
+        )
+        deleted.schedules = [s.id for s in (await db.execute(inactive_schedule_stmt)).scalars().all()]
+
+    # --- Paginated active aquarium-scoped types ---
+    # Build the active filtered conditions for each type (same as get_server_state).
+    aquarium_filters: list[Any] = [Aquarium.id.in_(user_aquarium_ids), Aquarium.deleted_at.is_(None)]
+    fish_filters: list[Any] = [Fish.aquarium_id.in_(user_aquarium_ids), Fish.deleted_at.is_(None)]
+    log_filters: list[Any] = [FeedingLog.aquarium_id.in_(user_aquarium_ids)]
+    schedule_filters: list[Any] = [
+        FeedingSchedule.aquarium_id.in_(user_aquarium_ids),
+        FeedingSchedule.active.is_(True),
+    ]
+    if since is not None:
+        aquarium_filters.append(Aquarium.updated_at >= since)
+        fish_filters.append(Fish.updated_at >= since)
+        log_filters.append(FeedingLog.created_at >= since)
+        schedule_filters.append(FeedingSchedule.updated_at >= since)
+
+    # Count each type so we can map global offsets onto per-type windows.
+    n_aq: int = (await db.execute(select(func.count()).select_from(Aquarium).where(*aquarium_filters))).scalar_one()
+    n_fish: int = (await db.execute(select(func.count()).select_from(Fish).where(*fish_filters))).scalar_one()
+    n_log: int = (await db.execute(select(func.count()).select_from(FeedingLog).where(*log_filters))).scalar_one()
+    n_sched: int = (
+        await db.execute(select(func.count()).select_from(FeedingSchedule).where(*schedule_filters))
+    ).scalar_one()
+
+    total = n_aq + n_fish + n_log + n_sched
+
+    # Global range each type occupies in the concatenated list.
+    base_aq = 0
+    base_fish = base_aq + n_aq
+    base_log = base_fish + n_fish
+    base_sched = base_log + n_log
+
+    # Parse the cursor as a global integer offset; garbage/negative -> 0.
+    start = 0
+    if cursor:
+        try:
+            start = int(cursor)
+        except (ValueError, TypeError):
+            start = 0
+    if start < 0:
+        start = 0
+    end = start + page_size
+
+    aquariums_data: list[dict[str, Any]] = []
+    fish_data: list[dict[str, Any]] = []
+    events_data: list[dict[str, Any]] = []
+    schedules_data: list[dict[str, Any]] = []
+
+    # Aquariums window
+    lo = max(start, base_aq) - base_aq
+    hi = min(end, base_aq + n_aq) - base_aq
+    if hi > lo:
+        aq_stmt = select(Aquarium).where(*aquarium_filters).order_by(Aquarium.id).offset(lo).limit(hi - lo)
+        for aquarium in (await db.execute(aq_stmt)).scalars().all():
+            aquariums_data.append(_entity_to_dict(aquarium))
+
+    # Fish window
+    lo = max(start, base_fish) - base_fish
+    hi = min(end, base_fish + n_fish) - base_fish
+    if hi > lo:
+        fish_stmt = select(Fish).where(*fish_filters).order_by(Fish.id).offset(lo).limit(hi - lo)
+        for fish in (await db.execute(fish_stmt)).scalars().all():
+            fish_data.append(_entity_to_dict(fish))
+
+    # Feeding logs window — keep eager-load of acted_by_user (to-one, LIMIT-safe).
+    lo = max(start, base_log) - base_log
+    hi = min(end, base_log + n_log) - base_log
+    if hi > lo:
+        log_stmt = (
+            select(FeedingLog)
+            .options(joinedload(FeedingLog.acted_by_user))
+            .where(*log_filters)
+            .order_by(FeedingLog.created_at, FeedingLog.id)
+            .offset(lo)
+            .limit(hi - lo)
+        )
+        for log in (await db.execute(log_stmt)).scalars().all():
+            events_data.append(_entity_to_dict(log))
+
+    # Schedules window
+    lo = max(start, base_sched) - base_sched
+    hi = min(end, base_sched + n_sched) - base_sched
+    if hi > lo:
+        sched_stmt = (
+            select(FeedingSchedule).where(*schedule_filters).order_by(FeedingSchedule.id).offset(lo).limit(hi - lo)
+        )
+        for schedule in (await db.execute(sched_stmt)).scalars().all():
+            schedules_data.append(_entity_to_dict(schedule))
+
+    has_more = end < total
+    next_cursor = str(end) if has_more else None
+
+    logger.debug(
+        "get_paginated_server_state returning",
+        aquariums=len(aquariums_data),
+        fish=len(fish_data),
+        events=len(events_data),
+        schedules=len(schedules_data),
+        total=total,
+        start=start,
+        page_size=page_size,
+        has_more=has_more,
+    )
+
+    return (
+        ServerState(
+            aquariums=aquariums_data,
+            fish=fish_data,
+            feeding_logs=events_data,
+            schedules=schedules_data,
+            streaks=streaks_data,
+            achievements=achievements_data,
+            progress=progress_data,
+            user_profile=user_profile_data,
+            deleted=deleted,
+        ),
+        has_more,
+        next_cursor,
     )
 
 
