@@ -2660,3 +2660,43 @@ async def test_full_sync_roundtrip_with_photo_key(
         assert matching[0]["photo_key"] == photo_key
     finally:
         await cleanup_sync_test_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_process_sync_delete_aquarium_cascades_to_fish_and_schedules(
+    async_session: AsyncSession,
+):
+    """Deleting an aquarium soft-deletes its fish and deactivates their schedules.
+
+    Without the cascade, fish under a deleted aquarium stay alive on the server
+    (orphans) and resurface on other devices / after a reinstall.
+    """
+    await cleanup_sync_test_data(async_session)
+    try:
+        user = await create_test_user(async_session)
+        aquarium = await create_test_aquarium(async_session, user.id)
+        fish = await create_test_fish(async_session, aquarium.id)
+        schedule = await create_test_schedule(
+            async_session, aquarium.id, fish.id, user.id
+        )
+
+        change = ChangeItem(
+            entity_type="aquarium",
+            entity_id=aquarium.id,
+            operation="delete",
+            data={},
+            client_updated_at=datetime.now(UTC),
+        )
+        request = SyncRequest(changes=[change], last_sync_at=None)
+
+        await process_sync(async_session, user.id, request)
+
+        await async_session.refresh(aquarium)
+        await async_session.refresh(fish)
+        await async_session.refresh(schedule)
+
+        assert aquarium.deleted_at is not None, "aquarium should be soft-deleted"
+        assert fish.deleted_at is not None, "fish should be cascade soft-deleted"
+        assert schedule.active is False, "schedule should be deactivated"
+    finally:
+        await cleanup_sync_test_data(async_session)
