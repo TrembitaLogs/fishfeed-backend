@@ -237,9 +237,26 @@ async def _apply_aquarium_change(
                 resolution=RESOLUTION_LABELS[winner],
             )
 
-        # Client wins - soft delete
-        existing.deleted_at = datetime.now(UTC)
-        logger.debug("Soft deleted aquarium", entity_id=change.entity_id)
+        # Client wins - soft delete the aquarium, then cascade to its fish and
+        # schedules (mirrors _apply_fish_change delete) so no orphan fish or
+        # schedules survive under a deleted aquarium.
+        now = datetime.now(UTC)
+        existing.deleted_at = now
+
+        await db.execute(
+            update(Fish)
+            .where(Fish.aquarium_id == change.entity_id, Fish.deleted_at.is_(None))
+            .values(deleted_at=now, updated_at=now)
+        )
+        await db.execute(
+            update(FeedingSchedule)
+            .where(FeedingSchedule.aquarium_id == change.entity_id)
+            .values(active=False)
+        )
+        logger.debug(
+            "Soft deleted aquarium and cascaded to its fish + schedules",
+            entity_id=change.entity_id,
+        )
 
     return None
 
