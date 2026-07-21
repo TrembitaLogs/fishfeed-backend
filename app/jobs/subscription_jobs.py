@@ -69,6 +69,13 @@ async def check_expired_subscriptions_job() -> int:
                     )
                     continue
 
+            # apply_free_tier_limits() commits per user, so every user's
+            # writes land except those made after their own commit — the
+            # notification log and any push tokens FCM reported as
+            # UNREGISTERED. Without this the last user of the batch loses
+            # them when the session closes.
+            await db.commit()
+
             logger.info("Processed batch of expired subscriptions", batch_size=len(expired_users))
 
     logger.info("check_expired_subscriptions_job completed", users_processed=total_processed)
