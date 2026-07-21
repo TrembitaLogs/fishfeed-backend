@@ -68,13 +68,24 @@ async def list_species_endpoint(
     summary="Search species",
     responses={
         200: {"description": "List of matching species"},
-        422: {"description": "Query too short (minimum 2 characters)"},
+        422: {"description": "Query too short, too long, or contains a NUL byte"},
     },
 )
 async def search_species_endpoint(
     db: Annotated[AsyncSession, Depends(get_db)],
     redis: Annotated[Redis, Depends(get_redis)],
-    q: str = Query(..., min_length=2, max_length=100, description="Search query"),
+    # The pattern rejects NUL bytes. Only length was validated before, so a
+    # \x00 reached Postgres, which cannot store it in a UTF8 text value and
+    # raised CharacterNotInRepertoireError — turning a bad public request into
+    # a 500. The constraint lives in the schema (not a validator) so clients
+    # and the OpenAPI conformance suite both see the real contract.
+    q: str = Query(
+        ...,
+        min_length=2,
+        max_length=100,
+        pattern=r"^[^\x00]*$",
+        description="Search query",
+    ),
 ) -> list[SpeciesResponse]:
     """Search species by name using full-text search.
 

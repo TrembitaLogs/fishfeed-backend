@@ -203,6 +203,21 @@ class TestSearchSpecies:
         response = await client.get("/api/v1/species/search", params={"q": "x"})
         assert response.status_code == 422
 
+    async def test_search_nul_byte_returns_422_not_500(
+        self, client: AsyncClient, async_session: AsyncSession
+    ):
+        """Test that a NUL byte in the query is rejected at the boundary.
+
+        Postgres cannot store \\x00 in a UTF8 text value, so before the query
+        was validated for content this reached asyncpg and surfaced as a 500
+        (CharacterNotInRepertoireError). Found by the OpenAPI conformance
+        suite.
+        """
+        response = await client.get(
+            "/api/v1/species/search", params={"q": "gup\x00py"}
+        )
+        assert response.status_code == 422
+
     async def test_search_no_matches_returns_empty_list(
         self, client: AsyncClient, async_session: AsyncSession
     ):

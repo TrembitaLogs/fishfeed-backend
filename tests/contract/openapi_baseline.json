@@ -7314,6 +7314,7 @@
               "description": "Search query",
               "maxLength": 100,
               "minLength": 2,
+              "pattern": "^[^\\x00]*$",
               "title": "Q",
               "type": "string"
             }
@@ -7357,7 +7358,7 @@
                 }
               }
             },
-            "description": "Query too short (minimum 2 characters)"
+            "description": "Query too short, too long, or contains a NUL byte"
           },
           "429": {
             "description": "Too Many Requests"
