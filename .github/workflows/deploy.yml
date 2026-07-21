@@ -72,6 +72,14 @@ jobs:
     needs: build-and-push
     environment: production
 
+    # packages: read lets this job's GITHUB_TOKEN pull the image we just
+    # pushed; contents: read is for actions/checkout below. Without an
+    # explicit block the job inherits the repo default, which may grant
+    # neither — the login would succeed and the pull would 403.
+    permissions:
+      contents: read
+      packages: read
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -98,13 +106,42 @@ jobs:
 
       - name: Deploy to Hetzner
         uses: appleboy/ssh-action@v1
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.repository_owner }}
         with:
           host: ${{ secrets.HETZNER_HOST }}
           username: ${{ secrets.HETZNER_USER }}
           key: ${{ secrets.HETZNER_SSH_KEY }}
+          # Names only — the action looks each up in this step's own env and
+          # prepends `export NAME='value'` to the remote script. Never
+          # interpolate ${{ }} into `script:` itself; that would bake the
+          # token into the command text as a literal.
+          #
+          # Do NOT add `debug: true` to this step: that is the one setting
+          # that prints the generated export lines into the Actions log.
+          envs: GHCR_TOKEN,GHCR_USER
           script: |
             set -euo pipefail
             cd /home/balaganov/docker/fishfeed
+
+            # Registry auth for the pull below. The server used to carry a
+            # long-lived personal access token in ~/.docker/config.json; it
+            # expired unnoticed and broke the v0.1.20 deploy with
+            # "error from registry: denied". Instead, authenticate with this
+            # job's GITHUB_TOKEN, which dies when the job ends.
+            #
+            # DOCKER_CONFIG points at a throwaway directory so the credential
+            # never reaches $HOME: deploy.sh inherits the variable, its
+            # `docker compose pull` uses the same config, and the trap removes
+            # it on every exit path. A plain `docker logout` on the last line
+            # would be skipped by `set -e` whenever deploy.sh fails, stranding
+            # a dead token on disk — exactly the failure being fixed here.
+            DOCKER_CONFIG="$(mktemp -d)"
+            export DOCKER_CONFIG
+            trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
             # Promote the just-synced production compose into the active
             # filename deploy.sh expects. Atomic rename on same filesystem.
             mv -f docker-compose.prod.yml docker-compose.yml
