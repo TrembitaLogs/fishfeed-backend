@@ -47,6 +47,23 @@ def _is_fatal_reconciliation_error(error: Exception, *, dry_run: bool) -> bool:
     )
 
 
+def _dry_run_reason(proposal: object) -> str:
+    """Return a bounded operator explanation without exposing provider data."""
+    from app.services.purchase import Reconciliation
+
+    assert isinstance(proposal, Reconciliation)
+    if proposal.outcome == "unchanged":
+        return "local projection already matches the verified snapshot"
+    changed = []
+    if proposal.before_status != proposal.snapshot.status:
+        changed.append("status")
+    if proposal.before_expires_at != proposal.snapshot.expires_at:
+        changed.append("expiry")
+    if not changed:
+        changed.append("subscription metadata")
+    return f"verified snapshot changes {', '.join(changed)}"
+
+
 async def _due_subscription_user_ids(now: datetime, user_ids: tuple[UUID, ...]) -> list[UUID]:
     """Capture one deterministic recovery snapshot before any account I/O."""
     if user_ids:
@@ -99,6 +116,7 @@ async def check_expired_subscriptions_job(*, dry_run: bool = False, user_ids: tu
                             proposed_status=proposal.snapshot.status,
                             proposed_expires_at=proposal.snapshot.expires_at,
                             outcome=proposal.outcome,
+                            reason=_dry_run_reason(proposal),
                         )
                         continue
 
@@ -114,10 +132,19 @@ async def check_expired_subscriptions_job(*, dry_run: bool = False, user_ids: tu
                             logger.exception("Failed to persist subscription expiry notification", user_id=user_id)
             except UserNotFoundError:
                 counts["skipped"] += 1
-                logger.info("Subscription reconciliation skipped unknown or deleted user", user_id=user_id)
+                logger.info(
+                    "Subscription reconciliation skipped unknown or deleted user",
+                    user_id=user_id,
+                    reason="unknown_or_deleted_local_user",
+                )
             except Exception as error:
                 counts["errors"] += 1
-                logger.error("Subscription reconciliation failed", user_id=user_id, error=str(error))
+                logger.error(
+                    "Subscription reconciliation failed",
+                    user_id=user_id,
+                    reason="reconciliation_error",
+                    error_type=type(error).__name__,
+                )
                 if _is_fatal_reconciliation_error(error, dry_run=dry_run):
                     if dry_run and isinstance(error, RevenueCatAPIError) and error.upstream_status == 201:
                         logger.error("Dry-run stopped: upstream customer may have been created", user_id=user_id)
@@ -313,30 +340,22 @@ async def _send_subscription_expired_notification(
     Returns:
         True if notification was sent successfully.
     """
-    try:
-        notification_service = NotificationService(db)
-
-        success = await notification_service.send_push(
-            user_id=user_id,
-            title="Premium subscription expired",
-            body="Your premium subscription has ended. Upgrade to continue enjoying unlimited features!",
-            data={
-                "type": "subscription_expired",
-                "action": "open_subscription_page",
-            },
-            bypass_throttle=True,  # System notification, bypass throttle
-        )
-
-        if success:
-            logger.info("Subscription expiry notification sent to user", user_id=user_id)
-        else:
-            logger.info("Failed to send subscription expiry notification to user", user_id=user_id)
-
-        return success
-
-    except Exception as e:
-        logger.error("Error sending subscription expiry notification", user_id=user_id, error=str(e))
-        return False
+    notification_service = NotificationService(db)
+    success = await notification_service.send_push(
+        user_id=user_id,
+        title="Premium subscription expired",
+        body="Your premium subscription has ended. Upgrade to continue enjoying unlimited features!",
+        data={
+            "type": "subscription_expired",
+            "action": "open_subscription_page",
+        },
+        bypass_throttle=True,  # System notification, bypass throttle
+    )
+    if success:
+        logger.info("Subscription expiry notification sent to user", user_id=user_id)
+    else:
+        logger.info("Failed to send subscription expiry notification", user_id=user_id)
+    return success
 
 
 async def clear_limits_exceeded(db: AsyncSession, user_id: UUID) -> None:

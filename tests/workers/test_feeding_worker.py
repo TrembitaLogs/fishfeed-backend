@@ -66,6 +66,55 @@ def test_dry_run_cannot_run_other_jobs():
     assert "--job=check_subscriptions" in result.stderr
 
 
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (["--run-once", "--dry-run"], "--job=check_subscriptions"),
+        (["--run-once", "--job=check_subscriptions", "--dry-run"], "requires --user-id"),
+        (["--run-once", "--job=check_subscriptions", "--user-id", "not-a-uuid"], "invalid UUID"),
+        (["--user-id", "11111111-1111-4111-8111-111111111111"], "require --run-once"),
+    ],
+)
+def test_main_rejects_unsafe_subscription_flags_before_async_startup(argv, message):
+    """Validation errors cannot initialize Redis or invoke a job."""
+    from app.workers import feeding_worker
+
+    with (
+        patch.object(sys, "argv", ["feeding_worker", *argv]),
+        patch.object(feeding_worker.asyncio, "run") as run,
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        feeding_worker.main()
+
+    assert exit_info.value.code == 2
+    run.assert_not_called()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_valid_subscription_operation_uses_singleton_and_closes_after_failure():
+    """A valid worker operation sees the initialized singleton and cleanup is unconditional."""
+    from app.workers.feeding_worker import _run_with_redis
+
+    client = MagicMock()
+
+    async def failing_subscription_job():
+        from app.redis import get_redis_client
+
+        assert get_redis_client() is client
+        raise RuntimeError("subscription failure")
+
+    with (
+        patch("app.redis.init_redis", new_callable=AsyncMock) as init_redis,
+        patch("app.redis.close_redis", new_callable=AsyncMock) as close_redis,
+        patch("app.redis.get_redis_client", return_value=client),
+    ):
+        with pytest.raises(RuntimeError, match="subscription failure"):
+            await _run_with_redis(failing_subscription_job)
+
+    init_redis.assert_awaited_once()
+    close_redis.assert_awaited_once()
+
+
 @pytest.mark.asyncio(loop_scope="session")
 async def test_run_once_runs_all_jobs():
     """Test run_once executes all jobs when no specific job is specified."""
@@ -182,6 +231,20 @@ async def test_run_once_reraises_subscription_error_for_all_jobs():
     ):
         with pytest.raises(RuntimeError, match="incomplete"):
             await run_once()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_run_once_reraises_subscription_error_for_explicit_job():
+    """Explicit subscription recovery has the same nonzero one-shot behavior."""
+    from app.workers.feeding_worker import run_once
+
+    with patch(
+        "app.workers.feeding_worker.check_expired_subscriptions_job",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("incomplete reconciliation"),
+    ):
+        with pytest.raises(RuntimeError, match="incomplete"):
+            await run_once(job_name="check_subscriptions")
 
 
 @pytest.mark.asyncio(loop_scope="session")

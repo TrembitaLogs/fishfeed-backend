@@ -15,7 +15,13 @@ from app.models.notification import NotificationLog, PushToken
 from app.models.species import Species
 from app.models.user import User
 from app.schemas.purchase import FREE_USER_LIMITS
-from app.services.purchase import PurchaseError, Reconciliation, RevenueCatAPIError, SubscriptionSnapshot
+from app.services.purchase import (
+    PurchaseError,
+    Reconciliation,
+    RevenueCatAPIError,
+    SubscriptionSnapshot,
+    UserNotFoundError,
+)
 
 
 async def cleanup_subscription_data(session: AsyncSession) -> None:
@@ -114,6 +120,20 @@ async def test_explicit_user_ids_bypass_cadence_and_deduplicate():
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_empty_due_snapshot_runs_no_accounts(async_session: AsyncSession):
+    """A fully current account set produces no recovery work."""
+    from app.jobs.subscription_jobs import _due_subscription_user_ids
+
+    await cleanup_subscription_data(async_session)
+    now = datetime.now(UTC)
+    user = await create_test_user(async_session, email="current@example.com")
+    user.subscription_verified_at = now
+    await async_session.commit()
+    with patch("app.jobs.subscription_jobs.async_session_maker", return_value=async_session):
+        assert await _due_subscription_user_ids(now, ()) == []
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_reconciliation_continues_after_account_failure_then_exits_nonzero(async_engine):
     """A later successful account commits even though the fixed pass remains incomplete."""
     from app.jobs import subscription_jobs
@@ -201,6 +221,116 @@ async def test_dry_run_reads_only_and_aborts_on_unexpected_creation():
     db.commit.assert_not_awaited()
 
 
+@pytest.mark.asyncio(loop_scope="session")
+async def test_notification_partial_flush_rolls_back_after_projection_commit(async_engine):
+    """A notification failure cannot persist half its post-commit transaction."""
+    from app.jobs import subscription_jobs
+
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as setup:
+        await cleanup_subscription_data(setup)
+        user = await create_test_user(
+            setup,
+            email="notification-rollback@example.com",
+            subscription_status="premium",
+            subscription_expires_at=datetime.now(UTC) - timedelta(hours=1),
+        )
+        setup.add(PushToken(user_id=user.id, token="rollback-token", platform="android"))
+        await setup.commit()
+        user_id = user.id
+
+    async def reconcile(db: AsyncSession, redis, requested_id: uuid.UUID) -> Reconciliation:
+        del redis
+        current = await db.get(User, requested_id)
+        assert current is not None
+        proposal = reconciliation_for(current, outcome="changed")
+        current.subscription_status = "free"
+        current.subscription_expires_at = None
+        return proposal
+
+    class PartialNotificationService:
+        def __init__(self, db: AsyncSession):
+            self.db = db
+
+        async def send_push(self, **kwargs):
+            self.db.add(
+                NotificationLog(
+                    user_id=kwargs["user_id"],
+                    notification_type="subscription_expired",
+                    title="partial",
+                    body="partial",
+                    platform="android",
+                    success=False,
+                )
+            )
+            await self.db.execute(text("DELETE FROM push_tokens WHERE token = 'rollback-token'"))
+            await self.db.flush()
+            raise RuntimeError("second delivery failed")
+
+    with (
+        patch("app.jobs.subscription_jobs.async_session_maker", sessions),
+        patch("app.redis.get_redis_client", return_value=MagicMock()),
+        patch("app.jobs.subscription_jobs.reconcile_user", side_effect=reconcile),
+        patch("app.jobs.subscription_jobs.invalidate_premium_cache", new=AsyncMock()),
+        patch("app.jobs.subscription_jobs.NotificationService", PartialNotificationService),
+    ):
+        assert (
+            await asyncio.wait_for(subscription_jobs.check_expired_subscriptions_job(user_ids=(user_id,)), timeout=2)
+            == 1
+        )
+
+    async with sessions() as observer:
+        current = await observer.get(User, user_id)
+        assert current is not None and current.subscription_status == "free"
+        assert await observer.scalar(select(PushToken).where(PushToken.user_id == user_id)) is not None
+        assert await observer.scalar(select(NotificationLog).where(NotificationLog.user_id == user_id)) is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_dry_run_reports_bounded_reason_and_summary(capsys):
+    """Operator output states the safe reason/counts without leaking provider details."""
+    from app.jobs import subscription_jobs
+
+    first, missing, failed = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    db = MagicMock()
+    db.__aenter__ = AsyncMock(return_value=db)
+    db.__aexit__ = AsyncMock(return_value=None)
+    changed = Reconciliation(
+        user_id=first,
+        before_status="free",
+        before_expires_at=None,
+        before_verified_at=None,
+        before_subscription={},
+        snapshot=SubscriptionSnapshot("premium", None, "premium", False, False),
+        verified_at=datetime.now(UTC),
+        outcome="changed",
+    )
+    read = AsyncMock(
+        side_effect=[
+            changed,
+            UserNotFoundError(missing),
+            RuntimeError("key=top-secret email=private@example.com"),
+        ]
+    )
+    with (
+        patch(
+            "app.jobs.subscription_jobs._due_subscription_user_ids",
+            new=AsyncMock(return_value=[first, missing, failed]),
+        ),
+        patch("app.jobs.subscription_jobs.async_session_maker", return_value=db),
+        patch("app.redis.get_redis_client", return_value=MagicMock()),
+        patch("app.jobs.subscription_jobs.read_reconciliation", read),
+    ):
+        with pytest.raises(PurchaseError, match="incomplete"):
+            await subscription_jobs.check_expired_subscriptions_job(dry_run=True, user_ids=(first, missing, failed))
+
+    output = capsys.readouterr().out
+    assert "verified snapshot changes status" in output
+    assert "unknown_or_deleted_local_user" in output
+    assert "changed=1" in output and "skipped=1" in output and "errors=1" in output
+    assert "top-secret" not in output and "private@example.com" not in output
+
+
 async def create_test_aquarium(
     session: AsyncSession,
     owner: User,
@@ -286,326 +416,7 @@ async def add_family_member(
     return member
 
 
-@pytest.mark.asyncio(loop_scope="session")
-async def _legacy_expiry_notification_log_and_unregistered_token_commit_after_downgrade(async_engine):
-    """The last worker notification transaction persists independently of its already-committed downgrade."""
-    from app.jobs.subscription_jobs import check_expired_subscriptions_job
-
-    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    async with sessions() as setup:
-        await cleanup_subscription_data(setup)
-        user = User(
-            email="last-notification@example.com",
-            password_hash="test_hash",
-            subscription_status="premium",
-            subscription_expires_at=datetime.now(UTC) - timedelta(hours=1),
-        )
-        setup.add(user)
-        await setup.flush()
-        setup.add(PushToken(user_id=user.id, token="unregistered", platform="android"))
-        await setup.commit()
-        user_id = user.id
-
-    class WorkerContext:
-        async def __aenter__(self):
-            self.session = sessions()
-            return await self.session.__aenter__()
-
-        async def __aexit__(self, *args):
-            return await self.session.__aexit__(*args)
-
-    class UnregisteredNotificationService:
-        def __init__(self, db: AsyncSession):
-            self.db = db
-
-        async def send_push(self, **kwargs):
-            self.db.add(
-                NotificationLog(
-                    user_id=kwargs["user_id"],
-                    notification_type="subscription_expired",
-                    title=kwargs["title"],
-                    body=kwargs["body"],
-                    platform="android",
-                    success=False,
-                    error_code="UNREGISTERED",
-                )
-            )
-            await self.db.execute(text("DELETE FROM push_tokens WHERE token = 'unregistered'"))
-            await self.db.flush()
-            return False
-
-    with (
-        patch("app.jobs.subscription_jobs.async_session_maker", return_value=WorkerContext()),
-        patch("app.jobs.subscription_jobs.NotificationService", UnregisteredNotificationService),
-    ):
-        assert await check_expired_subscriptions_job() == 1
-
-    async with sessions() as check:
-        user = await check.get(User, user_id)
-        assert user is not None and user.subscription_status == "free"
-        assert await check.scalar(select(PushToken).where(PushToken.user_id == user_id)) is None
-        log = await check.scalar(select(NotificationLog).where(NotificationLog.user_id == user_id))
-        assert log is not None and log.error_code == "UNREGISTERED"
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def _legacy_notification_provider_failure_cannot_rollback_committed_downgrade(async_engine):
-    """A provider exception occurs after the subscription transaction has committed."""
-    from app.jobs.subscription_jobs import check_expired_subscriptions_job
-
-    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    async with sessions() as setup:
-        await cleanup_subscription_data(setup)
-        user = User(
-            email="notification-failure@example.com",
-            password_hash="test_hash",
-            subscription_status="premium",
-            subscription_expires_at=datetime.now(UTC) - timedelta(hours=1),
-        )
-        setup.add(user)
-        await setup.commit()
-        user_id = user.id
-
-    class WorkerContext:
-        async def __aenter__(self):
-            self.session = sessions()
-            return await self.session.__aenter__()
-
-        async def __aexit__(self, *args):
-            return await self.session.__aexit__(*args)
-
-    class BrokenNotificationService:
-        def __init__(self, db: AsyncSession):
-            del db
-
-        async def send_push(self, **kwargs):
-            del kwargs
-            raise RuntimeError("provider unavailable")
-
-    with (
-        patch("app.jobs.subscription_jobs.async_session_maker", return_value=WorkerContext()),
-        patch("app.jobs.subscription_jobs.NotificationService", BrokenNotificationService),
-    ):
-        assert await check_expired_subscriptions_job() == 1
-
-    async with sessions() as check:
-        current = await check.get(User, user_id)
-        assert current is not None and current.subscription_status == "free"
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def _legacy_failed_precommit_downgrade_rolls_back_before_next_user(async_engine):
-    """A's flushed revert cannot leak into B's later successful commit."""
-    from app.jobs.subscription_jobs import check_expired_subscriptions_job
-
-    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    async with sessions() as setup:
-        await cleanup_subscription_data(setup)
-        expired_at = datetime.now(UTC) - timedelta(hours=1)
-        first = User(
-            email="rollback-a@example.com",
-            password_hash="test_hash",
-            subscription_status="premium",
-            subscription_expires_at=expired_at,
-        )
-        second = User(
-            email="rollback-b@example.com",
-            password_hash="test_hash",
-            subscription_status="premium",
-            subscription_expires_at=expired_at,
-        )
-        setup.add_all([first, second])
-        await setup.commit()
-        user_ids = {first.id, second.id}
-
-    class WorkerContext:
-        async def __aenter__(self):
-            self.session = sessions()
-            return await self.session.__aenter__()
-
-        async def __aexit__(self, *args):
-            return await self.session.__aexit__(*args)
-
-    real_limits = __import__("app.jobs.subscription_jobs", fromlist=["apply_free_tier_limits"]).apply_free_tier_limits
-
-    failed_id = None
-    processed_ids: list[uuid.UUID] = []
-
-    async def fail_first(db: AsyncSession, user_id):
-        nonlocal failed_id
-        processed_ids.append(user_id)
-        if failed_id is None:
-            failed_id = user_id
-            raise RuntimeError("pre-commit limits failure")
-        return await real_limits(db, user_id)
-
-    with (
-        patch("app.jobs.subscription_jobs.async_session_maker", return_value=WorkerContext()),
-        patch("app.jobs.subscription_jobs.apply_free_tier_limits", side_effect=fail_first),
-        patch("app.jobs.subscription_jobs._send_subscription_expired_notification", new=AsyncMock(return_value=False)),
-    ):
-        assert await asyncio.wait_for(check_expired_subscriptions_job(), timeout=1) == 1
-
-    async with sessions() as check:
-        assert failed_id is not None
-        assert len(processed_ids) == 2
-        assert set(processed_ids) == user_ids
-        failed = await check.get(User, failed_id)
-        succeeded = await check.get(User, next(user_id for user_id in user_ids if user_id != failed_id))
-        assert failed is not None and failed.subscription_status == "premium"
-        assert succeeded is not None and succeeded.subscription_status == "free"
-
-
 # check_expired_subscriptions_job tests
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def _legacy_check_expired_subscriptions_finds_expired_users(
-    async_session: AsyncSession,
-):
-    """Test that the job finds and processes expired premium users."""
-    await cleanup_subscription_data(async_session)
-    try:
-        from app.jobs.subscription_jobs import check_expired_subscriptions_job
-
-        now = datetime.now(UTC)
-        expired_at = now - timedelta(hours=1)
-
-        # Create expired premium user
-        expired_user = await create_test_user(
-            async_session,
-            email="expired@example.com",
-            subscription_status="premium",
-            subscription_expires_at=expired_at,
-        )
-
-        # Create active premium user (not expired)
-        active_user = await create_test_user(
-            async_session,
-            email="active@example.com",
-            subscription_status="premium",
-            subscription_expires_at=now + timedelta(days=30),
-        )
-
-        # Create free user (should be ignored)
-        free_user = await create_test_user(
-            async_session,
-            email="free@example.com",
-            subscription_status="free",
-        )
-
-        class MockSessionContext:
-            async def __aenter__(self):
-                return async_session
-
-            async def __aexit__(self, *args):
-                pass
-
-        with patch("app.jobs.subscription_jobs.async_session_maker") as mock_session_maker:
-            mock_session_maker.return_value = MockSessionContext()
-
-            with patch("app.jobs.subscription_jobs.NotificationService") as mock_service_class:
-                mock_service = AsyncMock()
-                mock_service.send_push = AsyncMock(return_value=True)
-                mock_service_class.return_value = mock_service
-
-                count = await check_expired_subscriptions_job()
-
-        assert count == 1
-
-        # Refresh and verify the expired user was reverted
-        await async_session.refresh(expired_user)
-        assert expired_user.subscription_status == "free"
-        assert expired_user.subscription_expires_at is None
-
-        # Active user should still be premium
-        await async_session.refresh(active_user)
-        assert active_user.subscription_status == "premium"
-
-    finally:
-        await cleanup_subscription_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def _legacy_check_expired_subscriptions_no_expired_users(
-    async_session: AsyncSession,
-):
-    """Test that the job handles no expired users gracefully."""
-    await cleanup_subscription_data(async_session)
-    try:
-        from app.jobs.subscription_jobs import check_expired_subscriptions_job
-
-        now = datetime.now(UTC)
-
-        # Create only active premium user
-        await create_test_user(
-            async_session,
-            email="active@example.com",
-            subscription_status="premium",
-            subscription_expires_at=now + timedelta(days=30),
-        )
-
-        class MockSessionContext:
-            async def __aenter__(self):
-                return async_session
-
-            async def __aexit__(self, *args):
-                pass
-
-        with patch("app.jobs.subscription_jobs.async_session_maker") as mock_session_maker:
-            mock_session_maker.return_value = MockSessionContext()
-
-            count = await check_expired_subscriptions_job()
-
-        assert count == 0
-
-    finally:
-        await cleanup_subscription_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def _legacy_check_expired_subscriptions_sends_notification(
-    async_session: AsyncSession,
-):
-    """Test that the job sends push notification on subscription expiry."""
-    await cleanup_subscription_data(async_session)
-    try:
-        from app.jobs.subscription_jobs import check_expired_subscriptions_job
-
-        now = datetime.now(UTC)
-        expired_at = now - timedelta(hours=1)
-
-        await create_test_user(
-            async_session,
-            email="expired@example.com",
-            subscription_status="premium",
-            subscription_expires_at=expired_at,
-        )
-
-        class MockSessionContext:
-            async def __aenter__(self):
-                return async_session
-
-            async def __aexit__(self, *args):
-                pass
-
-        with patch("app.jobs.subscription_jobs.async_session_maker") as mock_session_maker:
-            mock_session_maker.return_value = MockSessionContext()
-
-            with patch("app.jobs.subscription_jobs.NotificationService") as mock_service_class:
-                mock_service = AsyncMock()
-                mock_service.send_push = AsyncMock(return_value=True)
-                mock_service_class.return_value = mock_service
-
-                await check_expired_subscriptions_job()
-
-        mock_service.send_push.assert_called_once()
-        call_kwargs = mock_service.send_push.call_args.kwargs
-        assert "Premium subscription expired" in call_kwargs["title"]
-        assert call_kwargs["bypass_throttle"] is True
-
-    finally:
-        await cleanup_subscription_data(async_session)
 
 
 # apply_free_tier_limits tests
@@ -877,7 +688,7 @@ async def test_send_subscription_expired_notification_success(
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_send_subscription_expired_notification_handles_error(
+async def test_send_subscription_expired_notification_propagates_unexpected_error(
     async_session: AsyncSession,
 ):
     """Test that notification sending handles errors gracefully."""
@@ -892,114 +703,14 @@ async def test_send_subscription_expired_notification_handles_error(
             mock_service.send_push = AsyncMock(side_effect=Exception("Network error"))
             mock_service_class.return_value = mock_service
 
-            result = await _send_subscription_expired_notification(async_session, user.id)
-
-        assert result is False
+            with pytest.raises(Exception, match="Network error"):
+                await _send_subscription_expired_notification(async_session, user.id)
 
     finally:
         await cleanup_subscription_data(async_session)
 
 
 # Batch processing tests
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def _legacy_check_expired_subscriptions_batch_processing(
-    async_session: AsyncSession,
-):
-    """Test that the job processes users in batches."""
-    await cleanup_subscription_data(async_session)
-    try:
-        from app.jobs.subscription_jobs import check_expired_subscriptions_job
-
-        now = datetime.now(UTC)
-        expired_at = now - timedelta(hours=1)
-
-        # Create multiple expired users
-        for i in range(5):
-            await create_test_user(
-                async_session,
-                email=f"expired{i}@example.com",
-                subscription_status="premium",
-                subscription_expires_at=expired_at,
-            )
-
-        class MockSessionContext:
-            async def __aenter__(self):
-                return async_session
-
-            async def __aexit__(self, *args):
-                pass
-
-        with patch("app.jobs.subscription_jobs.async_session_maker") as mock_session_maker:
-            mock_session_maker.return_value = MockSessionContext()
-
-            with patch("app.jobs.subscription_jobs.NotificationService") as mock_service_class:
-                mock_service = AsyncMock()
-                mock_service.send_push = AsyncMock(return_value=True)
-                mock_service_class.return_value = mock_service
-
-                count = await check_expired_subscriptions_job()
-
-        assert count == 5
-        assert mock_service.send_push.call_count == 5
-
-    finally:
-        await cleanup_subscription_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def _legacy_check_expired_subscriptions_continues_on_error(
-    async_session: AsyncSession,
-):
-    """Test that the job continues processing even if one user fails."""
-    await cleanup_subscription_data(async_session)
-    try:
-        from app.jobs.subscription_jobs import check_expired_subscriptions_job
-
-        now = datetime.now(UTC)
-        expired_at = now - timedelta(hours=1)
-
-        # Create multiple expired users
-        for i in range(3):
-            await create_test_user(
-                async_session,
-                email=f"expired{i}@example.com",
-                subscription_status="premium",
-                subscription_expires_at=expired_at,
-            )
-
-        class MockSessionContext:
-            async def __aenter__(self):
-                return async_session
-
-            async def __aexit__(self, *args):
-                pass
-
-        call_count = 0
-
-        async def mock_send(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 2:
-                raise Exception("Network error")
-            return True
-
-        with patch("app.jobs.subscription_jobs.async_session_maker") as mock_session_maker:
-            mock_session_maker.return_value = MockSessionContext()
-
-            with patch("app.jobs.subscription_jobs.NotificationService") as mock_service_class:
-                mock_service = AsyncMock()
-                mock_service.send_push = mock_send
-                mock_service_class.return_value = mock_service
-
-                count = await check_expired_subscriptions_job()
-
-        # Should have processed all 3, even though one notification failed
-        assert count == 3
-
-    finally:
-        await cleanup_subscription_data(async_session)
 
 
 # Integration with purchase service tests
