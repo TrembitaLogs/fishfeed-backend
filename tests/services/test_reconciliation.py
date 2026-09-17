@@ -606,6 +606,69 @@ async def test_simultaneous_apply_waits_for_locked_winner_then_conflicts(async_e
 
 
 @pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("changed_field", ["status", "expiry", "verified", "metadata"])
+async def test_apply_reconciliation_conflicts_for_each_changed_baseline_field(async_engine, changed_field: str) -> None:
+    """Each captured baseline field independently prevents a stale overwrite."""
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    initial_status = "free" if changed_field == "status" else "premium"
+    async with sessions() as setup:
+        await setup.execute(text("DELETE FROM users"))
+        user = User(email=f"baseline-{changed_field}@example.com", password_hash="test_hash", subscription_status=initial_status)
+        setup.add(user)
+        await setup.commit()
+        user_id = user.id
+    async with sessions() as stale, sessions() as writer:
+        original = await stale.get(User, user_id)
+        current = await writer.get(User, user_id)
+        assert original is not None and current is not None
+        proposal = _proposal(original, status=initial_status, verified_at=datetime(2026, 9, 17, tzinfo=UTC))
+        if changed_field == "status":
+            current.subscription_status = "premium"
+        elif changed_field == "expiry":
+            current.subscription_expires_at = datetime(2026, 10, 1, tzinfo=UTC)
+        elif changed_field == "verified":
+            current.subscription_verified_at = datetime(2026, 9, 1, tzinfo=UTC)
+        else:
+            current.settings = {"subscription": {"product_id": "current"}}
+        await writer.commit()
+        assert (await apply_reconciliation(stale, proposal)).outcome == "conflict"
+        await stale.rollback()
+    async with sessions() as check:
+        current = await check.get(User, user_id)
+        assert current is not None
+        if changed_field == "status":
+            assert current.subscription_status == "premium"
+        elif changed_field == "expiry":
+            assert current.subscription_expires_at == datetime(2026, 10, 1, tzinfo=UTC)
+        elif changed_field == "verified":
+            assert current.subscription_verified_at == datetime(2026, 9, 1, tzinfo=UTC)
+        else:
+            assert current.settings == {"subscription": {"product_id": "current"}}
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("deleted", [False, True])
+async def test_apply_reconciliation_conflicts_for_missing_or_deleted_user(async_engine, deleted: bool) -> None:
+    """A disappeared user is a conflict and never recreated or overwritten."""
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    user_id = uuid4()
+    async with sessions() as setup:
+        await setup.execute(text("DELETE FROM users"))
+        if deleted:
+            user = User(id=user_id, email="deleted-proposal@example.com", password_hash="test_hash", deleted_at=datetime.now(UTC))
+            setup.add(user)
+            await setup.commit()
+    proposal_user = User(id=user_id, email="proposal@example.com", password_hash="test_hash", settings={})
+    proposal = _proposal(proposal_user, status="premium", verified_at=datetime(2026, 9, 17, tzinfo=UTC))
+    async with sessions() as session:
+        assert (await apply_reconciliation(session, proposal)).outcome == "conflict"
+        await session.rollback()
+    async with sessions() as check:
+        current = await check.get(User, user_id)
+        assert (current is None) if not deleted else (current is not None and current.deleted_at is not None)
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_reconcile_user_does_not_lock_during_provider_wait_and_returns_503_on_conflict(async_engine) -> None:
     """A concurrent apply completes while HTTP waits, then the stale wrapper reports retryable conflict."""
     sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
