@@ -111,6 +111,43 @@ async def test_due_snapshot_uses_cadence_boundaries(async_session: AsyncSession)
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_due_snapshot_orders_null_then_oldest_then_uuid_and_covers_daily_rows(async_session: AsyncSession):
+    """Cadence keeps unverified/free/lifetime/far-future rows daily and orders deterministically."""
+    from app.jobs import subscription_jobs
+
+    await cleanup_subscription_data(async_session)
+    now = datetime.now(UTC)
+    null_low = User(id=uuid.UUID(int=1), email="null-low@example.com", password_hash="x")
+    null_high = User(id=uuid.UUID(int=2), email="null-high@example.com", password_hash="x")
+    daily_free = User(id=uuid.UUID(int=3), email="daily-free@example.com", password_hash="x")
+    daily_free.subscription_verified_at = now - timedelta(days=1, microseconds=1)
+    lifetime = User(id=uuid.UUID(int=4), email="lifetime@example.com", password_hash="x", subscription_status="premium")
+    lifetime.subscription_verified_at = now - timedelta(days=1, microseconds=1)
+    far = User(
+        id=uuid.UUID(int=5),
+        email="far@example.com",
+        password_hash="x",
+        subscription_status="premium",
+        subscription_expires_at=now + timedelta(days=10),
+    )
+    far.subscription_verified_at = now - timedelta(days=1, microseconds=1)
+    past = User(
+        id=uuid.UUID(int=6),
+        email="past@example.com",
+        password_hash="x",
+        subscription_status="premium",
+        subscription_expires_at=now - timedelta(seconds=1),
+    )
+    past.subscription_verified_at = now - timedelta(hours=1, microseconds=1)
+    async_session.add_all([null_high, far, daily_free, null_low, lifetime, past])
+    await async_session.commit()
+    with patch("app.jobs.subscription_jobs.async_session_maker", return_value=async_session):
+        ids = await subscription_jobs._due_subscription_user_ids(now, ())
+
+    assert ids == [null_low.id, null_high.id, daily_free.id, lifetime.id, far.id, past.id]
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_explicit_user_ids_bypass_cadence_and_deduplicate():
     """A scoped recovery never falls back to a sweep."""
     from app.jobs.subscription_jobs import _due_subscription_user_ids

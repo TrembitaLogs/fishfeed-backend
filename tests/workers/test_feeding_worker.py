@@ -75,7 +75,7 @@ def test_dry_run_cannot_run_other_jobs():
         (["--user-id", "11111111-1111-4111-8111-111111111111"], "require --run-once"),
     ],
 )
-def test_main_rejects_unsafe_subscription_flags_before_async_startup(argv, message):
+def test_main_rejects_unsafe_subscription_flags_before_async_startup(argv, message, capsys):
     """Validation errors cannot initialize Redis or invoke a job."""
     from app.workers import feeding_worker
 
@@ -87,6 +87,7 @@ def test_main_rejects_unsafe_subscription_flags_before_async_startup(argv, messa
         feeding_worker.main()
 
     assert exit_info.value.code == 2
+    assert message in capsys.readouterr().err
     run.assert_not_called()
 
 
