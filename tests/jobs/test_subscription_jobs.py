@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.aquarium import Aquarium, AquariumMember
@@ -246,6 +246,91 @@ async def test_explicit_unknown_or_deleted_ids_are_skipped_by_worker():
         assert await subscription_jobs.check_expired_subscriptions_job(user_ids=(unknown, deleted)) == 0
 
     assert [call.args[2] for call in reconcile.await_args_list] == [unknown, deleted]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("before_status", "before_expiry", "snapshot_status", "snapshot_expiry"),
+    [
+        ("premium", None, "premium", None),
+        ("free", None, "premium", None),
+        ("premium", timedelta(days=30), "free", None),
+    ],
+)
+async def test_apply_reconciliation_real_session_handles_legacy_grant_and_refund(
+    async_session: AsyncSession,
+    before_status: str,
+    before_expiry: timedelta | None,
+    snapshot_status: str,
+    snapshot_expiry: datetime | None,
+):
+    """The shared apply path corrects legacy, missed grant, and refunded-local states."""
+    from app.services.purchase import apply_reconciliation
+
+    await cleanup_subscription_data(async_session)
+    user = await create_test_user(
+        async_session,
+        subscription_status=before_status,
+        subscription_expires_at=(datetime.now(UTC) + before_expiry if before_expiry else None),
+    )
+    proposal = Reconciliation(
+        user_id=user.id,
+        before_status=user.subscription_status,
+        before_expires_at=user.subscription_expires_at,
+        before_verified_at=None,
+        before_subscription={},
+        snapshot=SubscriptionSnapshot(snapshot_status, snapshot_expiry, "premium.lifetime", False, False),
+        verified_at=datetime.now(UTC),
+        outcome="changed" if before_status != snapshot_status or before_expiry else "unchanged",
+    )
+    result = await apply_reconciliation(async_session, proposal)
+    await async_session.commit()
+    await async_session.refresh(user)
+
+    assert result.outcome in {"changed", "unchanged"}
+    assert user.subscription_status == snapshot_status
+    assert user.subscription_expires_at == snapshot_expiry
+    assert user.subscription_verified_at is not None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_dry_run_real_session_preserves_user_settings_and_audit(async_engine):
+    """Dry-run proposals do not alter real local projection/audit state or write Redis."""
+    from app.jobs import subscription_jobs
+    from app.models.purchase import WebhookTransaction
+
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as setup:
+        await cleanup_subscription_data(setup)
+        user = await create_test_user(setup, subscription_status="free")
+        user.settings = {"keep": "value"}
+        await setup.commit()
+        user_id = user.id
+        before_audits = await setup.scalar(select(func.count()).select_from(WebhookTransaction))
+    proposal = Reconciliation(
+        user_id=user_id,
+        before_status="free",
+        before_expires_at=None,
+        before_verified_at=None,
+        before_subscription={},
+        snapshot=SubscriptionSnapshot("premium", None, "premium.lifetime", False, False),
+        verified_at=datetime.now(UTC),
+        outcome="changed",
+    )
+    redis = MagicMock()
+    with (
+        patch("app.jobs.subscription_jobs.async_session_maker", sessions),
+        patch("app.redis.get_redis_client", return_value=redis),
+        patch("app.jobs.subscription_jobs.read_reconciliation", new=AsyncMock(return_value=proposal)),
+    ):
+        assert await subscription_jobs.check_expired_subscriptions_job(dry_run=True, user_ids=(user_id,)) == 1
+
+    async with sessions() as observer:
+        current = await observer.get(User, user_id)
+        assert current is not None and current.subscription_status == "free" and current.settings == {"keep": "value"}
+        assert await observer.scalar(select(func.count()).select_from(WebhookTransaction)) == before_audits
+    redis.set.assert_not_called()
+    redis.execute_command.assert_not_called()
 
 
 @pytest.mark.asyncio(loop_scope="session")
