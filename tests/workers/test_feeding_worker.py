@@ -1,5 +1,7 @@
 """Tests for feeding worker background jobs."""
 
+import subprocess
+import sys
 import uuid
 from datetime import date
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -51,6 +53,19 @@ async def create_streak(
 # run_once tests
 
 
+def test_dry_run_cannot_run_other_jobs():
+    """Scoped recovery flags must be rejected before worker startup."""
+    result = subprocess.run(
+        [sys.executable, "-m", "app.workers.feeding_worker", "--run-once", "--dry-run"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "--job=check_subscriptions" in result.stderr
+
+
 @pytest.mark.asyncio(loop_scope="session")
 async def test_run_once_runs_all_jobs():
     """Test run_once executes all jobs when no specific job is specified."""
@@ -60,7 +75,9 @@ async def test_run_once_runs_all_jobs():
         patch("app.workers.feeding_worker.weekly_summary_job", new_callable=AsyncMock, return_value=0),
         patch("app.workers.feeding_worker.re_engagement_job", new_callable=AsyncMock, return_value=0),
         patch("app.workers.feeding_worker.check_expired_subscriptions_job", new_callable=AsyncMock, return_value=0),
-        patch("app.workers.feeding_worker.analytics_cleanup_job", new_callable=AsyncMock, return_value=0) as mock_analytics,
+        patch(
+            "app.workers.feeding_worker.analytics_cleanup_job", new_callable=AsyncMock, return_value=0
+        ) as mock_analytics,
         patch("app.workers.feeding_worker.image_cleanup_job", new_callable=AsyncMock, return_value={}),
         patch("app.workers.feeding_worker.s3_reconciliation_job", new_callable=AsyncMock, return_value={}),
     ):
@@ -75,7 +92,9 @@ async def test_run_once_runs_specific_job():
 
     with (
         patch("app.workers.feeding_worker.weekly_summary_job", new_callable=AsyncMock, return_value=0) as mock_weekly,
-        patch("app.workers.feeding_worker.analytics_cleanup_job", new_callable=AsyncMock, return_value=0) as mock_analytics,
+        patch(
+            "app.workers.feeding_worker.analytics_cleanup_job", new_callable=AsyncMock, return_value=0
+        ) as mock_analytics,
     ):
         await run_once(job_name="analytics_cleanup")
         mock_analytics.assert_called_once()
@@ -147,6 +166,41 @@ async def test_run_once_unknown_job():
     await run_once(job_name="nonexistent_job")
 
 
+@pytest.mark.asyncio(loop_scope="session")
+async def test_run_once_reraises_subscription_error_for_all_jobs():
+    """Subscription recovery failures make a one-shot process fail even in all-jobs mode."""
+    from app.workers.feeding_worker import run_once
+
+    with (
+        patch("app.workers.feeding_worker.weekly_summary_job", new_callable=AsyncMock, return_value=0),
+        patch("app.workers.feeding_worker.re_engagement_job", new_callable=AsyncMock, return_value=0),
+        patch(
+            "app.workers.feeding_worker.check_expired_subscriptions_job",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("incomplete reconciliation"),
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="incomplete"):
+            await run_once()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_standalone_worker_initializes_and_closes_redis_once():
+    """The worker owns Redis because it does not run the FastAPI lifespan."""
+    from app.workers.feeding_worker import _run_with_redis
+
+    operation = AsyncMock()
+    with (
+        patch("app.redis.init_redis", new_callable=AsyncMock) as init_redis,
+        patch("app.redis.close_redis", new_callable=AsyncMock) as close_redis,
+    ):
+        await _run_with_redis(operation)
+
+    init_redis.assert_awaited_once()
+    operation.assert_awaited_once()
+    close_redis.assert_awaited_once()
+
+
 # Scheduler startup tests
 
 
@@ -169,9 +223,7 @@ async def test_start_scheduler_registers_all_jobs():
         mock_scheduler.start_in_background = AsyncMock()
 
         with (
-            patch.object(
-                feeding_worker, "AsyncScheduler", return_value=mock_scheduler
-            ),
+            patch.object(feeding_worker, "AsyncScheduler", return_value=mock_scheduler),
             patch.object(feeding_worker, "SQLAlchemyDataStore"),
             patch.object(feeding_worker, "AsyncpgEventBroker"),
         ):
@@ -181,10 +233,7 @@ async def test_start_scheduler_registers_all_jobs():
             assert mock_scheduler.add_schedule.call_count == 7
 
             # Verify all expected jobs are registered
-            job_ids = [
-                call.kwargs["id"]
-                for call in mock_scheduler.add_schedule.call_args_list
-            ]
+            job_ids = [call.kwargs["id"] for call in mock_scheduler.add_schedule.call_args_list]
             assert "image_cleanup" in job_ids
             assert "s3_reconciliation" in job_ids
             assert "backup_database" in job_ids
@@ -215,19 +264,14 @@ async def test_start_scheduler_image_cleanup_cron_triggers():
         mock_scheduler.start_in_background = AsyncMock()
 
         with (
-            patch.object(
-                feeding_worker, "AsyncScheduler", return_value=mock_scheduler
-            ),
+            patch.object(feeding_worker, "AsyncScheduler", return_value=mock_scheduler),
             patch.object(feeding_worker, "SQLAlchemyDataStore"),
             patch.object(feeding_worker, "AsyncpgEventBroker"),
         ):
             await feeding_worker.start_scheduler()
 
             # Build a map of job_id → trigger for easy lookup
-            schedule_calls = {
-                call.kwargs["id"]: call.args[1]
-                for call in mock_scheduler.add_schedule.call_args_list
-            }
+            schedule_calls = {call.kwargs["id"]: call.args[1] for call in mock_scheduler.add_schedule.call_args_list}
 
             # image_cleanup: daily at 04:00 UTC
             cleanup_trigger = schedule_calls["image_cleanup"]
@@ -263,9 +307,7 @@ async def test_start_scheduler_calls_start_in_background():
         mock_scheduler.start_in_background = AsyncMock()
 
         with (
-            patch.object(
-                feeding_worker, "AsyncScheduler", return_value=mock_scheduler
-            ),
+            patch.object(feeding_worker, "AsyncScheduler", return_value=mock_scheduler),
             patch.object(feeding_worker, "SQLAlchemyDataStore"),
             patch.object(feeding_worker, "AsyncpgEventBroker"),
         ):
