@@ -248,6 +248,22 @@ async def test_run_once_reraises_subscription_error_for_explicit_job():
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_run_once_forwards_scoped_dry_run_user_ids_to_subscription_job():
+    """The CLI dispatch target receives the exact scoped recovery arguments."""
+    from app.workers.feeding_worker import run_once
+
+    user_ids = (uuid.uuid4(), uuid.uuid4())
+    with patch(
+        "app.workers.feeding_worker.check_expired_subscriptions_job",
+        new_callable=AsyncMock,
+        return_value=2,
+    ) as job:
+        await run_once("check_subscriptions", dry_run=True, user_ids=user_ids)
+
+    job.assert_awaited_once_with(dry_run=True, user_ids=user_ids)
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_standalone_worker_initializes_and_closes_redis_once():
     """The worker owns Redis because it does not run the FastAPI lifespan."""
     from app.workers.feeding_worker import _run_with_redis

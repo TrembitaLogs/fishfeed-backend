@@ -208,6 +208,43 @@ def test_fatal_provider_classification_is_metadata_based(error):
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_fixed_snapshot_batches_every_id_once_when_eligibility_changes():
+    """Batch processing slices one captured list and never reselects newly due rows."""
+    from app.jobs import subscription_jobs
+
+    ids = tuple(uuid.uuid4() for _ in range(subscription_jobs.settings.SUBSCRIPTION_BATCH_SIZE + 1))
+    seen: list[uuid.UUID] = []
+    db = MagicMock()
+    db.__aenter__ = AsyncMock(return_value=db)
+    db.__aexit__ = AsyncMock(return_value=None)
+    db.commit = AsyncMock()
+
+    async def reconcile(_db, _redis, user_id):
+        seen.append(user_id)
+        return Reconciliation(
+            user_id=user_id,
+            before_status="free",
+            before_expires_at=None,
+            before_verified_at=None,
+            before_subscription={},
+            snapshot=SubscriptionSnapshot("free", None, None, False, False),
+            verified_at=datetime.now(UTC),
+            outcome="unchanged",
+        )
+
+    with (
+        patch("app.jobs.subscription_jobs._due_subscription_user_ids", new=AsyncMock(return_value=list(ids))),
+        patch("app.jobs.subscription_jobs.async_session_maker", return_value=db),
+        patch("app.redis.get_redis_client", return_value=MagicMock()),
+        patch("app.jobs.subscription_jobs.reconcile_user", side_effect=reconcile),
+        patch("app.jobs.subscription_jobs.invalidate_premium_cache", new=AsyncMock()),
+    ):
+        assert await subscription_jobs.check_expired_subscriptions_job() == len(ids)
+
+    assert seen == list(ids)
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_dry_run_reads_only_and_aborts_on_unexpected_creation(capsys):
     """Dry-run never reaches apply, commit, cache invalidation, or notification I/O."""
     from app.jobs import subscription_jobs
