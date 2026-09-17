@@ -747,7 +747,10 @@ async def test_cooldown_lua_retains_a_longer_existing_ttl(redis_client) -> None:
     """The actual Redis Lua script must never shorten a cross-trigger cooldown."""
     await redis_client.set(_RECONCILIATION_COOLDOWN_KEY, "1", ex=2000)
     try:
-        await redis_client.execute_command("EVAL", _COOLDOWN_SCRIPT, 1, _RECONCILIATION_COOLDOWN_KEY, 120)
+        retained_ttl = await redis_client.execute_command(
+            "EVAL", _COOLDOWN_SCRIPT, 1, _RECONCILIATION_COOLDOWN_KEY, 120
+        )
+        assert retained_ttl > 1900
         assert await redis_client.ttl(_RECONCILIATION_COOLDOWN_KEY) > 1900
     finally:
         await redis_client.delete(_RECONCILIATION_COOLDOWN_KEY)
