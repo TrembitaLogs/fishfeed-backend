@@ -1,5 +1,6 @@
-"""Webhook route regressions for authenticated reconciliation."""
+"""Purchase endpoint regressions and authenticated webhook reconciliation."""
 
+from asyncio import CancelledError
 from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -10,10 +11,11 @@ import pytest
 from httpx import AsyncClient
 from redis.exceptions import RedisError
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.purchase import WebhookTransaction
 from app.models.user import User
+from app.schemas.purchase import SubscriptionStatus
 from app.services.purchase import (
     PurchaseError,
     Reconciliation,
@@ -360,6 +362,43 @@ async def test_error_audit_unique_conflict_rereads_the_committed_winner(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_error_audit_normal_terminal_winner_is_acknowledged(client: AsyncClient, async_session: AsyncSession):
+    await clear_webhooks(async_session)
+    event_id = "error-audit-normal-winner"
+    try:
+        record = await webhook_user(async_session)
+        async_session.add(
+            WebhookTransaction(
+                transaction_id=event_id,
+                event_type="INITIAL_PURCHASE",
+                user_id=str(record.id),
+                payload={"event": {"id": event_id}},
+                processing_result="success",
+            )
+        )
+        await async_session.commit()
+        with (
+            patch("app.api.purchase.get_settings", return_value=settings()),
+            patch("app.api.purchase.check_idempotency", new=AsyncMock(return_value=(False, ("unused", "token")))),
+            patch("app.api.purchase.process_webhook", new=AsyncMock(side_effect=RevenueCatAPIError("provider failed"))),
+        ):
+            response = await client.post(
+                "/api/v1/purchases/webhook",
+                json=payload(str(record.id), event_id),
+                headers={"Authorization": "secret"},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["message"] == "Already processed"
+        winner = await async_session.scalar(
+            select(WebhookTransaction).where(WebhookTransaction.transaction_id == event_id)
+        )
+        assert winner is not None and winner.processing_result == "success"
+    finally:
+        await clear_webhooks(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_unsupported_app_environment_returns_503_without_remove_ads_write(
     client: AsyncClient, async_session: AsyncSession
 ):
@@ -392,23 +431,150 @@ async def test_unsupported_app_environment_returns_503_without_remove_ads_write(
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_cancellation_rolls_back_without_an_audit(client: AsyncClient, async_session: AsyncSession):
-    import asyncio
-
+async def test_transfer_cancellation_rolls_back_partial_projection_and_audit(
+    client: AsyncClient, async_session: AsyncSession, async_engine
+):
     await clear_webhooks(async_session)
     try:
-        record = await webhook_user(async_session)
+        first, second = await webhook_user(async_session), await webhook_user(async_session)
+        proposals = [
+            Reconciliation(
+                user_id=user_id,
+                before_status="free",
+                before_expires_at=None,
+                before_verified_at=None,
+                before_subscription={},
+                snapshot=SubscriptionSnapshot("premium", None, "premium.transfer", False, False),
+                verified_at=datetime.now(UTC),
+                outcome="changed",
+            )
+            for user_id in sorted([first.id, second.id], key=str)
+        ]
+        applies = 0
+
+        async def apply_then_cancel(db: AsyncSession, candidate: Reconciliation) -> Reconciliation:
+            nonlocal applies
+            applies += 1
+            if applies == 2:
+                raise CancelledError
+            return await apply_reconciliation(db, candidate)
+
+        transfer = {
+            "event": {
+                "id": "cancelled-transfer",
+                "type": "TRANSFER",
+                "transferred_from": [str(first.id)],
+                "transferred_to": [str(second.id)],
+                "environment": "PRODUCTION",
+            }
+        }
         with (
             patch("app.api.purchase.get_settings", return_value=settings()),
-            patch("app.api.purchase.process_webhook", new=AsyncMock(side_effect=asyncio.CancelledError)),
-            pytest.raises(asyncio.CancelledError),
+            patch("app.services.purchase.get_settings", return_value=settings()),
+            patch("app.services.purchase.read_reconciliation", new=AsyncMock(side_effect=proposals)),
+            patch("app.services.purchase.apply_reconciliation", side_effect=apply_then_cancel),
+            pytest.raises(CancelledError),
         ):
             await client.post(
                 "/api/v1/purchases/webhook",
-                json=payload(str(record.id), "cancelled-event"),
+                json=transfer,
                 headers={"Authorization": "secret"},
             )
+        sessions = async_sessionmaker(async_engine, expire_on_commit=False)
+        async with sessions() as verify:
+            statuses = list(
+                (await verify.scalars(select(User.subscription_status).where(User.id.in_([first.id, second.id])))).all()
+            )
+            audit = await verify.scalar(
+                select(WebhookTransaction).where(WebhookTransaction.transaction_id == "cancelled-transfer")
+            )
+        assert statuses == ["free", "free"]
+        assert audit is None
+    finally:
+        await clear_webhooks(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_invalid_payload_commits_error_audit_and_returns_200(client: AsyncClient, async_session: AsyncSession):
+    await clear_webhooks(async_session)
+    try:
+        with patch("app.api.purchase.get_settings", return_value=settings(secret=None)):
+            response = await client.post("/api/v1/purchases/webhook", content=b'{"invalid": nope}')
+
+        assert response.status_code == 200
+        assert response.json()["success"] is False
+        audit = await async_session.scalar(
+            select(WebhookTransaction).where(WebhookTransaction.event_type == "PARSE_ERROR")
+        )
+        assert audit is not None and audit.processing_result == "error"
+        assert audit.error_message is not None and "Failed to parse" in audit.error_message
+    finally:
+        await clear_webhooks(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_invalid_payload_returns_503_when_mandatory_audit_fails(client: AsyncClient, async_session: AsyncSession):
+    from sqlalchemy.exc import SQLAlchemyError
+
+    await clear_webhooks(async_session)
+    try:
+        with (
+            patch("app.api.purchase.get_settings", return_value=settings(secret=None)),
+            patch(
+                "app.api.purchase.log_webhook_transaction", new=AsyncMock(side_effect=SQLAlchemyError("audit failed"))
+            ),
+        ):
+            response = await client.post("/api/v1/purchases/webhook", content=b'{"invalid": nope}')
+
+        assert response.status_code == 503
         assert await async_session.scalar(select(WebhookTransaction)) is None
+    finally:
+        await clear_webhooks(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_subscription_endpoint_requires_authentication(client: AsyncClient):
+    response = await client.get("/api/v1/purchases/subscription")
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_subscription_endpoint_returns_current_status(client: AsyncClient, async_session: AsyncSession):
+    await clear_webhooks(async_session)
+    try:
+        record = await webhook_user(async_session)
+        record.subscription_status = "premium"
+        record.subscription_expires_at = datetime.now(UTC)
+        await async_session.commit()
+        from app.utils.jwt import create_access_token
+
+        response = await client.get(
+            "/api/v1/purchases/subscription",
+            headers={"Authorization": f"Bearer {create_access_token(str(record.id))}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "premium"
+    finally:
+        await clear_webhooks(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_restore_endpoint_delegates_for_current_user(client: AsyncClient, async_session: AsyncSession):
+    await clear_webhooks(async_session)
+    try:
+        record = await webhook_user(async_session)
+        from app.utils.jwt import create_access_token
+
+        restored = SubscriptionStatus(status="premium", product_id="premium.monthly", will_renew=True)
+        with patch("app.api.purchase.restore_purchases", new=AsyncMock(return_value=restored)) as restore:
+            response = await client.post(
+                "/api/v1/purchases/restore",
+                json={"user_id": str(record.id), "receipt": "receipt", "platform": "ios"},
+                headers={"Authorization": f"Bearer {create_access_token(str(record.id))}"},
+            )
+        assert response.status_code == 200
+        assert response.json()["product_id"] == "premium.monthly"
+        restore.assert_awaited_once()
     finally:
         await clear_webhooks(async_session)
 

@@ -119,7 +119,7 @@ async def handle_webhook(
         if lock_handle is None:
             return None, False
         try:
-            await log_webhook_transaction(
+            audit = await log_webhook_transaction(
                 db,
                 transaction_id,
                 event_data.type,
@@ -130,6 +130,8 @@ async def handle_webhook(
                 message,
             )
             await db.commit()
+            if audit.processing_result in {"success", "skipped"}:
+                return WebhookResponse(success=True, message="Already processed"), False
             return None, False
         except WebhookAuditConflict:
             await db.rollback()
