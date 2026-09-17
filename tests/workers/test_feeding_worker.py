@@ -273,16 +273,13 @@ async def test_run_once_reraises_subscription_error_for_all_jobs():
         with pytest.raises(RevenueCatAPIError):
             await run_once()
 
-    kwargs = error_log.call_args.kwargs
-    assert kwargs == {
-        "job_name": "check_expired_subscriptions",
-        "error_type": "RevenueCatAPIError",
-        "upstream_status": 429,
-        "retry_after_seconds": 42,
-    }
-    logged = str(error_log.call_args).lower()
-    assert "key=secret" not in logged and "payload=hidden" not in logged and "traceback" not in logged
-    assert not any(isinstance(value, BaseException) for value in (*error_log.call_args.args, *kwargs.values()))
+    error_log.assert_called_once_with(
+        "Subscription job failed",
+        job_name="check_expired_subscriptions",
+        error_type="RevenueCatAPIError",
+        upstream_status=429,
+        retry_after_seconds=42,
+    )
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -301,16 +298,13 @@ async def test_run_once_reraises_subscription_error_for_explicit_job():
         with pytest.raises(RevenueCatAPIError):
             await run_once(job_name="check_subscriptions")
 
-    kwargs = error_log.call_args.kwargs
-    assert kwargs == {
-        "job_name": "check_expired_subscriptions",
-        "error_type": "RevenueCatAPIError",
-        "upstream_status": None,
-        "retry_after_seconds": None,
-    }
-    logged = str(error_log.call_args).lower()
-    assert "private@example.com" not in logged and "key=secret" not in logged and "traceback" not in logged
-    assert not any(isinstance(value, BaseException) for value in (*error_log.call_args.args, *kwargs.values()))
+    error_log.assert_called_once_with(
+        "Subscription job failed",
+        job_name="check_expired_subscriptions",
+        error_type="RevenueCatAPIError",
+        upstream_status=None,
+        retry_after_seconds=None,
+    )
 
 
 @pytest.mark.asyncio(loop_scope="session")
