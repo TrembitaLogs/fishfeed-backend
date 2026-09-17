@@ -19,7 +19,12 @@ router = APIRouter(prefix="/users", tags=["admin-subscriptions"])
     response_model=SubscriptionResponse,
     summary="Update user subscription",
     description="Subscription grants and revocations are managed in RevenueCat.",
-    responses={409: {"description": "Manage premium grants and revocations in RevenueCat"}},
+    responses={
+        409: {
+            "description": "Manage premium grants and revocations in RevenueCat",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}},
+        }
+    },
 )
 async def update_user_subscription(
     user_id: UUID,

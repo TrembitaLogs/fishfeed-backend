@@ -54,6 +54,7 @@ BASE_URL = "/api/v1/admin/users"
 def test_grant_premium_openapi_declares_revenuecat_conflict(app) -> None:
     responses = app.openapi()["paths"]["/api/v1/admin/users/{user_id}/grant-premium"]["post"]["responses"]
     assert responses["409"]["description"] == "Manage premium grants and revocations in RevenueCat"
+    assert responses["409"]["content"]["application/json"]["schema"] == {"$ref": "#/components/schemas/ErrorResponse"}
 
 
 @pytest.mark.asyncio(loop_scope="session")

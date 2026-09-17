@@ -29,6 +29,19 @@ from app.services.purchase import (
 )
 
 
+def test_purchase_openapi_declares_reconciliation_errors(app) -> None:
+    """Webhook and restore provider failures use the shared error envelope."""
+    schema = app.openapi()
+    webhook_responses = schema["paths"]["/api/v1/purchases/webhook"]["post"]["responses"]
+    restore_responses = schema["paths"]["/api/v1/purchases/restore"]["post"]["responses"]
+
+    for responses in (webhook_responses, restore_responses):
+        for status_code in ("502", "503"):
+            assert responses[status_code]["content"]["application/json"]["schema"] == {
+                "$ref": "#/components/schemas/ErrorResponse"
+            }
+
+
 async def clear_webhooks(session: AsyncSession) -> None:
     await session.execute(text("TRUNCATE TABLE webhook_transactions, users CASCADE"))
     await session.commit()

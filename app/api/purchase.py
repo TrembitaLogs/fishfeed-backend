@@ -44,7 +44,20 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/purchases", tags=["purchases"])
 
 
-@router.post("/webhook", response_model=WebhookResponse)
+@router.post(
+    "/webhook",
+    response_model=WebhookResponse,
+    responses={
+        502: {
+            "description": "RevenueCat provider error",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}},
+        },
+        503: {
+            "description": "Webhook processing is temporarily unavailable",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}},
+        },
+    },
+)
 async def handle_webhook(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -67,7 +80,7 @@ async def handle_webhook(
     - Implements idempotency to handle duplicate webhooks
     - Uses Redis lock for race condition protection
 
-    Note: Always returns 200 OK on accepted events to prevent RevenueCat retries.
+    Accepted events return 200; retryable provider and storage failures return 502 or 503.
     Auth failures return 401 so RevenueCat retries (or surfaces) the misconfiguration.
     """
     settings = get_settings()
@@ -225,8 +238,14 @@ async def handle_webhook(
     response_model=SubscriptionStatus,
     responses={
         400: {"description": "Invalid receipt"},
-        502: {"description": "RevenueCat provider error"},
-        503: {"description": "Subscription reconciliation conflict"},
+        502: {
+            "description": "RevenueCat provider error",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}},
+        },
+        503: {
+            "description": "Subscription reconciliation conflict",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}},
+        },
     },
 )
 async def restore_user_purchases(

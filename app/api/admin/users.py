@@ -85,7 +85,12 @@ async def reset_scans(
     response_model=UserActionResponse,
     summary="Grant premium subscription",
     description="Premium grants and revocations are managed in RevenueCat.",
-    responses={409: {"description": "Manage premium grants and revocations in RevenueCat"}},
+    responses={
+        409: {
+            "description": "Manage premium grants and revocations in RevenueCat",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}},
+        }
+    },
 )
 async def grant_premium_endpoint(
     user_id: UUID,
