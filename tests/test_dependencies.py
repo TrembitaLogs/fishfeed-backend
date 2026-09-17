@@ -249,13 +249,31 @@ class TestCheckAIScanRateLimit:
     """Tests for the AI scan rate-limit dependency."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("status", ["free", "expired", "cancelled"])
-    async def test_nonpremium_status_uses_finite_rate_limit(self, status: str):
-        """Test inactive subscription statuses do not bypass the AI rate limit."""
+    @pytest.mark.parametrize(
+        ("status", "expires_in_days", "expected_remaining"),
+        [
+            ("free", None, 10),
+            ("expired", None, 10),
+            ("cancelled", None, 10),
+            ("premium", -1, 10),
+            ("premium", 1, -1),
+        ],
+    )
+    async def test_rate_limit_uses_active_subscription_policy(
+        self,
+        status: str,
+        expires_in_days: int | None,
+        expected_remaining: int,
+    ):
+        """Test only active premium subscriptions bypass the AI rate limit."""
         user = MagicMock(spec=User)
         user.id = uuid4()
         user.subscription_status = status
-        user.subscription_expires_at = None
+        user.subscription_expires_at = (
+            datetime.now(UTC) + timedelta(days=expires_in_days)
+            if expires_in_days is not None
+            else None
+        )
         redis = AsyncMock()
         redis.get.return_value = None
         response = Response()
@@ -266,8 +284,11 @@ class TestCheckAIScanRateLimit:
             response=response,
         )
 
-        assert result.remaining == 10
-        assert response.headers["X-RateLimit-Limit"] == "10"
+        assert result.remaining == expected_remaining
+        if expected_remaining >= 0:
+            assert response.headers["X-RateLimit-Limit"] == "10"
+        else:
+            assert "X-RateLimit-Limit" not in response.headers
 
 
 class TestCheckImageUploadRateLimit:
