@@ -1,12 +1,18 @@
 """Purchase service for RevenueCat webhook processing and subscription management."""
 
 import hmac
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
+from math import ceil
+from typing import Literal
+from urllib.parse import quote
 from uuid import UUID
 
 import httpx
 import structlog
 from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -48,8 +54,16 @@ class InvalidReceiptError(PurchaseError):
 class RevenueCatAPIError(PurchaseError):
     """Raised when RevenueCat API call fails."""
 
-    def __init__(self, message: str = "RevenueCat API error"):
+    def __init__(
+        self,
+        message: str = "RevenueCat API error",
+        *,
+        upstream_status: int | None = None,
+        retry_after_seconds: int | None = None,
+    ) -> None:
         super().__init__(message, status_code=502)
+        self.upstream_status = upstream_status
+        self.retry_after_seconds = retry_after_seconds
 
 
 class RevenueCatNotConfiguredError(PurchaseError):
@@ -71,6 +85,312 @@ class DuplicateWebhookError(PurchaseError):
 
     def __init__(self, transaction_id: str):
         super().__init__(f"Duplicate webhook: {transaction_id}", status_code=200)
+
+
+@dataclass(frozen=True)
+class SubscriptionSnapshot:
+    """Validated premium evidence returned by RevenueCat v1."""
+
+    status: Literal["free", "premium"]
+    expires_at: datetime | None
+    product_id: str | None
+    will_renew: bool
+    is_trial: bool
+
+
+@dataclass(frozen=True)
+class Reconciliation:
+    """An immutable read proposal for a later transactional apply."""
+
+    user_id: UUID
+    before_status: str
+    before_expires_at: datetime | None
+    before_verified_at: datetime | None
+    before_subscription: dict[str, object]
+    snapshot: SubscriptionSnapshot
+    verified_at: datetime
+    outcome: Literal["changed", "unchanged", "conflict"]
+
+
+_RECONCILIATION_COOLDOWN_KEY = "revenuecat:reconcile:cooldown"
+_COOLDOWN_SCRIPT = """
+local current = redis.call('TTL', KEYS[1])
+if current < ARGV[1] then
+  redis.call('SET', KEYS[1], '1', 'EX', ARGV[1])
+end
+return redis.call('TTL', KEYS[1])
+"""
+
+
+def _as_dict(value: object, field: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise RevenueCatAPIError(f"RevenueCat response has invalid {field}")
+    return value
+
+
+def _required_string(record: dict[str, object], field: str) -> str:
+    value = record.get(field)
+    if not isinstance(value, str) or not value:
+        raise RevenueCatAPIError(f"RevenueCat response has invalid {field}")
+    return value
+
+
+def _datetime_value(record: dict[str, object], field: str, *, required: bool = False) -> datetime | None:
+    if field not in record:
+        if required:
+            raise RevenueCatAPIError(f"RevenueCat response is missing {field}")
+        return None
+    value = record[field]
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise RevenueCatAPIError(f"RevenueCat response has invalid {field}")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise RevenueCatAPIError(f"RevenueCat response has invalid {field}") from error
+    if parsed.tzinfo is None:
+        raise RevenueCatAPIError(f"RevenueCat response has timezone-naive {field}")
+    return parsed.astimezone(UTC)
+
+
+def _effective_expiry(expires_at: datetime | None, grace_at: datetime | None) -> datetime | None:
+    if expires_at is None:
+        return None
+    return max(expires_at, grace_at) if grace_at is not None else expires_at
+
+
+def _free_snapshot() -> SubscriptionSnapshot:
+    return SubscriptionSnapshot(status="free", expires_at=None, product_id=None, will_renew=False, is_trial=False)
+
+
+def _parse_candidate(
+    source: dict[str, object],
+    *,
+    product_id: str,
+    purchase_at: datetime,
+    entitlement_expires_at: datetime | None,
+    entitlement_grace_at: datetime | None,
+    is_subscription: bool,
+) -> tuple[bool, datetime | None, bool, bool, bool] | None:
+    if "is_sandbox" not in source or not isinstance(source["is_sandbox"], bool):
+        raise RevenueCatAPIError("RevenueCat response has invalid is_sandbox")
+    _required_string(source, "store")
+    period_type = _required_string(source, "period_type") if is_subscription else source.get("period_type", "normal")
+    if not isinstance(period_type, str):
+        raise RevenueCatAPIError("RevenueCat response has invalid period_type")
+    if "product_identifier" in source and source["product_identifier"] != product_id:
+        raise RevenueCatAPIError("RevenueCat response has inconsistent product identity")
+    if _datetime_value(source, "purchase_date", required=True) != purchase_at:
+        return None
+
+    source_expires_at = _datetime_value(source, "expires_date", required=is_subscription)
+    source_grace_at = _datetime_value(source, "grace_period_expires_date")
+    if "expires_date" in source and source_expires_at != entitlement_expires_at:
+        raise RevenueCatAPIError("RevenueCat response has inconsistent expiry")
+    if "grace_period_expires_date" in source and source_grace_at != entitlement_grace_at:
+        raise RevenueCatAPIError("RevenueCat response has inconsistent grace expiry")
+
+    store = _required_string(source, "store").lower()
+    promotional = store == "promotional" or period_type == "promotional"
+    expires_at = source_expires_at if source_expires_at is not None else entitlement_expires_at
+    if expires_at is None and is_subscription and not promotional:
+        raise RevenueCatAPIError("RevenueCat subscription is missing an expiration timestamp")
+
+    refunded_at = _datetime_value(source, "refunded_at")
+    revoked_at = _datetime_value(source, "revoked_at")
+    if refunded_at is not None or revoked_at is not None:
+        return bool(source["is_sandbox"]), None, False, False, True
+    will_renew = is_subscription and not promotional and _datetime_value(source, "unsubscribe_detected_at") is None
+    return (
+        bool(source["is_sandbox"]),
+        _effective_expiry(expires_at, source_grace_at),
+        will_renew,
+        period_type == "trial",
+        False,
+    )
+
+
+def parse_revenuecat_subscriber(
+    payload: object,
+    *,
+    production: bool,
+    now: datetime,
+) -> SubscriptionSnapshot:
+    """Validate a v1 subscriber response without trusting inferred product names."""
+    if now.tzinfo is None:
+        raise RevenueCatAPIError("Reconciliation time must be timezone-aware")
+    root = _as_dict(payload, "payload")
+    subscriber = _as_dict(root.get("subscriber"), "subscriber")
+    entitlements = _as_dict(subscriber.get("entitlements"), "entitlements")
+    subscriptions = _as_dict(subscriber.get("subscriptions"), "subscriptions")
+    non_subscriptions = _as_dict(subscriber.get("non_subscriptions"), "non_subscriptions")
+    if not entitlements:
+        return _free_snapshot()
+    premium = entitlements.get("premium")
+    if premium is None:
+        return _free_snapshot()
+    entitlement = _as_dict(premium, "premium entitlement")
+    product_id = _required_string(entitlement, "product_identifier")
+    purchase_at = _datetime_value(entitlement, "purchase_date", required=True)
+    assert purchase_at is not None
+    entitlement_expires_at = _datetime_value(entitlement, "expires_date", required=True)
+    entitlement_grace_at = _datetime_value(entitlement, "grace_period_expires_date")
+
+    candidates: list[tuple[bool, datetime | None, bool, bool, bool]] = []
+    subscription = subscriptions.get(product_id)
+    if subscription is not None:
+        candidate = _parse_candidate(
+            _as_dict(subscription, "subscription evidence"),
+            product_id=product_id,
+            purchase_at=purchase_at,
+            entitlement_expires_at=entitlement_expires_at,
+            entitlement_grace_at=entitlement_grace_at,
+            is_subscription=True,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+    non_subscription = non_subscriptions.get(product_id)
+    if non_subscription is not None:
+        records = non_subscription if isinstance(non_subscription, list) else [non_subscription]
+        if not records:
+            raise RevenueCatAPIError("RevenueCat response has empty non-subscription evidence")
+        for record in records:
+            candidate = _parse_candidate(
+                _as_dict(record, "non-subscription evidence"),
+                product_id=product_id,
+                purchase_at=purchase_at,
+                entitlement_expires_at=entitlement_expires_at,
+                entitlement_grace_at=entitlement_grace_at,
+                is_subscription=False,
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+    if not candidates:
+        raise RevenueCatAPIError("RevenueCat premium entitlement has no matching evidence")
+
+    allowed = [candidate for candidate in candidates if not candidate[4] and (not production or not candidate[0])]
+    if not allowed:
+        return _free_snapshot()
+    active = [candidate for candidate in allowed if candidate[1] is None or candidate[1] > now]
+    if not active:
+        return _free_snapshot()
+    sandbox, expires_at, will_renew, is_trial, blocked = max(
+        active,
+        key=lambda candidate: candidate[1] or datetime.max.replace(tzinfo=UTC),
+    )
+    del sandbox, blocked
+    return SubscriptionSnapshot(
+        status="premium",
+        expires_at=expires_at,
+        product_id=product_id,
+        will_renew=will_renew,
+        is_trial=is_trial,
+    )
+
+
+def _retry_after_seconds(value: str | None) -> int:
+    if value is not None:
+        try:
+            return max(1, int(value))
+        except ValueError:
+            try:
+                retry_at = parsedate_to_datetime(value)
+                if retry_at.tzinfo is not None:
+                    return max(1, ceil((retry_at - datetime.now(UTC)).total_seconds()))
+            except (TypeError, ValueError):
+                pass
+    return 60
+
+
+async def read_reconciliation(
+    db: AsyncSession,
+    redis: Redis,
+    user_id: UUID,
+    *,
+    dry_run: bool = False,
+) -> Reconciliation:
+    """Fetch and validate a snapshot without changing a user projection."""
+    settings = get_settings()
+    if not settings.REVENUECAT_API_KEY:
+        raise RevenueCatNotConfiguredError()
+    user = await _get_user_by_id(db, user_id)
+    before_status = user.subscription_status
+    before_expires_at = user.subscription_expires_at
+    before_verified_at = user.subscription_verified_at
+    before_subscription = _get_subscription_settings(user)
+    try:
+        cooldown = await redis.ttl(_RECONCILIATION_COOLDOWN_KEY)
+    except RedisError as error:
+        raise RevenueCatAPIError("RevenueCat cooldown is unavailable") from error
+    if cooldown > 0:
+        raise RevenueCatAPIError(
+            "RevenueCat reconciliation is cooling down",
+            upstream_status=429,
+            retry_after_seconds=cooldown,
+        )
+
+    url = f"https://api.revenuecat.com/v1/subscribers/{quote(str(user_id), safe='')}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url, headers={"Authorization": f"Bearer {settings.REVENUECAT_API_KEY}"})
+    except httpx.TimeoutException:
+        raise RevenueCatAPIError("RevenueCat API request timed out") from None
+    except httpx.RequestError as error:
+        raise RevenueCatAPIError(f"RevenueCat API request failed: {error}") from error
+
+    if response.status_code == 429:
+        retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
+        if not dry_run:
+            try:
+                await redis.execute_command(
+                    "EVAL",
+                    _COOLDOWN_SCRIPT,
+                    1,
+                    _RECONCILIATION_COOLDOWN_KEY,
+                    retry_after,
+                )
+            except RedisError as error:
+                raise RevenueCatAPIError("RevenueCat cooldown is unavailable") from error
+        raise RevenueCatAPIError(
+            "RevenueCat API rate limit exceeded",
+            upstream_status=429,
+            retry_after_seconds=retry_after,
+        )
+    if response.status_code not in {200, 201}:
+        raise RevenueCatAPIError(
+            f"RevenueCat API returned status {response.status_code}",
+            upstream_status=response.status_code,
+        )
+    if response.status_code == 201 and (dry_run or user.subscription_status != "free"):
+        raise RevenueCatAPIError("RevenueCat unexpectedly created a customer", upstream_status=201)
+    try:
+        payload = response.json()
+    except ValueError as error:
+        raise RevenueCatAPIError("RevenueCat API returned invalid JSON") from error
+    verified_at = datetime.now(UTC)
+    snapshot = parse_revenuecat_subscriber(
+        payload,
+        production=settings.ENVIRONMENT == "production",
+        now=verified_at,
+    )
+    unchanged = (
+        before_status == snapshot.status
+        and before_expires_at == snapshot.expires_at
+        and before_subscription.get("product_id") == snapshot.product_id
+        and before_subscription.get("will_renew", False) == snapshot.will_renew
+        and before_subscription.get("is_trial", False) == snapshot.is_trial
+    )
+    return Reconciliation(
+        user_id=user.id,
+        before_status=before_status,
+        before_expires_at=before_expires_at,
+        before_verified_at=before_verified_at,
+        before_subscription=before_subscription,
+        snapshot=snapshot,
+        verified_at=verified_at,
+        outcome="unchanged" if unchanged else "changed",
+    )
 
 
 async def _get_user_by_id(db: AsyncSession, user_id: UUID) -> User:
