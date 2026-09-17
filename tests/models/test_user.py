@@ -1,11 +1,23 @@
 import uuid
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.models import RefreshToken, User
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_subscription_verification_defaults_to_unknown(async_session):
+    user = User(email=f"{uuid4()}@example.com", password_hash="unused")
+    async_session.add(user)
+    await async_session.flush()
+    await async_session.refresh(user)
+
+    assert user.subscription_verified_at is None
+    assert user.subscription_status == "free"
 
 
 @pytest.mark.asyncio(loop_scope="session")
