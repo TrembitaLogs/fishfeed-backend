@@ -141,6 +141,11 @@ async def check_expired_subscriptions_job(*, dry_run: bool = False, user_ids: tu
                             logger.exception("Failed to persist subscription expiry notification", user_id=user_id)
             except UserNotFoundError:
                 counts["skipped"] += 1
+                if dry_run:
+                    print(
+                        "Subscription reconciliation dry-run result "
+                        f"id={user_id} outcome=skipped reason=unknown_or_deleted_local_user"
+                    )
                 logger.info(
                     "Subscription reconciliation skipped unknown or deleted user",
                     user_id=user_id,
@@ -148,6 +153,16 @@ async def check_expired_subscriptions_job(*, dry_run: bool = False, user_ids: tu
                 )
             except Exception as error:
                 counts["errors"] += 1
+                error_metadata = ""
+                if isinstance(error, RevenueCatAPIError):
+                    error_metadata = (
+                        f" upstream_status={error.upstream_status} retry_after_seconds={error.retry_after_seconds}"
+                    )
+                if dry_run:
+                    print(
+                        "Subscription reconciliation dry-run result "
+                        f"id={user_id} outcome=error reason=reconciliation_error{error_metadata}"
+                    )
                 logger.error(
                     "Subscription reconciliation failed",
                     user_id=user_id,
@@ -156,6 +171,10 @@ async def check_expired_subscriptions_job(*, dry_run: bool = False, user_ids: tu
                 )
                 if _is_fatal_reconciliation_error(error, dry_run=dry_run):
                     if dry_run and isinstance(error, RevenueCatAPIError) and error.upstream_status == 201:
+                        print(
+                            "Subscription reconciliation dry-run fatal "
+                            f"id={user_id} upstream_status=201 reason=upstream_customer_may_have_been_created"
+                        )
                         logger.error("Dry-run stopped: upstream customer may have been created", user_id=user_id)
                     fatal_error = error
                     break

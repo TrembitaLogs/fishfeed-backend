@@ -191,8 +191,24 @@ async def test_configuration_failure_aborts_fixed_pass(async_engine):
     reconcile.assert_awaited_once()
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        RevenueCatAPIError("missing configuration", failure_kind="configuration"),
+        RevenueCatAPIError("unauthorized", upstream_status=401),
+        RevenueCatAPIError("forbidden", upstream_status=403),
+        RevenueCatAPIError("cooldown", upstream_status=429, retry_after_seconds=60),
+    ],
+)
+def test_fatal_provider_classification_is_metadata_based(error):
+    """Global failures use structured provider metadata rather than message text."""
+    from app.jobs.subscription_jobs import _is_fatal_reconciliation_error
+
+    assert _is_fatal_reconciliation_error(error, dry_run=False)
+
+
 @pytest.mark.asyncio(loop_scope="session")
-async def test_dry_run_reads_only_and_aborts_on_unexpected_creation():
+async def test_dry_run_reads_only_and_aborts_on_unexpected_creation(capsys):
     """Dry-run never reaches apply, commit, cache invalidation, or notification I/O."""
     from app.jobs import subscription_jobs
 
@@ -219,6 +235,9 @@ async def test_dry_run_reads_only_and_aborts_on_unexpected_creation():
     invalidate.assert_not_awaited()
     notify.assert_not_awaited()
     db.commit.assert_not_awaited()
+    output = capsys.readouterr().out
+    assert "outcome=error reason=reconciliation_error upstream_status=201" in output
+    assert "upstream_customer_may_have_been_created" in output
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -327,6 +346,8 @@ async def test_dry_run_reports_bounded_reason_and_summary(capsys):
     output = capsys.readouterr().out
     assert "verified snapshot changes status" in output
     assert "unknown_or_deleted_local_user" in output
+    assert "outcome=skipped reason=unknown_or_deleted_local_user" in output
+    assert "outcome=error reason=reconciliation_error" in output
     assert "changed=1" in output and "skipped=1" in output and "errors=1" in output
     assert "Subscription reconciliation dry-run result" in output
     assert "Subscription reconciliation completed" in output
