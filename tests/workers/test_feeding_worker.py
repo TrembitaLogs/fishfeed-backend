@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.gamification import Streak
 from app.models.user import User
+from app.services.purchase import RevenueCatAPIError
 
 
 async def create_test_user(
@@ -265,11 +266,23 @@ async def test_run_once_reraises_subscription_error_for_all_jobs():
         patch(
             "app.workers.feeding_worker.check_expired_subscriptions_job",
             new_callable=AsyncMock,
-            side_effect=RuntimeError("incomplete reconciliation"),
+            side_effect=RevenueCatAPIError("key=secret payload=hidden", upstream_status=429, retry_after_seconds=42),
         ),
+        patch("app.workers.feeding_worker.logger.error") as error_log,
     ):
-        with pytest.raises(RuntimeError, match="incomplete"):
+        with pytest.raises(RevenueCatAPIError):
             await run_once()
+
+    kwargs = error_log.call_args.kwargs
+    assert kwargs == {
+        "job_name": "check_expired_subscriptions",
+        "error_type": "RevenueCatAPIError",
+        "upstream_status": 429,
+        "retry_after_seconds": 42,
+    }
+    logged = str(error_log.call_args).lower()
+    assert "key=secret" not in logged and "payload=hidden" not in logged and "traceback" not in logged
+    assert not any(isinstance(value, BaseException) for value in (*error_log.call_args.args, *kwargs.values()))
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -277,13 +290,27 @@ async def test_run_once_reraises_subscription_error_for_explicit_job():
     """Explicit subscription recovery has the same nonzero one-shot behavior."""
     from app.workers.feeding_worker import run_once
 
-    with patch(
-        "app.workers.feeding_worker.check_expired_subscriptions_job",
-        new_callable=AsyncMock,
-        side_effect=RuntimeError("incomplete reconciliation"),
+    with (
+        patch(
+            "app.workers.feeding_worker.check_expired_subscriptions_job",
+            new_callable=AsyncMock,
+            side_effect=RevenueCatAPIError("email=private@example.com key=secret"),
+        ),
+        patch("app.workers.feeding_worker.logger.error") as error_log,
     ):
-        with pytest.raises(RuntimeError, match="incomplete"):
+        with pytest.raises(RevenueCatAPIError):
             await run_once(job_name="check_subscriptions")
+
+    kwargs = error_log.call_args.kwargs
+    assert kwargs == {
+        "job_name": "check_expired_subscriptions",
+        "error_type": "RevenueCatAPIError",
+        "upstream_status": None,
+        "retry_after_seconds": None,
+    }
+    logged = str(error_log.call_args).lower()
+    assert "private@example.com" not in logged and "key=secret" not in logged and "traceback" not in logged
+    assert not any(isinstance(value, BaseException) for value in (*error_log.call_args.args, *kwargs.values()))
 
 
 @pytest.mark.asyncio(loop_scope="session")

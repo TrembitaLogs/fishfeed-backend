@@ -4,7 +4,7 @@ import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import httpx
 import pytest
@@ -410,12 +410,13 @@ async def test_dry_run_real_session_preserves_user_settings_and_audit(async_engi
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_real_reader_dry_run_reads_redis_without_local_or_redis_writes(async_session: AsyncSession):
+async def test_real_reader_dry_run_reads_redis_without_local_or_redis_writes(async_session: AsyncSession, async_engine):
     """The production reader's dry-run HTTP/TTL path is read-only end to end."""
     from app.services.purchase import read_reconciliation
 
     await cleanup_subscription_data(async_session)
     user = await create_test_user(async_session, subscription_status="free")
+    user_id = user.id
     user.free_ai_scans_remaining = 7
     user.settings = {"keep": "value"}
     await async_session.commit()
@@ -436,8 +437,9 @@ async def test_real_reader_dry_run_reads_redis_without_local_or_redis_writes(asy
                 transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload)), **kwargs
             ),
         ),
+        patch.object(async_session, "commit", new_callable=AsyncMock) as commit,
     ):
-        result = await read_reconciliation(async_session, redis, user.id, dry_run=True)
+        result = await read_reconciliation(async_session, redis, user_id, dry_run=True)
     await async_session.refresh(user)
     assert result.outcome == "unchanged"
     assert user.subscription_status == "free" and user.subscription_expires_at is None
@@ -448,7 +450,19 @@ async def test_real_reader_dry_run_reads_redis_without_local_or_redis_writes(asy
     )
     assert await async_session.scalar(select(func.count()).select_from(WebhookTransaction)) == before_audits
     redis.ttl.assert_awaited_once_with("revenuecat:reconcile:cooldown")
-    redis.execute_command.assert_not_called()
+    assert redis.mock_calls == [call.ttl("revenuecat:reconcile:cooldown")]
+    commit.assert_not_awaited()
+    assert not async_session.new and not async_session.dirty and not async_session.deleted
+    await async_session.close()
+
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as observer:
+        current = await observer.get(User, user_id)
+        assert current is not None
+        assert current.subscription_status == "free" and current.subscription_expires_at is None
+        assert current.subscription_verified_at is None and current.free_ai_scans_remaining == 7
+        assert current.settings == {"keep": "value"}
+        assert await observer.scalar(select(func.count()).select_from(WebhookTransaction)) == before_audits
 
 
 @pytest.mark.asyncio(loop_scope="session")
