@@ -11,8 +11,10 @@ import pytest
 from httpx import AsyncClient
 from redis.exceptions import RedisError
 from sqlalchemy import select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.database import get_db
 from app.models.purchase import WebhookTransaction
 from app.models.user import User
 from app.schemas.purchase import SubscriptionStatus
@@ -399,6 +401,48 @@ async def test_error_audit_normal_terminal_winner_is_acknowledged(client: AsyncC
 
 
 @pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("failure_type", [RedisError, SQLAlchemyError])
+@pytest.mark.parametrize(("winner_result", "expected_status"), [("success", 200), ("error", 503)])
+async def test_raw_storage_error_normal_audit_winner_is_respected(
+    client: AsyncClient,
+    async_session: AsyncSession,
+    failure_type: type[Exception],
+    winner_result: str,
+    expected_status: int,
+):
+    await clear_webhooks(async_session)
+    event_id = f"raw-winner-{failure_type.__name__}-{winner_result}"
+    try:
+        record = await webhook_user(async_session)
+        async_session.add(
+            WebhookTransaction(
+                transaction_id=event_id,
+                event_type="INITIAL_PURCHASE",
+                user_id=str(record.id),
+                payload={"event": {"id": event_id}},
+                processing_result=winner_result,
+            )
+        )
+        await async_session.commit()
+        with (
+            patch("app.api.purchase.get_settings", return_value=settings()),
+            patch("app.api.purchase.check_idempotency", new=AsyncMock(return_value=(False, ("unused", "token")))),
+            patch("app.api.purchase.process_webhook", new=AsyncMock(side_effect=failure_type("storage failed"))),
+        ):
+            response = await client.post(
+                "/api/v1/purchases/webhook",
+                json=payload(str(record.id), event_id),
+                headers={"Authorization": "secret"},
+            )
+
+        assert response.status_code == expected_status
+        if winner_result == "success":
+            assert response.json()["message"] == "Already processed"
+    finally:
+        await clear_webhooks(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_unsupported_app_environment_returns_503_without_remove_ads_write(
     client: AsyncClient, async_session: AsyncSession
 ):
@@ -432,7 +476,7 @@ async def test_unsupported_app_environment_returns_503_without_remove_ads_write(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_transfer_cancellation_rolls_back_partial_projection_and_audit(
-    client: AsyncClient, async_session: AsyncSession, async_engine
+    app, client: AsyncClient, async_session: AsyncSession, async_engine
 ):
     await clear_webhooks(async_session)
     try:
@@ -468,18 +512,32 @@ async def test_transfer_cancellation_rolls_back_partial_projection_and_audit(
                 "environment": "PRODUCTION",
             }
         }
-        with (
-            patch("app.api.purchase.get_settings", return_value=settings()),
-            patch("app.services.purchase.get_settings", return_value=settings()),
-            patch("app.services.purchase.read_reconciliation", new=AsyncMock(side_effect=proposals)),
-            patch("app.services.purchase.apply_reconciliation", side_effect=apply_then_cancel),
-            pytest.raises(CancelledError),
-        ):
-            await client.post(
-                "/api/v1/purchases/webhook",
-                json=transfer,
-                headers={"Authorization": "secret"},
-            )
+        request_session = async_sessionmaker(async_engine, expire_on_commit=False)()
+        original_override = app.dependency_overrides[get_db]
+
+        async def request_session_override():
+            yield request_session
+
+        app.dependency_overrides[get_db] = request_session_override
+        rollback = AsyncMock(wraps=request_session.rollback)
+        try:
+            with (
+                patch.object(request_session, "rollback", rollback),
+                patch("app.api.purchase.get_settings", return_value=settings()),
+                patch("app.services.purchase.get_settings", return_value=settings()),
+                patch("app.services.purchase.read_reconciliation", new=AsyncMock(side_effect=proposals)),
+                patch("app.services.purchase.apply_reconciliation", side_effect=apply_then_cancel),
+                pytest.raises(CancelledError),
+            ):
+                await client.post(
+                    "/api/v1/purchases/webhook",
+                    json=transfer,
+                    headers={"Authorization": "secret"},
+                )
+            rollback.assert_awaited_once()
+        finally:
+            app.dependency_overrides[get_db] = original_override
+            await request_session.close()
         sessions = async_sessionmaker(async_engine, expire_on_commit=False)
         async with sessions() as verify:
             statuses = list(

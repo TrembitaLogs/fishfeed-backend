@@ -198,7 +198,9 @@ async def handle_webhook(
 
     except RedisError as e:
         logger.error("Redis error during webhook processing", error=str(e), correlation_id=correlation_id)
-        await record_error(f"Redis error: {e}")
+        winner, _ = await record_error(f"Redis error: {e}")
+        if winner is not None:
+            return winner
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Webhook storage is unavailable",
@@ -206,7 +208,9 @@ async def handle_webhook(
 
     except SQLAlchemyError as e:
         logger.error("Database error during webhook processing", error=str(e), correlation_id=correlation_id)
-        await record_error(f"Database error: {e}")
+        winner, _ = await record_error(f"Database error: {e}")
+        if winner is not None:
+            return winner
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Webhook storage is unavailable",
