@@ -667,6 +667,56 @@ async def test_notification_partial_flush_rolls_back_after_projection_commit(asy
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_expiry_notification_log_and_unregistered_token_commit_after_downgrade(async_engine):
+    """A handled delivery failure still commits its separate notification transaction."""
+    from app.jobs import subscription_jobs
+
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as setup:
+        await cleanup_subscription_data(setup)
+        user = await create_test_user(
+            setup,
+            email="notification-unregistered@example.com",
+            subscription_status="premium",
+            subscription_expires_at=datetime.now(UTC) - timedelta(hours=1),
+        )
+        setup.add(PushToken(user_id=user.id, token="unregistered-token", platform="android"))
+        await setup.commit()
+        user_id = user.id
+
+    async def reconcile(db: AsyncSession, redis, requested_id: uuid.UUID) -> Reconciliation:
+        del redis
+        current = await db.get(User, requested_id)
+        assert current is not None
+        proposal = reconciliation_for(current, outcome="changed")
+        current.subscription_status = "free"
+        current.subscription_expires_at = None
+        return proposal
+
+    fcm = MagicMock(is_configured=True)
+    fcm.send_multicast.return_value = [(False, "UNREGISTERED")]
+    with (
+        patch("app.jobs.subscription_jobs.async_session_maker", sessions),
+        patch("app.redis.get_redis_client", return_value=MagicMock()),
+        patch("app.jobs.subscription_jobs.reconcile_user", side_effect=reconcile),
+        patch("app.jobs.subscription_jobs.invalidate_premium_cache", new=AsyncMock()),
+        patch("app.services.notification.get_fcm_client", return_value=fcm),
+    ):
+        assert await subscription_jobs.check_expired_subscriptions_job(user_ids=(user_id,)) == 1
+
+    async with sessions() as observer:
+        current = await observer.get(User, user_id)
+        assert current is not None
+        assert current.subscription_status == "free"
+        assert current.subscription_expires_at is None
+        assert await observer.scalar(select(PushToken).where(PushToken.user_id == user_id)) is None
+        log = await observer.scalar(select(NotificationLog).where(NotificationLog.user_id == user_id))
+        assert log is not None
+        assert log.success is False
+        assert log.error_code == "UNREGISTERED"
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_dry_run_reports_bounded_reason_and_summary(capsys):
     """Operator output states the safe reason/counts without leaking provider details."""
     from app.jobs import subscription_jobs
