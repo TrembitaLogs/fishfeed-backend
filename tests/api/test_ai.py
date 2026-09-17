@@ -116,9 +116,7 @@ async def test_scan_with_base64_image(
         user = await create_test_user(async_session, free_ai_scans_remaining=5)
         await create_test_species(async_session, "goldfish", "Goldfish")
 
-        mock_result = ClassificationResult(
-            predictions=[Prediction(label="Goldfish", confidence=0.95)]
-        )
+        mock_result = ClassificationResult(predictions=[Prediction(label="Goldfish", confidence=0.95)])
 
         mock_storage = AsyncMock()
         mock_storage.upload_image = AsyncMock(return_value="scans/test.webp")
@@ -135,7 +133,9 @@ async def test_scan_with_base64_image(
             ),
         ):
             # 1x1 PNG image
-            image_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            image_base64 = (
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            )
 
             response = await client.post(
                 "/api/v1/ai/scan",
@@ -192,7 +192,9 @@ async def test_scan_limit_exceeded(
     try:
         user = await create_test_user(async_session, free_ai_scans_remaining=0)
 
-        image_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        image_base64 = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        )
 
         response = await client.post(
             "/api/v1/ai/scan",
@@ -229,18 +231,14 @@ async def test_successful_scan_counter_respects_active_subscription(
         async_session,
         subscription_status=status,
         subscription_expires_at=(
-            datetime.now(UTC) + timedelta(days=expires_in_days)
-            if expires_in_days is not None
-            else None
+            datetime.now(UTC) + timedelta(days=expires_in_days) if expires_in_days is not None else None
         ),
         free_ai_scans_remaining=2,
     )
     limiter = AIRateLimiter(redis_client)
     try:
         await create_test_species(async_session, "goldfish", "Goldfish")
-        mock_result = ClassificationResult(
-            predictions=[Prediction(label="Goldfish", confidence=0.95)]
-        )
+        mock_result = ClassificationResult(predictions=[Prediction(label="Goldfish", confidence=0.95)])
         mock_storage = AsyncMock()
         mock_storage.upload_image = AsyncMock(return_value="scans/test.webp")
 
@@ -331,6 +329,35 @@ async def test_get_scans_remaining_premium_user(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("expires_at", [None, datetime.now(UTC) - timedelta(days=1)])
+async def test_verified_premium_retains_ai_access_during_provider_outage(
+    client: AsyncClient,
+    async_session: AsyncSession,
+    expires_at: datetime | None,
+):
+    await cleanup_data(async_session)
+    try:
+        user = await create_test_user(
+            async_session,
+            subscription_status="premium",
+            subscription_expires_at=expires_at,
+            free_ai_scans_remaining=0,
+        )
+        user.subscription_verified_at = datetime.now(UTC)
+        await async_session.commit()
+
+        response = await client.get(
+            "/api/v1/ai/scans/remaining",
+            headers=get_auth_headers(user.id),
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"scans_remaining": 999999, "is_premium": True}
+    finally:
+        await cleanup_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_get_scans_remaining_expired_premium_date(
     client: AsyncClient,
     async_session: AsyncSession,
@@ -381,9 +408,7 @@ async def test_scan_upload_nonpremium_status_with_no_quota_returns_402(
             async_session,
             subscription_status=status,
             subscription_expires_at=(
-                datetime.now(UTC) + timedelta(days=expires_in_days)
-                if expires_in_days is not None
-                else None
+                datetime.now(UTC) + timedelta(days=expires_in_days) if expires_in_days is not None else None
             ),
             free_ai_scans_remaining=0,
         )

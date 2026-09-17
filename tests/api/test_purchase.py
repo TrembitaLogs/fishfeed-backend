@@ -19,6 +19,7 @@ from app.models.purchase import WebhookTransaction
 from app.models.user import User
 from app.schemas.purchase import SubscriptionStatus
 from app.services.purchase import (
+    InvalidReceiptError,
     PurchaseError,
     Reconciliation,
     RevenueCatAPIError,
@@ -617,22 +618,115 @@ async def test_subscription_endpoint_returns_current_status(client: AsyncClient,
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_restore_endpoint_delegates_for_current_user(client: AsyncClient, async_session: AsyncSession):
+async def test_subscription_get_is_local_and_nonmutating(client: AsyncClient, async_session: AsyncSession):
+    await clear_webhooks(async_session)
+    try:
+        record = await webhook_user(async_session)
+        past_expiry = datetime(2026, 1, 1, tzinfo=UTC)
+        verified_at = datetime(2026, 1, 2, tzinfo=UTC)
+        record.subscription_status = "premium"
+        record.subscription_expires_at = past_expiry
+        record.subscription_verified_at = verified_at
+        record.settings = {"subscription": {"product_id": "premium.lifetime", "will_renew": False}}
+        await async_session.commit()
+        from app.utils.jwt import create_access_token
+
+        with patch("app.services.purchase.httpx.AsyncClient") as provider:
+            response = await client.get(
+                "/api/v1/purchases/subscription",
+                headers={"Authorization": f"Bearer {create_access_token(str(record.id))}"},
+            )
+
+        assert response.status_code == 200
+        provider.assert_not_called()
+        await async_session.refresh(record)
+        assert record.subscription_status == "premium"
+        assert record.subscription_expires_at == past_expiry
+        assert record.subscription_verified_at == verified_at
+        assert record.settings == {"subscription": {"product_id": "premium.lifetime", "will_renew": False}}
+    finally:
+        await clear_webhooks(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("status", ["premium", "free"])
+async def test_restore_endpoint_commits_shared_reconciliation_before_returning_local_status(
+    client: AsyncClient, async_session: AsyncSession, status: str
+):
     await clear_webhooks(async_session)
     try:
         record = await webhook_user(async_session)
         from app.utils.jwt import create_access_token
 
-        restored = SubscriptionStatus(status="premium", product_id="premium.monthly", will_renew=True)
-        with patch("app.api.purchase.restore_purchases", new=AsyncMock(return_value=restored)) as restore:
+        result = Reconciliation(
+            user_id=record.id,
+            before_status="premium" if status == "free" else "free",
+            before_expires_at=None,
+            before_verified_at=None,
+            before_subscription={},
+            snapshot=SubscriptionSnapshot(
+                status, None, f"premium.{status}" if status == "premium" else None, False, False
+            ),
+            verified_at=datetime.now(UTC),
+            outcome="changed",
+        )
+        local_status = SubscriptionStatus(status=status, product_id=result.snapshot.product_id, will_renew=False)
+        with (
+            patch("app.api.purchase.restore_purchases", new=AsyncMock(return_value=result)) as restore,
+            patch("app.api.purchase.get_subscription_status", new=AsyncMock(return_value=local_status)),
+            patch("app.api.purchase.invalidate_premium_cache", new=AsyncMock()) as invalidate,
+        ):
             response = await client.post(
                 "/api/v1/purchases/restore",
                 json={"user_id": str(record.id), "receipt": "receipt", "platform": "ios"},
                 headers={"Authorization": f"Bearer {create_access_token(str(record.id))}"},
             )
         assert response.status_code == 200
-        assert response.json()["product_id"] == "premium.monthly"
-        restore.assert_awaited_once()
+        assert response.json()["status"] == status
+        assert restore.await_args.kwargs["redis"] is not None
+        invalidate.assert_awaited_once()
+    finally:
+        await clear_webhooks(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_restore_endpoint_rolls_back_on_invalid_receipt_or_provider_failure(
+    client: AsyncClient, async_session: AsyncSession
+):
+    await clear_webhooks(async_session)
+    try:
+        record = await webhook_user(async_session)
+        record.subscription_status = "premium"
+        await async_session.commit()
+        from app.utils.jwt import create_access_token
+
+        for error, expected_status in ((InvalidReceiptError(), 400), (RevenueCatAPIError("provider failed"), 502)):
+            with patch("app.api.purchase.restore_purchases", new=AsyncMock(side_effect=error)):
+                response = await client.post(
+                    "/api/v1/purchases/restore",
+                    json={"user_id": str(record.id), "receipt": "receipt", "platform": "ios"},
+                    headers={"Authorization": f"Bearer {create_access_token(str(record.id))}"},
+                )
+            assert response.status_code == expected_status
+            await async_session.refresh(record)
+            assert record.subscription_status == "premium"
+    finally:
+        await clear_webhooks(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_restore_endpoint_rejects_another_users_receipt(client: AsyncClient, async_session: AsyncSession):
+    await clear_webhooks(async_session)
+    try:
+        record = await webhook_user(async_session)
+        from app.utils.jwt import create_access_token
+
+        response = await client.post(
+            "/api/v1/purchases/restore",
+            json={"user_id": str(uuid4()), "receipt": "receipt", "platform": "ios"},
+            headers={"Authorization": f"Bearer {create_access_token(str(record.id))}"},
+        )
+        assert response.status_code == 403
     finally:
         await clear_webhooks(async_session)
 

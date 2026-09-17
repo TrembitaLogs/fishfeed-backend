@@ -220,10 +220,19 @@ async def handle_webhook(
         await release_idempotency_lock(redis, lock_handle)
 
 
-@router.post("/restore", response_model=SubscriptionStatus)
+@router.post(
+    "/restore",
+    response_model=SubscriptionStatus,
+    responses={
+        400: {"description": "Invalid receipt"},
+        502: {"description": "RevenueCat provider error"},
+        503: {"description": "Subscription reconciliation conflict"},
+    },
+)
 async def restore_user_purchases(
     request_data: RestorePurchaseRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis)],
     current_user: CurrentActiveUser,
 ) -> SubscriptionStatus:
     """Restore purchases from app store receipt.
@@ -244,6 +253,7 @@ async def restore_user_purchases(
         401: User not authenticated.
         500: RevenueCat not configured.
         502: RevenueCat API error.
+        503: Reconciliation conflict.
     """
     # Verify the request is for the current user
     if request_data.user_id != current_user.id:
@@ -253,13 +263,18 @@ async def restore_user_purchases(
         )
 
     try:
-        return await restore_purchases(
+        result = await restore_purchases(
             db=db,
             user_id=current_user.id,
             receipt=request_data.receipt,
             platform=request_data.platform,
+            redis=redis,
         )
+        await db.commit()
+        await invalidate_premium_cache(str(result.user_id), redis)
+        return await get_subscription_status(db, current_user.id)
     except PurchaseError as e:
+        await db.rollback()
         raise HTTPException(
             status_code=e.status_code,
             detail=e.message,

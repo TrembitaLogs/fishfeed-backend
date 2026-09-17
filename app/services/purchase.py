@@ -1047,11 +1047,12 @@ async def restore_purchases(
     user_id: UUID,
     receipt: str,
     platform: str,
-) -> SubscriptionStatus:
+    redis: Redis,
+) -> Reconciliation:
     """Restore purchases from app store receipt.
 
-    Validates the receipt with RevenueCat API and updates user subscription
-    status if active entitlements are found.
+    Validates the receipt with RevenueCat, then applies an authoritative
+    subscriber snapshot.
 
     Args:
         db: Database session.
@@ -1060,7 +1061,7 @@ async def restore_purchases(
         platform: Platform identifier (ios or android).
 
     Returns:
-        Current SubscriptionStatus after restore.
+        Applied reconciliation result.
 
     Raises:
         RevenueCatNotConfiguredError: If RevenueCat API key is not set.
@@ -1094,37 +1095,22 @@ async def restore_purchases(
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(api_url, json=payload, headers=headers)
 
-            if response.status_code == 200:
-                data = response.json()
-                subscriber = data.get("subscriber", {})
-                entitlements = subscriber.get("entitlements", {})
-
-                # Check for active premium entitlement
-                premium_entitlement = entitlements.get("premium", {})
-                if premium_entitlement and premium_entitlement.get("expires_date"):
-                    expires_str = premium_entitlement["expires_date"]
-                    expires_at = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
-
-                    if expires_at > datetime.now(UTC):
-                        product_id = premium_entitlement.get("product_identifier")
-                        await update_subscription_status(
-                            db=db,
-                            user_id=user_id,
-                            status="premium",
-                            expires_at=expires_at,
-                            product_id=product_id,
-                            will_renew=not premium_entitlement.get("unsubscribe_detected_at"),
-                        )
-                        logger.info("Restored premium subscription for user", user_id=user_id)
-
-            elif response.status_code == 400:
+            if response.status_code == 400:
                 raise InvalidReceiptError("Receipt validation failed")
-            elif response.status_code == 401:
+            if response.status_code == 401:
                 logger.error("RevenueCat API authentication failed")
-                raise RevenueCatAPIError("API authentication failed")
-            else:
+                raise RevenueCatAPIError("API authentication failed", upstream_status=response.status_code)
+            if response.status_code != 200:
                 logger.error("RevenueCat API error", status_code=response.status_code, response_text=response.text)
-                raise RevenueCatAPIError(f"API returned status {response.status_code}")
+                raise RevenueCatAPIError(
+                    f"API returned status {response.status_code}", upstream_status=response.status_code
+                )
+            try:
+                receipt_result = response.json()
+            except ValueError as error:
+                raise RevenueCatAPIError("Receipt validation returned invalid JSON") from error
+            if not isinstance(receipt_result, dict) or not isinstance(receipt_result.get("subscriber"), dict):
+                raise RevenueCatAPIError("Receipt validation returned an invalid response")
 
     except httpx.TimeoutException:
         logger.error("RevenueCat API timeout")
@@ -1133,7 +1119,7 @@ async def restore_purchases(
         logger.error("RevenueCat API request error", error=str(e))
         raise RevenueCatAPIError(f"API request failed: {e}") from None
 
-    return await get_subscription_status(db, user_id)
+    return await reconcile_user(db, redis, user_id)
 
 
 async def get_subscription_status(db: AsyncSession, user_id: UUID) -> SubscriptionStatus:

@@ -46,24 +46,25 @@ async def _create_user(
 BASE_URL = "/api/v1/admin/users"
 
 
-@pytest.mark.asyncio(loop_scope="session")
-class TestUpdateSubscriptionToPremium:
-    """Test PATCH /admin/users/{user_id}/subscription with premium status."""
+def test_subscription_update_openapi_declares_revenuecat_conflict(app) -> None:
+    responses = app.openapi()["paths"]["/api/v1/admin/users/{user_id}/subscription"]["patch"]["responses"]
+    assert responses["409"]["description"] == "Manage premium grants and revocations in RevenueCat"
 
-    async def test_update_subscription_to_premium(
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestUpdateSubscription:
+    """Test PATCH /admin/users/{user_id}/subscription is read-only."""
+
+    async def test_update_subscription_is_rejected_without_mutating_user(
         self,
         client: AsyncClient,
         async_session: AsyncSession,
     ):
-        """Setting status to premium with expires_at should update both fields."""
+        """Subscription projections must be managed by RevenueCat."""
         await _cleanup(async_session)
         try:
-            _, admin_token = await _create_user(
-                async_session, email="admin@sub-premium-test.com", is_admin=True
-            )
-            target, _ = await _create_user(
-                async_session, email="target@sub-premium-test.com"
-            )
+            _, admin_token = await _create_user(async_session, email="admin@sub-premium-test.com", is_admin=True)
+            target, _ = await _create_user(async_session, email="target@sub-premium-test.com")
             assert target.subscription_status == "free"
             assert target.subscription_expires_at is None
 
@@ -76,56 +77,8 @@ class TestUpdateSubscriptionToPremium:
                     "expires_at": expires.isoformat(),
                 },
             )
-            assert response.status_code == 200
-            data = response.json()
-            assert data["user_id"] == str(target.id)
-            assert data["subscription_status"] == "premium"
-            assert data["subscription_expires_at"] is not None
-
-            await async_session.refresh(target)
-            assert target.subscription_status == "premium"
-            assert target.subscription_expires_at is not None
-        finally:
-            await _cleanup(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-class TestUpdateSubscriptionToFree:
-    """Test PATCH /admin/users/{user_id}/subscription with free status."""
-
-    async def test_update_subscription_to_free(
-        self,
-        client: AsyncClient,
-        async_session: AsyncSession,
-    ):
-        """Setting status to free with null expires_at should clear subscription."""
-        await _cleanup(async_session)
-        try:
-            _, admin_token = await _create_user(
-                async_session, email="admin@sub-free-test.com", is_admin=True
-            )
-            expires = datetime.now(UTC) + timedelta(days=30)
-            target, _ = await _create_user(
-                async_session,
-                email="target@sub-free-test.com",
-                subscription_status="premium",
-                subscription_expires_at=expires,
-            )
-            assert target.subscription_status == "premium"
-            assert target.subscription_expires_at is not None
-
-            response = await client.patch(
-                f"{BASE_URL}/{target.id}/subscription",
-                headers={"Authorization": f"Bearer {admin_token}"},
-                json={
-                    "status": "free",
-                    "expires_at": None,
-                },
-            )
-            assert response.status_code == 200
-            data = response.json()
-            assert data["subscription_status"] == "free"
-            assert data["subscription_expires_at"] is None
+            assert response.status_code == 409
+            assert response.json()["detail"] == "Manage premium grants and revocations in RevenueCat"
 
             await async_session.refresh(target)
             assert target.subscription_status == "free"
@@ -134,6 +87,7 @@ class TestUpdateSubscriptionToFree:
             await _cleanup(async_session)
 
 
+@pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.asyncio(loop_scope="session")
 class TestUpdateSubscriptionValidation:
     """Test validation for subscription update endpoint."""
@@ -146,12 +100,8 @@ class TestUpdateSubscriptionValidation:
         """Providing an invalid status value should return 422."""
         await _cleanup(async_session)
         try:
-            _, admin_token = await _create_user(
-                async_session, email="admin@sub-invalid-test.com", is_admin=True
-            )
-            target, _ = await _create_user(
-                async_session, email="target@sub-invalid-test.com"
-            )
+            _, admin_token = await _create_user(async_session, email="admin@sub-invalid-test.com", is_admin=True)
+            target, _ = await _create_user(async_session, email="target@sub-invalid-test.com")
 
             response = await client.patch(
                 f"{BASE_URL}/{target.id}/subscription",
@@ -173,9 +123,7 @@ class TestUpdateSubscriptionValidation:
         """Updating subscription for non-existent user should return 404."""
         await _cleanup(async_session)
         try:
-            _, admin_token = await _create_user(
-                async_session, email="admin@sub-404-test.com", is_admin=True
-            )
+            _, admin_token = await _create_user(async_session, email="admin@sub-404-test.com", is_admin=True)
             fake_id = uuid4()
             response = await client.patch(
                 f"{BASE_URL}/{fake_id}/subscription",
@@ -202,12 +150,8 @@ class TestSubscriptionRequiresAdmin:
         """Non-admin user should get 403."""
         await _cleanup(async_session)
         try:
-            _, regular_token = await _create_user(
-                async_session, email="regular@sub-auth-test.com", is_admin=False
-            )
-            target, _ = await _create_user(
-                async_session, email="target@sub-auth-test.com"
-            )
+            _, regular_token = await _create_user(async_session, email="regular@sub-auth-test.com", is_admin=False)
+            target, _ = await _create_user(async_session, email="target@sub-auth-test.com")
 
             response = await client.patch(
                 f"{BASE_URL}/{target.id}/subscription",

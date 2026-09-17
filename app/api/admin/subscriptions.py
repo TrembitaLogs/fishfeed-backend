@@ -18,7 +18,8 @@ router = APIRouter(prefix="/users", tags=["admin-subscriptions"])
     "/{user_id}/subscription",
     response_model=SubscriptionResponse,
     summary="Update user subscription",
-    description="Manually update a user's subscription status and expiration date.",
+    description="Subscription grants and revocations are managed in RevenueCat.",
+    responses={409: {"description": "Manage premium grants and revocations in RevenueCat"}},
 )
 async def update_user_subscription(
     user_id: UUID,
@@ -26,7 +27,7 @@ async def update_user_subscription(
     admin: CurrentAdmin,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> SubscriptionResponse:
-    """Update a user's subscription status."""
+    """Reject direct subscription writes."""
     user = await update_subscription(db, user_id, body.status, body.expires_at)
     return SubscriptionResponse(
         user_id=user.id,

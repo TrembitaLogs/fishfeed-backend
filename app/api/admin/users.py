@@ -84,7 +84,8 @@ async def reset_scans(
     "/{user_id}/grant-premium",
     response_model=UserActionResponse,
     summary="Grant premium subscription",
-    description="Grant premium subscription to a user for a specified number of days.",
+    description="Premium grants and revocations are managed in RevenueCat.",
+    responses={409: {"description": "Manage premium grants and revocations in RevenueCat"}},
 )
 async def grant_premium_endpoint(
     user_id: UUID,
@@ -92,7 +93,7 @@ async def grant_premium_endpoint(
     admin: CurrentAdmin,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> UserActionResponse:
-    """Grant premium subscription to a user."""
+    """Reject direct premium grants."""
     await grant_premium(db, user_id, body.days)
     return UserActionResponse(
         user_id=user_id,

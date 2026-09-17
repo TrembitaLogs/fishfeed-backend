@@ -73,8 +73,12 @@ class TestUserAdminConfig:
         assert "password_hash" in excluded
 
     def test_password_hash_excluded_from_form(self):
-        excluded = [c.key if hasattr(c, "key") else str(c) for c in UserAdmin.form_excluded_columns]
-        assert "password_hash" in excluded
+        columns = [c.key if hasattr(c, "key") else str(c) for c in UserAdmin.form_columns]
+        assert "password_hash" not in columns
+
+    def test_user_form_allows_only_profile_fields(self):
+        columns = [c.key if hasattr(c, "key") else str(c) for c in UserAdmin.form_columns]
+        assert columns == ["email", "nickname"]
 
     def test_can_delete_is_false(self):
         assert UserAdmin.can_delete is False
@@ -201,6 +205,52 @@ class TestUserAdminUI:
             assert response.status_code == 200
             # SQLAdmin hides the delete button when can_delete is False
             assert ">Delete<" not in response.text
+        finally:
+            await _cleanup(async_session)
+
+    async def test_user_edit_rejects_crafted_subscription_field(
+        self,
+        authed_admin_client: AsyncClient,
+        async_session: AsyncSession,
+        async_engine,
+    ):
+        user = await _create_user(async_session)
+        try:
+            response = await authed_admin_client.post(
+                f"/admin/user/edit/{user.id}",
+                data={
+                    "email": user.email,
+                    "nickname": "safe-name",
+                    "subscription_status": "premium",
+                },
+            )
+
+            assert response.status_code == 400
+            await async_session.refresh(user)
+            assert user.nickname is None
+            assert user.subscription_status == "free"
+        finally:
+            await _cleanup(async_session)
+
+    async def test_user_edit_allows_email_and_nickname(
+        self,
+        authed_admin_client: AsyncClient,
+        async_session: AsyncSession,
+        async_engine,
+    ):
+        user = await _create_user(async_session)
+        new_email = f"updated-{uuid.uuid4().hex[:8]}@test.com"
+        try:
+            response = await authed_admin_client.post(
+                f"/admin/user/edit/{user.id}",
+                data={"email": new_email, "nickname": "Updated"},
+                follow_redirects=False,
+            )
+
+            assert response.status_code == 302
+            await async_session.refresh(user)
+            assert user.email == new_email
+            assert user.nickname == "Updated"
         finally:
             await _cleanup(async_session)
 

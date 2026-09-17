@@ -18,6 +18,7 @@ from app.schemas.purchase import WebhookEvent
 from app.services.purchase import (
     PurchaseError,
     Reconciliation,
+    RevenueCatAPIError,
     SubscriptionSnapshot,
     UserNotFoundError,
     WebhookAuditConflict,
@@ -27,6 +28,7 @@ from app.services.purchase import (
     log_webhook_transaction,
     process_webhook,
     release_idempotency_lock,
+    restore_purchases,
     verify_webhook_authorization,
 )
 
@@ -64,6 +66,62 @@ def proposal(user_id: UUID, *, status: str = "premium") -> Reconciliation:
 
 def event(event_type: str, **values: object) -> WebhookEvent:
     return WebhookEvent.model_validate({"event": {"id": "service-event", "type": event_type, **values}})
+
+
+class ReceiptClient:
+    def __init__(self, response: object) -> None:
+        self.post = AsyncMock(return_value=response)
+
+    async def __aenter__(self) -> ReceiptClient:
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        return None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_restore_validates_receipt_then_reconciles_authoritative_snapshot(
+    async_session: AsyncSession, redis_client
+):
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        expected = proposal(record.id)
+        response = SimpleNamespace(status_code=200, text="", json=lambda: {"subscriber": {}})
+        client = ReceiptClient(response)
+
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(REVENUECAT_API_KEY="key")),
+            patch("app.services.purchase.httpx.AsyncClient", return_value=client),
+            patch("app.services.purchase.reconcile_user", new=AsyncMock(return_value=expected)) as reconcile,
+        ):
+            result = await restore_purchases(async_session, record.id, "receipt", "ios", redis_client)
+
+        assert result == expected
+        reconcile.assert_awaited_once_with(async_session, redis_client, record.id)
+        client.post.assert_awaited_once()
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_restore_preserves_receipt_provider_status(async_session: AsyncSession, redis_client):
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        response = SimpleNamespace(status_code=401, text="denied")
+        client = ReceiptClient(response)
+
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(REVENUECAT_API_KEY="key")),
+            patch("app.services.purchase.httpx.AsyncClient", return_value=client),
+            pytest.raises(RevenueCatAPIError) as error,
+        ):
+            await restore_purchases(async_session, record.id, "receipt", "ios", redis_client)
+
+        assert error.value.upstream_status == 401
+    finally:
+        await clear_purchase_state(async_session)
 
 
 @pytest.mark.asyncio(loop_scope="session")
