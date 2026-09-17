@@ -259,6 +259,25 @@ def _non_subscription_records(value: object) -> list[object]:
     return value
 
 
+def _ensure_unique_evidence_identities(
+    subscriptions: dict[str, object], non_subscriptions: dict[str, object]
+) -> None:
+    seen: set[tuple[str, datetime]] = set()
+    for records_by_product, non_subscription in ((subscriptions, False), (non_subscriptions, True)):
+        for product_id, value in records_by_product.items():
+            records = _non_subscription_records(value) if non_subscription else [value]
+            for record in records:
+                source = _as_dict(record, "subscription evidence")
+                if "product_identifier" in source and source["product_identifier"] != product_id:
+                    raise RevenueCatAPIError("RevenueCat response has inconsistent product identity")
+                purchase_at = _datetime_value(source, "purchase_date", required=True)
+                assert purchase_at is not None
+                evidence = (product_id, purchase_at)
+                if evidence in seen:
+                    raise RevenueCatAPIError("RevenueCat response has duplicate evidence identity")
+                seen.add(evidence)
+
+
 def _entitlement_owners(entitlements: dict[str, object]) -> dict[tuple[str, datetime], set[str]]:
     owners: dict[tuple[str, datetime], set[str]] = {}
     for entitlement_id, value in entitlements.items():
@@ -286,6 +305,7 @@ def parse_revenuecat_subscriber(
     non_subscriptions = _as_dict(subscriber.get("non_subscriptions"), "non_subscriptions")
     for value in non_subscriptions.values():
         _non_subscription_records(value)
+    _ensure_unique_evidence_identities(subscriptions, non_subscriptions)
     if not entitlements:
         return _free_snapshot()
     if "premium" not in entitlements:
@@ -416,7 +436,7 @@ async def read_reconciliation(
         retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
         if not dry_run:
             try:
-                await redis.execute_command(
+                retained_ttl = await redis.execute_command(
                     "EVAL",
                     _COOLDOWN_SCRIPT,
                     1,
@@ -429,6 +449,13 @@ async def read_reconciliation(
                     upstream_status=429,
                     retry_after_seconds=retry_after,
                 ) from error
+            if not isinstance(retained_ttl, int) or isinstance(retained_ttl, bool) or retained_ttl <= 0:
+                raise RevenueCatAPIError(
+                    "RevenueCat cooldown returned an invalid TTL",
+                    upstream_status=429,
+                    retry_after_seconds=retry_after,
+                )
+            retry_after = retained_ttl
         raise RevenueCatAPIError(
             "RevenueCat API rate limit exceeded",
             upstream_status=429,

@@ -185,19 +185,60 @@ def test_incomplete_or_ambiguous_premium_evidence_is_rejected(mutate) -> None:
         parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 17, tzinfo=UTC))
 
 
-def test_independently_validated_source_survives_refunded_overlap() -> None:
-    """Refunding one evidence source cannot revoke a separately matching active source."""
+def test_refunded_mapped_remove_ads_evidence_does_not_revoke_premium() -> None:
+    """A distinct mapped refund cannot revoke the premium entitlement's source."""
+    payload = subscriber_payload()
+    payload["subscriber"]["entitlements"]["remove_ads"] = {
+        "product_identifier": "fishfeed_remove_ads",
+        "purchase_date": "2026-02-01T00:00:00Z",
+        "expires_date": None,
+        "grace_period_expires_date": None,
+    }
+    payload["subscriber"]["non_subscriptions"]["fishfeed_remove_ads"] = [
+        {
+            "is_sandbox": False,
+            "store": "app_store",
+            "period_type": "normal",
+            "purchase_date": "2026-02-01T00:00:00Z",
+            "refunded_at": "2026-09-16T00:00:00Z",
+            "unsubscribe_detected_at": None,
+        }
+    ]
+
+    result = parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 17, tzinfo=UTC))
+
+    assert result.status == "premium"
+
+
+def test_duplicate_non_subscription_evidence_is_ambiguous() -> None:
+    """A refunded and active copy of one tuple cannot prove separate lifetime purchases."""
+    payload = subscriber_payload()
+    _entitlement(payload)["expires_date"] = None
+    record = deepcopy(_subscription(payload))
+    record.pop("expires_date")
+    record.pop("grace_period_expires_date")
+    payload["subscriber"]["subscriptions"] = {}
+    payload["subscriber"]["non_subscriptions"]["premium.monthly"] = [
+        {**record, "refunded_at": "2026-09-16T00:00:00Z"},
+        record,
+    ]
+
+    with pytest.raises(RevenueCatAPIError):
+        parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 17, tzinfo=UTC))
+
+
+def test_cross_container_duplicate_evidence_is_ambiguous() -> None:
+    """Subscription and one-time aggregates cannot independently claim one tuple."""
     payload = subscriber_payload()
     _subscription(payload)["refunded_at"] = "2026-09-16T00:00:00Z"
     record = deepcopy(_subscription(payload))
     record["refunded_at"] = None
     record.pop("expires_date")
     record.pop("grace_period_expires_date")
-    payload["subscriber"]["non_subscriptions"] = {"premium.monthly": [record]}
+    payload["subscriber"]["non_subscriptions"]["premium.monthly"] = [record]
 
-    result = parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 17, tzinfo=UTC))
-
-    assert result.status == "premium"
+    with pytest.raises(RevenueCatAPIError):
+        parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 17, tzinfo=UTC))
 
 
 def test_unmatched_production_source_is_ambiguous_when_current_entitlement_is_sandbox() -> None:
@@ -375,8 +416,9 @@ def test_explicit_malformed_premium_entitlement_is_rejected() -> None:
 class FakeRedis:
     """Small Redis boundary double for cooldown behavior."""
 
-    def __init__(self, ttl: int = -2) -> None:
+    def __init__(self, ttl: int = -2, eval_result: int | None = None) -> None:
         self.ttl_value = ttl
+        self.eval_result = eval_result
         self.eval_calls: list[tuple[object, ...]] = []
 
     async def ttl(self, key: str) -> int:
@@ -385,7 +427,10 @@ class FakeRedis:
 
     async def execute_command(self, *args: object) -> int:
         self.eval_calls.append(args)
-        return 0
+        if self.eval_result is not None:
+            return self.eval_result
+        assert isinstance(args[-1], int)
+        return args[-1]
 
 
 class BrokenRedis(FakeRedis):
@@ -564,6 +609,61 @@ async def test_rate_limit_sets_apply_cooldown_but_not_dry_run() -> None:
             await read_reconciliation(AsyncMock(), redis, user.id, dry_run=dry_run)
         assert error.value.retry_after_seconds == 120
         assert len(redis.eval_calls) == expected_writes
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_reports_atomically_retained_cooldown_ttl() -> None:
+    """The 429 metadata must report a concurrently retained longer cooldown."""
+    user = _user()
+    redis = FakeRedis(eval_result=2000)
+    settings = SimpleNamespace(REVENUECAT_API_KEY="test-key", ENVIRONMENT="production")
+    requests = 0
+    real_client = httpx.AsyncClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(429, headers={"Retry-After": "120"})
+
+    def client_factory(**kwargs: object) -> httpx.AsyncClient:
+        return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    with (
+        patch("app.services.purchase.get_settings", return_value=settings),
+        patch("app.services.purchase._get_user_by_id", new=AsyncMock(return_value=user)),
+        patch("app.services.purchase.httpx.AsyncClient", side_effect=client_factory),
+        pytest.raises(RevenueCatAPIError) as error,
+    ):
+        await read_reconciliation(AsyncMock(), redis, user.id)
+
+    assert requests == 1
+    assert error.value.upstream_status == 429
+    assert error.value.retry_after_seconds == 2000
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_rejects_an_invalid_retained_cooldown_ttl() -> None:
+    """A non-positive Lua result cannot become a retry delay."""
+    user = _user()
+    redis = FakeRedis(eval_result=0)
+    settings = SimpleNamespace(REVENUECAT_API_KEY="test-key", ENVIRONMENT="production")
+    real_client = httpx.AsyncClient
+
+    def client_factory(**kwargs: object) -> httpx.AsyncClient:
+        transport = httpx.MockTransport(lambda request: httpx.Response(429, headers={"Retry-After": "120"}))
+        return real_client(transport=transport, **kwargs)
+
+    with (
+        patch("app.services.purchase.get_settings", return_value=settings),
+        patch("app.services.purchase._get_user_by_id", new=AsyncMock(return_value=user)),
+        patch("app.services.purchase.httpx.AsyncClient", side_effect=client_factory),
+        pytest.raises(RevenueCatAPIError) as error,
+    ):
+        await read_reconciliation(AsyncMock(), redis, user.id)
+
+    assert str(error.value) == "RevenueCat cooldown returned an invalid TTL"
+    assert error.value.upstream_status == 429
+    assert error.value.retry_after_seconds == 120
 
 
 @pytest.mark.asyncio
