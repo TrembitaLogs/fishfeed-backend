@@ -5,11 +5,12 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.aquarium import Aquarium, AquariumMember
 from app.models.fish import Fish
+from app.models.notification import NotificationLog, PushToken
 from app.models.species import Species
 from app.models.user import User
 from app.schemas.purchase import FREE_USER_LIMITS
@@ -130,6 +131,68 @@ async def add_family_member(
     await session.commit()
     await session.refresh(member)
     return member
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_expiry_notification_log_and_unregistered_token_commit_after_downgrade(async_engine):
+    """The last worker notification transaction persists independently of its already-committed downgrade."""
+    from app.jobs.subscription_jobs import check_expired_subscriptions_job
+
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as setup:
+        await cleanup_subscription_data(setup)
+        user = User(
+            email="last-notification@example.com",
+            password_hash="test_hash",
+            subscription_status="premium",
+            subscription_expires_at=datetime.now(UTC) - timedelta(hours=1),
+        )
+        setup.add(user)
+        await setup.flush()
+        setup.add(PushToken(user_id=user.id, token="unregistered", platform="android"))
+        await setup.commit()
+        user_id = user.id
+
+    class WorkerContext:
+        async def __aenter__(self):
+            self.session = sessions()
+            return await self.session.__aenter__()
+
+        async def __aexit__(self, *args):
+            return await self.session.__aexit__(*args)
+
+    class UnregisteredNotificationService:
+        def __init__(self, db: AsyncSession):
+            self.db = db
+
+        async def send_push(self, **kwargs):
+            self.db.add(
+                NotificationLog(
+                    user_id=kwargs["user_id"],
+                    notification_type="subscription_expired",
+                    title=kwargs["title"],
+                    body=kwargs["body"],
+                    platform="android",
+                    success=False,
+                    error_code="UNREGISTERED",
+                )
+            )
+            await self.db.execute(text("DELETE FROM push_tokens WHERE token = 'unregistered'"))
+            await self.db.flush()
+            return False
+
+    with (
+        patch("app.jobs.subscription_jobs.async_session_maker", return_value=WorkerContext()),
+        patch("app.jobs.subscription_jobs.NotificationService", UnregisteredNotificationService),
+    ):
+        assert await check_expired_subscriptions_job() == 1
+
+    async with sessions() as check:
+        user = await check.get(User, user_id)
+        assert user is not None and user.subscription_status == "free"
+        assert await check.scalar(select(PushToken).where(PushToken.user_id == user_id)) is None
+        log = await check.scalar(select(NotificationLog).where(NotificationLog.user_id == user_id))
+        assert log is not None and log.error_code == "UNREGISTERED"
 
 
 # check_expired_subscriptions_job tests

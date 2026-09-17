@@ -1,5 +1,6 @@
 """Tests for validated RevenueCat reconciliation reads."""
 
+import asyncio
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
@@ -10,12 +11,13 @@ from uuid import uuid4
 import httpx
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.user import User
 from app.services.purchase import (
     _COOLDOWN_SCRIPT,
     _RECONCILIATION_COOLDOWN_KEY,
+    PurchaseError,
     Reconciliation,
     RevenueCatAPIError,
     RevenueCatNotConfiguredError,
@@ -23,6 +25,7 @@ from app.services.purchase import (
     apply_reconciliation,
     parse_revenuecat_subscriber,
     read_reconciliation,
+    reconcile_user,
 )
 
 
@@ -508,6 +511,136 @@ async def test_apply_reconciliation_merges_premium_snapshot_without_losing_other
         "theme": "dark",
         "subscription": {"product_id": "premium.monthly", "will_renew": True, "is_trial": False},
     }
+
+
+def _proposal(user: User, *, status: str, verified_at: datetime) -> Reconciliation:
+    return Reconciliation(
+        user_id=user.id,
+        before_status=user.subscription_status,
+        before_expires_at=user.subscription_expires_at,
+        before_verified_at=user.subscription_verified_at,
+        before_subscription=dict(user.settings.get("subscription", {})),
+        snapshot=SubscriptionSnapshot(
+            status=status, expires_at=None, product_id=None, will_renew=False, is_trial=False
+        ),
+        verified_at=verified_at,
+        outcome="changed",
+    )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_apply_reconciliation_conflicts_after_another_session_commits(
+    async_engine,
+) -> None:
+    """A delayed provider result cannot overwrite a newer committed snapshot."""
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as setup:
+        await setup.execute(text("DELETE FROM users"))
+        user = User(email="conflict@example.com", password_hash="test_hash", settings={"theme": "dark"})
+        setup.add(user)
+        await setup.commit()
+        user_id = user.id
+
+    async with sessions() as session_a, sessions() as session_b:
+        user_a = await session_a.get(User, user_id)
+        user_b = await session_b.get(User, user_id)
+        assert user_a is not None and user_b is not None
+        proposal_a = _proposal(user_a, status="premium", verified_at=datetime(2026, 9, 17, tzinfo=UTC))
+        proposal_b = _proposal(user_b, status="free", verified_at=datetime(2026, 9, 18, tzinfo=UTC))
+
+        assert (await apply_reconciliation(session_b, proposal_b)).outcome == "changed"
+        await session_b.commit()
+        assert (await apply_reconciliation(session_a, proposal_a)).outcome == "conflict"
+        await session_a.rollback()
+
+    async with sessions() as check:
+        current = await check.get(User, user_id)
+        assert current is not None
+        assert current.subscription_verified_at == datetime(2026, 9, 18, tzinfo=UTC)
+        assert current.settings == {"theme": "dark", "subscription": {"will_renew": False}}
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_reconcile_user_does_not_lock_during_provider_wait_and_returns_503_on_conflict(async_engine) -> None:
+    """A concurrent apply completes while HTTP waits, then the stale wrapper reports retryable conflict."""
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as setup:
+        await setup.execute(text("DELETE FROM users"))
+        user = User(email="wait-conflict@example.com", password_hash="test_hash")
+        setup.add(user)
+        await setup.commit()
+        user_id = user.id
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    settings = SimpleNamespace(REVENUECAT_API_KEY="test-key", ENVIRONMENT="production")
+    real_client = httpx.AsyncClient
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        started.set()
+        await release.wait()
+        return httpx.Response(200, json=subscriber_payload())
+
+    def client_factory(**kwargs: object) -> httpx.AsyncClient:
+        return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    async with sessions() as session_a, sessions() as session_b:
+        with (
+            patch("app.services.purchase.get_settings", return_value=settings),
+            patch("app.services.purchase.httpx.AsyncClient", side_effect=client_factory),
+        ):
+            task = asyncio.create_task(reconcile_user(session_a, FakeRedis(), user_id))
+            await started.wait()
+            user_b = await session_b.get(User, user_id)
+            assert user_b is not None
+            proposal_b = _proposal(user_b, status="free", verified_at=datetime(2026, 9, 18, tzinfo=UTC))
+            await asyncio.wait_for(apply_reconciliation(session_b, proposal_b), timeout=1)
+            await session_b.commit()
+            release.set()
+            with pytest.raises(PurchaseError, match="Subscription changed during reconciliation") as error:
+                await task
+            assert error.value.status_code == 503
+            await session_a.rollback()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_apply_reconciliation_rollback_restores_user_quota_and_settings(async_engine) -> None:
+    """The guarded downgrade remains one transaction until its caller commits."""
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as setup:
+        await setup.execute(text("DELETE FROM users"))
+        user = User(
+            email="rollback@example.com",
+            password_hash="test_hash",
+            subscription_status="premium",
+            subscription_expires_at=datetime(2026, 10, 1, tzinfo=UTC),
+            free_ai_scans_remaining=100,
+            settings={"subscription": {"product_id": "premium.monthly", "will_renew": True}, "theme": "dark"},
+        )
+        setup.add(user)
+        await setup.commit()
+        user_id = user.id
+
+    async with sessions() as applying:
+        before = await applying.get(User, user_id)
+        assert before is not None
+        result = await apply_reconciliation(
+            applying,
+            _proposal(before, status="free", verified_at=datetime(2026, 9, 17, tzinfo=UTC)),
+        )
+        assert result.outcome == "changed"
+        await applying.rollback()
+
+    async with sessions() as check:
+        restored = await check.get(User, user_id)
+        assert restored is not None
+        assert restored.subscription_status == "premium"
+        assert restored.free_ai_scans_remaining == 100
+        assert restored.settings == {
+            "subscription": {"product_id": "premium.monthly", "will_renew": True},
+            "theme": "dark",
+        }
 
 
 @pytest.mark.asyncio

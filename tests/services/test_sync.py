@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.aquarium import Aquarium, AquariumMember
 from app.models.feeding import FeedingLog, FeedingSchedule
@@ -20,6 +20,7 @@ from app.services.sync import (
     _ensure_schedules_for_user,
     process_sync,
 )
+from app.services.sync.changes import apply_changes
 
 
 async def cleanup_sync_test_data(session: AsyncSession) -> None:
@@ -48,6 +49,49 @@ async def create_test_user(
     await session.commit()
     await session.refresh(user)
     return user
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_stale_profile_sync_preserves_current_server_owned_settings(async_engine):
+    """A stale authenticated object cannot erase a newer reconciliation or ads projection."""
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    protected = {
+        "subscription": {"product_id": "premium.monthly", "will_renew": True},
+        "non_subscriptions": {"products": ["remove_ads"]},
+        "limits_exceeded": {"aquariums": {"current": 3, "limit": 2}},
+        "downgraded_at": "2026-09-17T00:00:00+00:00",
+    }
+    async with sessions() as setup:
+        await setup.execute(text("DELETE FROM users"))
+        user = User(email="stale-profile@example.com", password_hash="test_hash", settings={"theme": "light"})
+        setup.add(user)
+        await setup.commit()
+        user_id = user.id
+
+    async with sessions() as session_a, sessions() as session_b:
+        stale = await session_a.get(User, user_id)
+        assert stale is not None
+        current = await session_b.get(User, user_id)
+        assert current is not None
+        current.settings = {**protected, "theme": "light"}
+        await session_b.commit()
+        await session_b.refresh(current)
+
+        change = ChangeItem(
+            entity_type="user_profile",
+            entity_id=user_id,
+            operation="update",
+            data={"settings": {"theme": "dark", "subscription": {}, "non_subscriptions": {}}},
+            client_updated_at=current.updated_at + timedelta(seconds=1),
+        )
+        assert await apply_changes(session_a, user_id, [change]) == []
+        await session_a.commit()
+        assert stale.settings["theme"] == "dark"
+
+    async with sessions() as check:
+        merged = await check.get(User, user_id)
+        assert merged is not None
+        assert merged.settings == {**protected, "theme": "dark"}
 
 
 async def create_test_aquarium(
