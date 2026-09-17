@@ -1,5 +1,6 @@
 """Tests for subscription background jobs."""
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
@@ -253,7 +254,7 @@ async def test_failed_precommit_downgrade_rolls_back_before_next_user(async_engi
         second = User(email="rollback-b@example.com", password_hash="test_hash", subscription_status="premium", subscription_expires_at=expired_at)
         setup.add_all([first, second])
         await setup.commit()
-        first_id, second_id = first.id, second.id
+        user_ids = {first.id, second.id}
 
     class WorkerContext:
         async def __aenter__(self):
@@ -265,8 +266,14 @@ async def test_failed_precommit_downgrade_rolls_back_before_next_user(async_engi
 
     real_limits = __import__("app.jobs.subscription_jobs", fromlist=["apply_free_tier_limits"]).apply_free_tier_limits
 
+    failed_id = None
+    processed_ids: list[uuid.UUID] = []
+
     async def fail_first(db: AsyncSession, user_id):
-        if user_id == first_id:
+        nonlocal failed_id
+        processed_ids.append(user_id)
+        if failed_id is None:
+            failed_id = user_id
             raise RuntimeError("pre-commit limits failure")
         return await real_limits(db, user_id)
 
@@ -275,13 +282,16 @@ async def test_failed_precommit_downgrade_rolls_back_before_next_user(async_engi
         patch("app.jobs.subscription_jobs.apply_free_tier_limits", side_effect=fail_first),
         patch("app.jobs.subscription_jobs._send_subscription_expired_notification", new=AsyncMock(return_value=False)),
     ):
-        assert await check_expired_subscriptions_job() == 1
+        assert await asyncio.wait_for(check_expired_subscriptions_job(), timeout=1) == 1
 
     async with sessions() as check:
-        first = await check.get(User, first_id)
-        second = await check.get(User, second_id)
-        assert first is not None and first.subscription_status == "premium"
-        assert second is not None and second.subscription_status == "free"
+        assert failed_id is not None
+        assert len(processed_ids) == 2
+        assert set(processed_ids) == user_ids
+        failed = await check.get(User, failed_id)
+        succeeded = await check.get(User, next(user_id for user_id in user_ids if user_id != failed_id))
+        assert failed is not None and failed.subscription_status == "premium"
+        assert succeeded is not None and succeeded.subscription_status == "free"
 
 
 # check_expired_subscriptions_job tests

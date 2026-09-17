@@ -14,7 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.user import User
-from app.schemas.purchase import PREMIUM_USER_LIMITS
+from app.schemas.purchase import FREE_USER_LIMITS, PREMIUM_USER_LIMITS
 from app.services.purchase import (
     _COOLDOWN_SCRIPT,
     _RECONCILIATION_COOLDOWN_KEY,
@@ -757,7 +757,12 @@ async def test_apply_reconciliation_handles_premium_free_and_lifetime_transition
     sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions() as setup:
         await setup.execute(text("DELETE FROM users"))
-        user = User(email="transitions@example.com", password_hash="test_hash", settings={"theme": "dark"})
+        user = User(
+            email="transitions@example.com",
+            password_hash="test_hash",
+            free_ai_scans_remaining=100,
+            settings={"theme": "dark", "non_subscriptions": {"products": ["remove_ads"]}},
+        )
         setup.add(user)
         await setup.commit()
         user_id = user.id
@@ -784,6 +789,34 @@ async def test_apply_reconciliation_handles_premium_free_and_lifetime_transition
             assert result.outcome == "changed"
             await applying.commit()
 
+        async with sessions() as check:
+            projected = await check.get(User, user_id)
+            assert projected is not None
+            assert projected.settings["theme"] == "dark"
+            assert projected.settings["non_subscriptions"] == {"products": ["remove_ads"]}
+            if status == "premium" and product_id == "premium.monthly":
+                assert projected.subscription_status == "premium"
+                assert projected.subscription_expires_at == expires_at
+                assert projected.settings["subscription"] == {
+                    "product_id": "premium.monthly",
+                    "will_renew": False,
+                    "is_trial": False,
+                }
+                assert projected.free_ai_scans_remaining == 100
+            elif status == "free":
+                assert projected.subscription_status == "free"
+                assert projected.subscription_expires_at is None
+                assert projected.settings["subscription"] == {"will_renew": False}
+                assert projected.free_ai_scans_remaining == FREE_USER_LIMITS.ai_scans_per_month
+            else:
+                assert projected.subscription_status == "premium"
+                assert projected.subscription_expires_at is None
+                assert projected.settings["subscription"] == {
+                    "product_id": "premium.lifetime",
+                    "will_renew": False,
+                    "is_trial": False,
+                }
+
     async with sessions() as check:
         current = await check.get(User, user_id)
         assert current is not None
@@ -791,6 +824,7 @@ async def test_apply_reconciliation_handles_premium_free_and_lifetime_transition
         assert current.subscription_expires_at is None
         assert current.settings == {
             "theme": "dark",
+            "non_subscriptions": {"products": ["remove_ads"]},
             "subscription": {"product_id": "premium.lifetime", "will_renew": False, "is_trial": False},
         }
 
