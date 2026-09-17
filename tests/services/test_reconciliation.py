@@ -570,6 +570,42 @@ async def test_apply_reconciliation_conflicts_after_another_session_commits(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_simultaneous_apply_waits_for_locked_winner_then_conflicts(async_engine) -> None:
+    """The second identical baseline apply blocks behind the row lock."""
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as setup:
+        await setup.execute(text("DELETE FROM users"))
+        user = User(email="locked-conflict@example.com", password_hash="test_hash")
+        setup.add(user)
+        await setup.commit()
+        user_id = user.id
+    async with sessions() as first, sessions() as second:
+        a = await first.get(User, user_id)
+        b = await second.get(User, user_id)
+        assert a is not None and b is not None
+        proposal_a = _proposal(a, status="premium", verified_at=datetime(2026, 9, 17, tzinfo=UTC))
+        proposal_b = _proposal(b, status="free", verified_at=datetime(2026, 9, 18, tzinfo=UTC))
+        locked = asyncio.Event()
+        release = asyncio.Event()
+
+        async def winner() -> None:
+            assert (await apply_reconciliation(first, proposal_a)).outcome == "changed"
+            locked.set()
+            await release.wait()
+            await first.commit()
+
+        task_a = asyncio.create_task(winner())
+        await asyncio.wait_for(locked.wait(), timeout=1)
+        task_b = asyncio.create_task(apply_reconciliation(second, proposal_b))
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(task_b), timeout=0.1)
+        release.set()
+        await asyncio.wait_for(task_a, timeout=1)
+        assert (await asyncio.wait_for(task_b, timeout=1)).outcome == "conflict"
+        await second.rollback()
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_reconcile_user_does_not_lock_during_provider_wait_and_returns_503_on_conflict(async_engine) -> None:
     """A concurrent apply completes while HTTP waits, then the stale wrapper reports retryable conflict."""
     sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
