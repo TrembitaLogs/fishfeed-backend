@@ -215,6 +215,7 @@ class TestRequirePremium:
         mock_user.id = uuid4()
         mock_user.subscription_status = "premium"
         mock_user.subscription_expires_at = datetime.now(UTC) - timedelta(days=1)
+        mock_user.subscription_verified_at = None
         mock_user.deleted_at = None
 
         mock_redis = AsyncMock()
@@ -274,6 +275,7 @@ class TestCheckAIScanRateLimit:
             if expires_in_days is not None
             else None
         )
+        user.subscription_verified_at = None
         redis = AsyncMock()
         redis.get.return_value = None
         response = Response()

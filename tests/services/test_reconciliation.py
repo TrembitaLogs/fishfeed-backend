@@ -14,6 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.user import User
+from app.schemas.purchase import PREMIUM_USER_LIMITS
 from app.services.purchase import (
     _COOLDOWN_SCRIPT,
     _RECONCILIATION_COOLDOWN_KEY,
@@ -513,7 +514,15 @@ async def test_apply_reconciliation_merges_premium_snapshot_without_losing_other
     }
 
 
-def _proposal(user: User, *, status: str, verified_at: datetime) -> Reconciliation:
+def _proposal(
+    user: User,
+    *,
+    status: str,
+    verified_at: datetime,
+    expires_at: datetime | None = None,
+    product_id: str | None = None,
+    outcome: str = "changed",
+) -> Reconciliation:
     return Reconciliation(
         user_id=user.id,
         before_status=user.subscription_status,
@@ -521,10 +530,10 @@ def _proposal(user: User, *, status: str, verified_at: datetime) -> Reconciliati
         before_verified_at=user.subscription_verified_at,
         before_subscription=dict(user.settings.get("subscription", {})),
         snapshot=SubscriptionSnapshot(
-            status=status, expires_at=None, product_id=None, will_renew=False, is_trial=False
+            status=status, expires_at=expires_at, product_id=product_id, will_renew=False, is_trial=False
         ),
         verified_at=verified_at,
-        outcome="changed",
+        outcome=outcome,  # type: ignore[arg-type]
     )
 
 
@@ -641,6 +650,135 @@ async def test_apply_reconciliation_rollback_restores_user_quota_and_settings(as
             "subscription": {"product_id": "premium.monthly", "will_renew": True},
             "theme": "dark",
         }
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_apply_reconciliation_handles_premium_free_and_lifetime_transitions(async_engine) -> None:
+    """Removing any transition branch must leave the projection or premium metadata wrong."""
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as setup:
+        await setup.execute(text("DELETE FROM users"))
+        user = User(email="transitions@example.com", password_hash="test_hash", settings={"theme": "dark"})
+        setup.add(user)
+        await setup.commit()
+        user_id = user.id
+
+    transitions = (
+        ("premium", datetime(2026, 10, 1, tzinfo=UTC), "premium.monthly"),
+        ("free", None, None),
+        ("premium", None, "premium.lifetime"),
+    )
+    for index, (status, expires_at, product_id) in enumerate(transitions):
+        async with sessions() as applying:
+            current = await applying.get(User, user_id)
+            assert current is not None
+            result = await apply_reconciliation(
+                applying,
+                _proposal(
+                    current,
+                    status=status,
+                    expires_at=expires_at,
+                    product_id=product_id,
+                    verified_at=datetime(2026, 9, 17 + index, tzinfo=UTC),
+                ),
+            )
+            assert result.outcome == "changed"
+            await applying.commit()
+
+    async with sessions() as check:
+        current = await check.get(User, user_id)
+        assert current is not None
+        assert current.subscription_status == "premium"
+        assert current.subscription_expires_at is None
+        assert current.settings == {
+            "theme": "dark",
+            "subscription": {"product_id": "premium.lifetime", "will_renew": False, "is_trial": False},
+        }
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("legacy_status", ["expired", "cancelled"])
+async def test_legacy_nonpremium_upgrade_clears_downgrade_info(async_engine, legacy_status: str) -> None:
+    """Legacy expired/cancelled rows regain premium without carrying downgrade state forward."""
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as setup:
+        await setup.execute(text("DELETE FROM users"))
+        user = User(
+            email=f"{legacy_status}@example.com",
+            password_hash="test_hash",
+            subscription_status=legacy_status,
+            free_ai_scans_remaining=1,
+            settings={"limits_exceeded": {"fish": {}}, "downgraded_at": "old", "theme": "dark"},
+        )
+        setup.add(user)
+        await setup.commit()
+        user_id = user.id
+
+    async with sessions() as applying:
+        current = await applying.get(User, user_id)
+        assert current is not None
+        await apply_reconciliation(
+            applying,
+            _proposal(
+                current,
+                status="premium",
+                product_id="premium.monthly",
+                verified_at=datetime(2026, 9, 17, tzinfo=UTC),
+            ),
+        )
+        await applying.commit()
+
+    async with sessions() as check:
+        upgraded = await check.get(User, user_id)
+        assert upgraded is not None
+        assert upgraded.free_ai_scans_remaining == PREMIUM_USER_LIMITS.ai_scans_per_month
+        assert upgraded.settings == {
+            "theme": "dark",
+            "subscription": {"product_id": "premium.monthly", "will_renew": False, "is_trial": False},
+        }
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(("status", "quota"), [("free", 3), ("premium", 17)])
+async def test_unchanged_reconciliation_refreshes_verification_without_resetting_quota(
+    async_engine,
+    status: str,
+    quota: int,
+) -> None:
+    """Same-state verification refreshes only its timestamp, never quota consequences."""
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as setup:
+        await setup.execute(text("DELETE FROM users"))
+        user = User(
+            email=f"unchanged-{status}@example.com",
+            password_hash="test_hash",
+            subscription_status=status,
+            free_ai_scans_remaining=quota,
+            settings={"subscription": {"will_renew": False}, "theme": "dark"},
+        )
+        setup.add(user)
+        await setup.commit()
+        user_id = user.id
+
+    async with sessions() as applying:
+        current = await applying.get(User, user_id)
+        assert current is not None
+        await apply_reconciliation(
+            applying,
+            _proposal(
+                current,
+                status=status,
+                verified_at=datetime(2026, 9, 17, tzinfo=UTC),
+                outcome="unchanged",
+            ),
+        )
+        await applying.commit()
+
+    async with sessions() as check:
+        unchanged = await check.get(User, user_id)
+        assert unchanged is not None
+        assert unchanged.free_ai_scans_remaining == quota
+        assert unchanged.settings == {"subscription": {"will_renew": False}, "theme": "dark"}
 
 
 @pytest.mark.asyncio
@@ -1014,18 +1152,32 @@ async def test_customer_creation_uses_pre_request_status(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["malformed", "timeout", "redis"])
+@pytest.mark.parametrize("failure", ["malformed", "timeout", "redis", "ambiguous"])
 async def test_read_failures_preserve_the_local_user(failure: str) -> None:
-    """Any failed read must stop before mutating status, expiry, or verification time."""
+    """Failed or ambiguous reads preserve every stored subscription projection field."""
     user = _user("premium")
     user.subscription_expires_at = datetime(2099, 1, 1, tzinfo=UTC)
-    before = (user.subscription_status, user.subscription_expires_at, user.subscription_verified_at)
+    user.subscription_verified_at = datetime(2026, 9, 1, tzinfo=UTC)
+    user.settings = {
+        "subscription": {"product_id": "premium.monthly", "will_renew": True, "is_trial": False},
+        "non_subscriptions": {"products": ["remove_ads"]},
+    }
+    before = (
+        user.subscription_status,
+        user.subscription_expires_at,
+        user.subscription_verified_at,
+        deepcopy(user.settings),
+    )
     settings = SimpleNamespace(REVENUECAT_API_KEY="test-key", ENVIRONMENT="production")
     real_client = httpx.AsyncClient
 
     def handler(request: httpx.Request) -> httpx.Response:
         if failure == "malformed":
             return httpx.Response(200, content=b"not json")
+        if failure == "ambiguous":
+            payload = subscriber_payload()
+            _entitlement(payload)["product_identifier"] = "different.product"
+            return httpx.Response(200, json=payload)
         raise httpx.ReadTimeout("timed out", request=request)
 
     def client_factory(**kwargs: object) -> httpx.AsyncClient:
@@ -1039,7 +1191,7 @@ async def test_read_failures_preserve_the_local_user(failure: str) -> None:
     ):
         await read_reconciliation(AsyncMock(), BrokenRedis() if failure == "redis" else FakeRedis(), user.id)
 
-    assert (user.subscription_status, user.subscription_expires_at, user.subscription_verified_at) == before
+    assert (user.subscription_status, user.subscription_expires_at, user.subscription_verified_at, user.settings) == before
 
 
 @pytest.mark.asyncio

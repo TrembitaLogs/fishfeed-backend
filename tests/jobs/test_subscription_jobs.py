@@ -195,6 +195,51 @@ async def test_expiry_notification_log_and_unregistered_token_commit_after_downg
         assert log is not None and log.error_code == "UNREGISTERED"
 
 
+@pytest.mark.asyncio(loop_scope="session")
+async def test_notification_provider_failure_cannot_rollback_committed_downgrade(async_engine):
+    """A provider exception occurs after the subscription transaction has committed."""
+    from app.jobs.subscription_jobs import check_expired_subscriptions_job
+
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as setup:
+        await cleanup_subscription_data(setup)
+        user = User(
+            email="notification-failure@example.com",
+            password_hash="test_hash",
+            subscription_status="premium",
+            subscription_expires_at=datetime.now(UTC) - timedelta(hours=1),
+        )
+        setup.add(user)
+        await setup.commit()
+        user_id = user.id
+
+    class WorkerContext:
+        async def __aenter__(self):
+            self.session = sessions()
+            return await self.session.__aenter__()
+
+        async def __aexit__(self, *args):
+            return await self.session.__aexit__(*args)
+
+    class BrokenNotificationService:
+        def __init__(self, db: AsyncSession):
+            del db
+
+        async def send_push(self, **kwargs):
+            del kwargs
+            raise RuntimeError("provider unavailable")
+
+    with (
+        patch("app.jobs.subscription_jobs.async_session_maker", return_value=WorkerContext()),
+        patch("app.jobs.subscription_jobs.NotificationService", BrokenNotificationService),
+    ):
+        assert await check_expired_subscriptions_job() == 1
+
+    async with sessions() as check:
+        current = await check.get(User, user_id)
+        assert current is not None and current.subscription_status == "free"
+
+
 # check_expired_subscriptions_job tests
 
 
