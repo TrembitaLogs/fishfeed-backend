@@ -69,13 +69,6 @@ async def check_expired_subscriptions_job() -> int:
                     )
                     continue
 
-            # apply_free_tier_limits() commits per user, so every user's
-            # writes land except those made after their own commit — the
-            # notification log and any push tokens FCM reported as
-            # UNREGISTERED. Without this the last user of the batch loses
-            # them when the session closes.
-            await db.commit()
-
             logger.info("Processed batch of expired subscriptions", batch_size=len(expired_users))
 
     logger.info("check_expired_subscriptions_job completed", users_processed=total_processed)
@@ -98,8 +91,16 @@ async def _process_expired_user(db: AsyncSession, user: User) -> None:
     # Apply free tier limits and record excess items
     await apply_free_tier_limits(db, user_id)
 
+    # Persist the downgrade before notification I/O so provider failure cannot roll it back.
+    await db.commit()
+
     # Send push notification about subscription expiry
-    await _send_subscription_expired_notification(db, user_id)
+    try:
+        await _send_subscription_expired_notification(db, user_id)
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.exception("Failed to persist subscription expiry notification", user_id=user_id)
 
     logger.info("User reverted to free tier after subscription expiry", user_id=user_id)
 
@@ -183,7 +184,7 @@ async def apply_free_tier_limits(db: AsyncSession, user_id: UUID) -> dict:
         user.settings = settings_dict
         logger.info("User limits exceeded", user_id=user_id, exceeded_limits=list(limits_exceeded.keys()))
 
-    await db.commit()
+    await db.flush()
 
     return {
         "user_id": str(user_id),

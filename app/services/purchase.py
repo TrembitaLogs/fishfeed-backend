@@ -1,7 +1,7 @@
 """Purchase service for RevenueCat webhook processing and subscription management."""
 
 import hmac
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from math import ceil
@@ -495,6 +495,77 @@ async def read_reconciliation(
         verified_at=verified_at,
         outcome="unchanged" if unchanged else "changed",
     )
+
+
+async def apply_reconciliation(db: AsyncSession, proposal: Reconciliation) -> Reconciliation:
+    """Apply a previously-read RevenueCat snapshot if its baseline is still current."""
+    stmt = (
+        select(User)
+        .where(User.id == proposal.user_id, User.deleted_at.is_(None))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    user = (await db.execute(stmt)).scalar_one_or_none()
+    if user is None:
+        return replace(proposal, outcome="conflict")
+
+    if (
+        user.subscription_status != proposal.before_status
+        or user.subscription_expires_at != proposal.before_expires_at
+        or user.subscription_verified_at != proposal.before_verified_at
+        or _get_subscription_settings(user) != proposal.before_subscription
+    ):
+        return replace(proposal, outcome="conflict")
+
+    if proposal.outcome == "changed":
+        user.subscription_status = proposal.snapshot.status
+        user.subscription_expires_at = proposal.snapshot.expires_at
+        subscription = _get_subscription_settings(user)
+        if proposal.snapshot.status == "premium":
+            subscription.update(
+                product_id=proposal.snapshot.product_id,
+                will_renew=proposal.snapshot.will_renew,
+                is_trial=proposal.snapshot.is_trial,
+            )
+        else:
+            subscription.pop("product_id", None)
+            subscription.pop("is_trial", None)
+            subscription.pop("billing_issue", None)
+            subscription["will_renew"] = False
+        _set_subscription_settings(user, subscription)
+
+    user.subscription_verified_at = proposal.verified_at
+    await db.flush()
+
+    if proposal.outcome == "changed" and proposal.before_status == "premium" and proposal.snapshot.status == "free":
+        from app.jobs.subscription_jobs import apply_free_tier_limits
+
+        await apply_free_tier_limits(db, user.id)
+    elif (
+        proposal.outcome == "changed"
+        and proposal.before_status != "premium"
+        and proposal.snapshot.status == "premium"
+    ):
+        await _clear_downgrade_info(db, user.id)
+
+    return proposal
+
+
+async def reconcile_user(
+    db: AsyncSession,
+    redis: Redis,
+    user_id: UUID,
+    *,
+    dry_run: bool = False,
+) -> Reconciliation:
+    """Read and atomically apply a single user's RevenueCat reconciliation."""
+    proposal = await read_reconciliation(db, redis, user_id, dry_run=dry_run)
+    if dry_run:
+        return proposal
+    result = await apply_reconciliation(db, proposal)
+    if result.outcome == "conflict":
+        raise PurchaseError("Subscription changed during reconciliation; retry", status_code=503)
+    return result
 
 
 async def _get_user_by_id(db: AsyncSession, user_id: UUID) -> User:
@@ -1055,19 +1126,6 @@ async def get_subscription_status(db: AsyncSession, user_id: UUID) -> Subscripti
 
     status = user.subscription_status
     expires_at = user.subscription_expires_at
-
-    # Check if premium subscription has expired
-    if status == "premium" and expires_at:
-        if expires_at < datetime.now(UTC):
-            # Subscription expired - update status
-            await revert_to_free(db, user_id)
-            return SubscriptionStatus(
-                status="expired",
-                expires_at=expires_at,
-                product_id=subscription_settings.get("product_id"),
-                is_trial=False,
-                will_renew=False,
-            )
 
     return SubscriptionStatus(
         status=status,  # type: ignore[arg-type]

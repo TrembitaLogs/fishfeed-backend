@@ -144,8 +144,8 @@ class TestGetSubscriptionStatus:
             await cleanup_users(async_session)
 
     @pytest.mark.asyncio(loop_scope="session")
-    async def test_returns_expired_and_reverts_for_expired_subscription(self, async_session: AsyncSession):
-        """Test that expired subscription returns expired status and reverts user to free."""
+    async def test_formats_expired_subscription_without_mutating_it(self, async_session: AsyncSession):
+        """A status read cannot overwrite a projection awaiting reconciliation."""
         await cleanup_users(async_session)
         try:
             # Create user with expired subscription
@@ -158,12 +158,11 @@ class TestGetSubscriptionStatus:
 
             status = await get_subscription_status(async_session, user.id)
 
-            assert status.status == "expired"
-            assert status.will_renew is False
+            assert status.status == "premium"
 
-            # Verify user was reverted to free
+            # Verify the local status formatter did not write a downgrade.
             await async_session.refresh(user)
-            assert user.subscription_status == "free"
+            assert user.subscription_status == "premium"
         finally:
             await cleanup_users(async_session)
 

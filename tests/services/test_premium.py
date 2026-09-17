@@ -10,6 +10,7 @@ from app.models.user import User
 from app.schemas.purchase import FREE_USER_LIMITS, PREMIUM_USER_LIMITS, UserLimits
 from app.services.premium import (
     PREMIUM_CACHE_KEY_PREFIX,
+    _is_subscription_active,
     get_user_limits,
     get_user_limits_async,
     invalidate_premium_cache,
@@ -44,6 +45,18 @@ async def create_test_user(
 
 class TestIsPremium:
     """Tests for is_premium function."""
+
+    def test_verified_premium_keeps_access_after_local_expiry(self) -> None:
+        """A verified projection remains premium until a later reconciliation changes it."""
+        user = User(
+            email="verified@example.com",
+            password_hash="test_hash",
+            subscription_status="premium",
+            subscription_expires_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        user.subscription_verified_at = datetime(2026, 1, 1, tzinfo=UTC)
+
+        assert _is_subscription_active(user) is True
 
     @pytest.mark.asyncio(loop_scope="session")
     async def test_returns_true_for_premium_user_with_valid_expiry(

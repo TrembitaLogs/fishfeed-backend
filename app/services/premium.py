@@ -40,6 +40,9 @@ def _is_subscription_active(user: User) -> bool:
     if user.subscription_status != "premium":
         return False
 
+    if user.subscription_verified_at is not None:
+        return True
+
     # If no expiry date, subscription is active
     if user.subscription_expires_at is None:
         return True

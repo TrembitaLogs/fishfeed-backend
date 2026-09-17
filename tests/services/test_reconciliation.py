@@ -9,12 +9,18 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.user import User
 from app.services.purchase import (
     _COOLDOWN_SCRIPT,
     _RECONCILIATION_COOLDOWN_KEY,
+    Reconciliation,
     RevenueCatAPIError,
     RevenueCatNotConfiguredError,
+    SubscriptionSnapshot,
+    apply_reconciliation,
     parse_revenuecat_subscriber,
     read_reconciliation,
 )
@@ -455,6 +461,53 @@ def _user(status: str = "free") -> SimpleNamespace:
         subscription_verified_at=None,
         settings={"subscription": {}},
     )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_apply_reconciliation_merges_premium_snapshot_without_losing_other_settings(
+    async_session: AsyncSession,
+) -> None:
+    """Removing the fresh guarded write must leave this proposal unapplied."""
+    await async_session.execute(text("DELETE FROM users"))
+    await async_session.commit()
+    user = User(
+        email="apply-reconciliation@example.com",
+        password_hash="test_hash",
+        subscription_status="free",
+        settings={"non_subscriptions": {"products": ["remove_ads"]}, "theme": "dark"},
+    )
+    async_session.add(user)
+    await async_session.commit()
+    await async_session.refresh(user)
+    verified_at = datetime(2026, 9, 17, tzinfo=UTC)
+    proposal = Reconciliation(
+        user_id=user.id,
+        before_status="free",
+        before_expires_at=None,
+        before_verified_at=None,
+        before_subscription={},
+        snapshot=SubscriptionSnapshot(
+            status="premium",
+            expires_at=datetime(2026, 10, 17, tzinfo=UTC),
+            product_id="premium.monthly",
+            will_renew=True,
+            is_trial=False,
+        ),
+        verified_at=verified_at,
+        outcome="changed",
+    )
+
+    result = await apply_reconciliation(async_session, proposal)
+
+    assert result.outcome == "changed"
+    await async_session.refresh(user)
+    assert user.subscription_status == "premium"
+    assert user.subscription_verified_at == verified_at
+    assert user.settings == {
+        "non_subscriptions": {"products": ["remove_ads"]},
+        "theme": "dark",
+        "subscription": {"product_id": "premium.monthly", "will_renew": True, "is_trial": False},
+    }
 
 
 @pytest.mark.asyncio
