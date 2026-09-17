@@ -1,7 +1,7 @@
 """Purchase service for RevenueCat webhook processing and subscription management."""
 
 import hmac
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import httpx
@@ -132,6 +132,7 @@ async def check_idempotency(
     redis: Redis,
     transaction_id: str,
     lock_timeout: int = 30,
+    legacy_transaction_id: str | None = None,
 ) -> tuple[bool, str | None]:
     """Check if webhook transaction has already been processed.
 
@@ -140,8 +141,9 @@ async def check_idempotency(
     Args:
         db: Database session.
         redis: Redis client.
-        transaction_id: Unique transaction ID from webhook.
+        transaction_id: Event ID (or legacy transaction ID) used as the deduplication key.
         lock_timeout: Lock expiry in seconds.
+        legacy_transaction_id: Store transaction key used by older webhook handlers.
 
     Returns:
         Tuple of (is_duplicate, lock_key). If is_duplicate is True, the webhook
@@ -163,6 +165,14 @@ async def check_idempotency(
     )
     result = await db.execute(stmt)
     existing = result.scalar_one_or_none()
+
+    if existing is None and legacy_transaction_id and legacy_transaction_id != transaction_id:
+        legacy = await db.scalar(
+            select(WebhookTransaction).where(WebhookTransaction.transaction_id == legacy_transaction_id)
+        )
+        # A store transaction alone must not suppress a different lifecycle event.
+        if legacy and legacy.payload.get("event", {}).get("id") == transaction_id:
+            existing = legacy
 
     if existing:
         # Already processed, release lock
@@ -346,16 +356,30 @@ async def process_webhook(db: AsyncSession, event: WebhookEvent) -> None:
         logger.warning("User not found for app_user_id", app_user_id=app_user_id)
         return
 
-    # Extract entitlement info
+    # Flat RevenueCat fields are authoritative; retain the legacy nested format.
     expires_at: datetime | None = None
-    product_id: str | None = None
+    product_id = event_data.product_id
+    is_flat_event = bool({"entitlement_ids", "expiration_at_ms"} & event_data.model_fields_set)
 
-    if event_data.entitlements:
+    if event_data.expiration_at_ms is not None:
+        expires_at = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=event_data.expiration_at_ms)
+    elif not is_flat_event and event_data.entitlements:
         entitlement = event_data.entitlements[0]
         expires_at = entitlement.expires_at
-        product_id = entitlement.product_identifier
-    elif event_data.transaction:
+        product_id = product_id or entitlement.product_identifier
+    if product_id is None and event_data.transaction:
         product_id = event_data.transaction.product_id
+
+    if (
+        is_flat_event
+        and event_type not in {"NON_RENEWING_PURCHASE", "SUBSCRIBER_ALIAS", "TRANSFER"}
+        and "premium" not in (event_data.entitlement_ids or [])
+    ):
+        logger.info("Ignoring non-premium subscription event", event_type=event_type, user_id=user.id)
+        return
+
+    if event_type in {"INITIAL_PURCHASE", "RENEWAL"} and expires_at is None:
+        raise PurchaseError("Subscription purchase is missing an expiration timestamp")
 
     if event_type == "INITIAL_PURCHASE":
         await update_subscription_status(
@@ -440,7 +464,10 @@ async def process_webhook(db: AsyncSession, event: WebhookEvent) -> None:
             db=db,
             user=user,
             product_id=nonsub_product_id,
-            entitlement_ids=[e.product_identifier for e in event_data.entitlements],
+            entitlement_ids=(
+                (event_data.entitlement_ids or [])
+                if is_flat_event else [e.product_identifier for e in event_data.entitlements]
+            ),
             transaction_id=event_data.transaction_id,
         )
 
