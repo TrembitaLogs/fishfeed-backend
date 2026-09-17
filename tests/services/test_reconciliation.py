@@ -229,6 +229,54 @@ def test_unmatched_active_premium_source_is_ambiguous() -> None:
         parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 17, tzinfo=UTC))
 
 
+def test_premium_allows_exactly_mapped_remove_ads_evidence() -> None:
+    """A separate entitlement mapping proves that an active Remove Ads purchase is not premium evidence."""
+    payload = subscriber_payload()
+    payload["subscriber"]["entitlements"]["remove_ads"] = {
+        "product_identifier": "fishfeed_remove_ads",
+        "purchase_date": "2026-02-01T00:00:00Z",
+        "expires_date": None,
+        "grace_period_expires_date": None,
+    }
+    payload["subscriber"]["non_subscriptions"]["fishfeed_remove_ads"] = [
+        {
+            "is_sandbox": False,
+            "store": "app_store",
+            "period_type": "normal",
+            "purchase_date": "2026-02-01T00:00:00Z",
+            "refunded_at": None,
+            "unsubscribe_detected_at": None,
+        }
+    ]
+
+    result = parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 17, tzinfo=UTC))
+
+    assert result.status == "premium"
+
+
+def test_present_invalid_matching_non_subscription_is_rejected() -> None:
+    """A valid subscription cannot hide a malformed sibling aggregate value."""
+    payload = subscriber_payload()
+    payload["subscriber"]["non_subscriptions"]["premium.monthly"] = None
+
+    with pytest.raises(RevenueCatAPIError):
+        parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 17, tzinfo=UTC))
+
+
+def test_present_invalid_matching_subscription_is_rejected() -> None:
+    """A valid one-time record cannot hide a malformed subscription aggregate value."""
+    payload = subscriber_payload()
+    _entitlement(payload)["expires_date"] = None
+    record = deepcopy(_subscription(payload))
+    record.pop("expires_date")
+    record.pop("grace_period_expires_date")
+    payload["subscriber"]["subscriptions"]["premium.monthly"] = None
+    payload["subscriber"]["non_subscriptions"]["premium.monthly"] = [record]
+
+    with pytest.raises(RevenueCatAPIError):
+        parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 17, tzinfo=UTC))
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -280,6 +328,13 @@ class BrokenRedis(FakeRedis):
     """Simulate an unavailable cooldown store."""
 
     async def ttl(self, key: str) -> int:
+        raise __import__("redis").exceptions.ConnectionError("unavailable")
+
+
+class BrokenEvalRedis(FakeRedis):
+    """Simulate failure while installing a provider cooldown."""
+
+    async def execute_command(self, *args: object) -> int:
         raise __import__("redis").exceptions.ConnectionError("unavailable")
 
 
@@ -445,6 +500,36 @@ async def test_rate_limit_sets_apply_cooldown_but_not_dry_run() -> None:
             await read_reconciliation(AsyncMock(), redis, user.id, dry_run=dry_run)
         assert error.value.retry_after_seconds == 120
         assert len(redis.eval_calls) == expected_writes
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_redis_failure_preserves_provider_metadata() -> None:
+    """A failed cooldown write must still stop the current pass as a provider 429."""
+    user = _user()
+    settings = SimpleNamespace(REVENUECAT_API_KEY="test-key", ENVIRONMENT="production")
+    calls = 0
+    real_client = httpx.AsyncClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(429, headers={"Retry-After": "120"})
+
+    def client_factory(**kwargs: object) -> httpx.AsyncClient:
+        return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    with (
+        patch("app.services.purchase.get_settings", return_value=settings),
+        patch("app.services.purchase._get_user_by_id", new=AsyncMock(return_value=user)),
+        patch("app.services.purchase.httpx.AsyncClient", side_effect=client_factory),
+        pytest.raises(RevenueCatAPIError) as error,
+    ):
+        await read_reconciliation(AsyncMock(), BrokenEvalRedis(), user.id)
+
+    assert calls == 1
+    assert error.value.upstream_status == 429
+    assert error.value.retry_after_seconds == 120
+    assert isinstance(error.value.__cause__, __import__("redis").exceptions.ConnectionError)
 
 
 @pytest.mark.asyncio

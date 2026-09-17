@@ -216,7 +216,10 @@ def _parse_candidate(
 
 
 def _has_unmatched_active_evidence(
-    records_by_product: dict[str, object], matched_product_id: str, now: datetime
+    records_by_product: dict[str, object],
+    matched_product_id: str,
+    nonpremium_mappings: set[tuple[str, datetime]],
+    now: datetime,
 ) -> bool:
     for product_id, value in records_by_product.items():
         if product_id == matched_product_id:
@@ -229,7 +232,10 @@ def _has_unmatched_active_evidence(
             if "product_identifier" in source and source["product_identifier"] != product_id:
                 raise RevenueCatAPIError("RevenueCat response has inconsistent product identity")
             _required_string(source, "store")
-            _datetime_value(source, "purchase_date", required=True)
+            purchase_at = _datetime_value(source, "purchase_date", required=True)
+            assert purchase_at is not None
+            if (product_id, purchase_at) in nonpremium_mappings:
+                continue
             expires_at = _datetime_value(source, "expires_date")
             grace_at = _datetime_value(source, "grace_period_expires_date")
             if _datetime_value(source, "refunded_at") is not None or _datetime_value(source, "revoked_at") is not None:
@@ -238,6 +244,19 @@ def _has_unmatched_active_evidence(
             if effective_expiry is None or effective_expiry > now:
                 return True
     return False
+
+
+def _nonpremium_entitlement_mappings(entitlements: dict[str, object]) -> set[tuple[str, datetime]]:
+    mappings: set[tuple[str, datetime]] = set()
+    for entitlement_id, value in entitlements.items():
+        if entitlement_id == "premium":
+            continue
+        entitlement = _as_dict(value, "non-premium entitlement")
+        product_id = _required_string(entitlement, "product_identifier")
+        purchase_at = _datetime_value(entitlement, "purchase_date", required=True)
+        assert purchase_at is not None
+        mappings.add((product_id, purchase_at))
+    return mappings
 
 
 def parse_revenuecat_subscriber(
@@ -267,8 +286,8 @@ def parse_revenuecat_subscriber(
     entitlement_grace_at = _datetime_value(entitlement, "grace_period_expires_date")
 
     candidates: list[tuple[bool, datetime | None, bool, bool, bool]] = []
-    subscription = subscriptions.get(product_id)
-    if subscription is not None:
+    if product_id in subscriptions:
+        subscription = subscriptions[product_id]
         candidate = _parse_candidate(
             _as_dict(subscription, "subscription evidence"),
             product_id=product_id,
@@ -279,8 +298,8 @@ def parse_revenuecat_subscriber(
         )
         if candidate is not None:
             candidates.append(candidate)
-    non_subscription = non_subscriptions.get(product_id)
-    if non_subscription is not None:
+    if product_id in non_subscriptions:
+        non_subscription = non_subscriptions[product_id]
         records = non_subscription if isinstance(non_subscription, list) else [non_subscription]
         if not records:
             raise RevenueCatAPIError("RevenueCat response has empty non-subscription evidence")
@@ -297,9 +316,10 @@ def parse_revenuecat_subscriber(
                 candidates.append(candidate)
     if not candidates:
         raise RevenueCatAPIError("RevenueCat premium entitlement has no matching evidence")
-    if _has_unmatched_active_evidence(subscriptions, product_id, now) or _has_unmatched_active_evidence(
-        non_subscriptions, product_id, now
-    ):
+    nonpremium_mappings = _nonpremium_entitlement_mappings(entitlements)
+    if _has_unmatched_active_evidence(
+        subscriptions, product_id, nonpremium_mappings, now
+    ) or _has_unmatched_active_evidence(non_subscriptions, product_id, nonpremium_mappings, now):
         raise RevenueCatAPIError("RevenueCat response has ambiguous unmatched premium evidence")
 
     allowed = [candidate for candidate in candidates if not candidate[4] and (not production or not candidate[0])]
@@ -388,7 +408,11 @@ async def read_reconciliation(
                     retry_after,
                 )
             except RedisError as error:
-                raise RevenueCatAPIError("RevenueCat cooldown is unavailable") from error
+                raise RevenueCatAPIError(
+                    "RevenueCat cooldown is unavailable",
+                    upstream_status=429,
+                    retry_after_seconds=retry_after,
+                ) from error
         raise RevenueCatAPIError(
             "RevenueCat API rate limit exceeded",
             upstream_status=429,
