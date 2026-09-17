@@ -91,6 +91,41 @@ def test_main_rejects_unsafe_subscription_flags_before_async_startup(argv, messa
     run.assert_not_called()
 
 
+def test_main_valid_subscription_path_initializes_then_closes_after_failure():
+    """The real CLI coroutine chain forwards scoped flags and owns Redis cleanup."""
+    from app.workers import feeding_worker
+
+    user_id = uuid.uuid4()
+    events: list[str] = []
+
+    async def init_redis():
+        events.append("init")
+
+    async def close_redis():
+        events.append("close")
+
+    async def fail_job(*, dry_run, user_ids):
+        assert events == ["init"]
+        assert dry_run is True and user_ids == (user_id,)
+        events.append("job")
+        raise RuntimeError("subscription failure")
+
+    with (
+        patch.object(
+            sys,
+            "argv",
+            ["feeding_worker", "--run-once", "--job=check_subscriptions", "--dry-run", "--user-id", str(user_id)],
+        ),
+        patch("app.redis.init_redis", side_effect=init_redis),
+        patch("app.redis.close_redis", side_effect=close_redis),
+        patch.object(feeding_worker, "check_expired_subscriptions_job", side_effect=fail_job),
+    ):
+        with pytest.raises(RuntimeError, match="subscription failure"):
+            feeding_worker.main()
+
+    assert events == ["init", "job", "close"]
+
+
 @pytest.mark.asyncio(loop_scope="session")
 async def test_valid_subscription_operation_uses_singleton_and_closes_after_failure():
     """A valid worker operation sees the initialized singleton and cleanup is unconditional."""

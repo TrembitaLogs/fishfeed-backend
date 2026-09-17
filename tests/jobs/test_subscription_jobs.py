@@ -19,6 +19,7 @@ from app.services.purchase import (
     PurchaseError,
     Reconciliation,
     RevenueCatAPIError,
+    RevenueCatNotConfiguredError,
     SubscriptionSnapshot,
     UserNotFoundError,
 )
@@ -368,6 +369,33 @@ def test_fatal_provider_classification_is_metadata_based(error):
     from app.jobs.subscription_jobs import _is_fatal_reconciliation_error
 
     assert _is_fatal_reconciliation_error(error, dry_run=False)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    "error",
+    [
+        RevenueCatNotConfiguredError(),
+        RevenueCatAPIError("cooldown storage", upstream_status=429, failure_kind="storage"),
+    ],
+)
+async def test_global_configuration_or_cooldown_failure_stops_worker_once(error):
+    """Missing configuration and cooldown storage failures cannot fan out across accounts."""
+    from app.jobs import subscription_jobs
+
+    ids = (uuid.uuid4(), uuid.uuid4())
+    db = MagicMock()
+    db.__aenter__ = AsyncMock(return_value=db)
+    db.__aexit__ = AsyncMock(return_value=None)
+    reconcile = AsyncMock(side_effect=error)
+    with (
+        patch("app.jobs.subscription_jobs.async_session_maker", return_value=db),
+        patch("app.redis.get_redis_client", return_value=MagicMock()),
+        patch("app.jobs.subscription_jobs.reconcile_user", reconcile),
+    ):
+        with pytest.raises(type(error)):
+            await subscription_jobs.check_expired_subscriptions_job(user_ids=ids)
+    reconcile.assert_awaited_once()
 
 
 @pytest.mark.asyncio(loop_scope="session")
