@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 # Type aliases for better readability
 WebhookEventType = Literal[
@@ -98,6 +98,11 @@ class WebhookEventData(BaseModel):
     subscriber: WebhookSubscriber | None = None
     id: str | None = None
     product_id: str | None = None
+    entitlement_ids: list[str] | None = None
+    expiration_at_ms: int | None = Field(
+        default=None, strict=True, ge=0, le=253402300799999,
+        description="Unix milliseconds, bounded by datetime's maximum year (9999)",
+    )
     environment: EnvironmentType | None = None
     store: StoreType | None = None
 
@@ -110,7 +115,9 @@ class WebhookEvent(BaseModel):
     """
 
     event: WebhookEventData
-    api_version: str | None = Field(default=None, alias="web_hook_version")
+    api_version: str | None = Field(
+        default=None, validation_alias=AliasChoices("api_version", "web_hook_version"),
+    )
 
 
 class RestorePurchaseRequest(BaseModel):

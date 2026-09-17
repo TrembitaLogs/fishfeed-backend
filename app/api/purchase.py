@@ -110,7 +110,8 @@ async def handle_webhook(
         return WebhookResponse(success=False, message="Invalid webhook payload")
 
     event_data = event.event
-    transaction_id = event_data.transaction_id or event_data.id or correlation_id
+    # Lifecycle events can share a store transaction; only event IDs identify retries.
+    transaction_id = event_data.id or event_data.transaction_id or correlation_id
 
     try:
         # Check idempotency
@@ -118,6 +119,7 @@ async def handle_webhook(
             db=db,
             redis=redis,
             transaction_id=transaction_id,
+            legacy_transaction_id=event_data.transaction_id if event_data.id else None,
         )
 
         if is_duplicate:
