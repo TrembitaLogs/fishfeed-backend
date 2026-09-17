@@ -28,6 +28,7 @@ from app.services.image_processing import (
     preprocess_for_ai,
     process_upload_file,
 )
+from app.services.premium import _is_subscription_active
 from app.services.storage import (
     S3StorageService,
     StorageError,
@@ -96,7 +97,7 @@ async def get_remaining_scans(db: AsyncSession, user_id: UUID) -> int:
         return 0
 
     # Premium users have unlimited scans
-    if user.subscription_status != "free":
+    if _is_subscription_active(user):
         return -1
 
     return user.free_ai_scans_remaining
@@ -293,7 +294,7 @@ async def scan_image(
     if user is None:
         raise AIServiceError("User not found", status_code=404)
 
-    is_premium = user.subscription_status != "free"
+    is_premium = _is_subscription_active(user)
     scans_remaining = -1 if is_premium else user.free_ai_scans_remaining
 
     if not is_premium and scans_remaining <= 0:

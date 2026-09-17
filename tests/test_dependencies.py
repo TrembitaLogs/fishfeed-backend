@@ -5,9 +5,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 from app.dependencies import (
+    check_ai_scan_rate_limit,
     check_image_upload_rate_limit,
     get_current_active_user,
     get_current_user,
@@ -242,6 +243,31 @@ class TestRequirePremium:
         result = await require_premium(current_user=mock_user, redis=mock_redis)
 
         assert result == mock_user
+
+
+class TestCheckAIScanRateLimit:
+    """Tests for the AI scan rate-limit dependency."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["free", "expired", "cancelled"])
+    async def test_nonpremium_status_uses_finite_rate_limit(self, status: str):
+        """Test inactive subscription statuses do not bypass the AI rate limit."""
+        user = MagicMock(spec=User)
+        user.id = uuid4()
+        user.subscription_status = status
+        user.subscription_expires_at = None
+        redis = AsyncMock()
+        redis.get.return_value = None
+        response = Response()
+
+        result = await check_ai_scan_rate_limit(
+            current_user=user,
+            redis=redis,
+            response=response,
+        )
+
+        assert result.remaining == 10
+        assert response.headers["X-RateLimit-Limit"] == "10"
 
 
 class TestCheckImageUploadRateLimit:

@@ -14,7 +14,12 @@ from app.config import get_settings
 from app.database import get_db
 from app.models.user import User
 from app.redis import get_redis
-from app.services.premium import is_premium as check_is_premium
+from app.services.premium import (
+    _is_subscription_active,
+)
+from app.services.premium import (
+    is_premium as check_is_premium,
+)
 from app.services.rate_limiter import AIRateLimiter, RateLimitResult
 from app.utils.jwt import decode_token
 
@@ -165,7 +170,7 @@ async def check_ai_scan_rate_limit(
     Raises:
         HTTPException: 429 Too Many Requests if rate limit exceeded.
     """
-    is_premium = current_user.subscription_status != "free"
+    is_premium = _is_subscription_active(current_user)
     limiter = AIRateLimiter(redis)
 
     result = await limiter.check_scan_limit(current_user.id, is_premium)
