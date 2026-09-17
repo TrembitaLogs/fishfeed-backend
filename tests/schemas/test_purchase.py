@@ -20,6 +20,39 @@ from app.schemas.purchase import (
 class TestWebhookEvent:
     """Tests for WebhookEvent schema."""
 
+    def test_transfer_does_not_require_app_user_id(self):
+        """Transfers identify participants through their transfer arrays."""
+        event = WebhookEvent.model_validate(
+            {
+                "event": {
+                    "id": "transfer-contract",
+                    "type": "TRANSFER",
+                    "transferred_from": ["$RCAnonymousID:old"],
+                    "transferred_to": ["11111111-1111-4111-8111-111111111111"],
+                }
+            }
+        )
+
+        assert event.event.app_user_id is None
+        assert len(event.event.transferred_to) == 1
+
+    def test_promotional_purchase_is_parseable(self):
+        """Dashboard promotional purchases retain the provider's store value."""
+        event = WebhookEvent.model_validate(
+            {
+                "event": {
+                    "id": "promo-contract",
+                    "type": "NON_RENEWING_PURCHASE",
+                    "app_user_id": "11111111-1111-4111-8111-111111111111",
+                    "store": "PROMOTIONAL",
+                    "environment": "PRODUCTION",
+                    "entitlement_ids": ["premium"],
+                }
+            }
+        )
+
+        assert event.event.store == "PROMOTIONAL"
+
     def test_valid_initial_purchase_event(self):
         """Test validation of valid INITIAL_PURCHASE webhook payload."""
         payload = {
@@ -159,8 +192,7 @@ class TestWebhookEvent:
         with pytest.raises(ValidationError) as exc_info:
             WebhookEvent.model_validate(payload)
 
-        errors = exc_info.value.errors()
-        assert any(e["loc"] == ("event", "app_user_id") for e in errors)
+        assert exc_info.value.errors()
 
     def test_optional_fields_with_none(self):
         """Test that optional fields accept None values."""
@@ -242,6 +274,7 @@ class TestWebhookEventData:
             event_data = WebhookEventData(
                 type=event_type,
                 app_user_id="user123",
+                transferred_to=["11111111-1111-4111-8111-111111111111"] if event_type == "TRANSFER" else [],
             )
             assert event_data.type == event_type
 

@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 # Type aliases for better readability
 WebhookEventType = Literal[
@@ -20,8 +20,8 @@ WebhookEventType = Literal[
     "NON_RENEWING_PURCHASE",
 ]
 
-StoreType = Literal["APP_STORE", "PLAY_STORE", "STRIPE", "AMAZON"]
-EnvironmentType = Literal["SANDBOX", "PRODUCTION"]
+StoreType = Literal["APP_STORE", "PLAY_STORE", "STRIPE", "AMAZON", "PROMOTIONAL"]
+EnvironmentType = Literal["SANDBOX", "PRODUCTION", "TEST"]
 PlatformType = Literal["ios", "android"]
 SubscriptionStatusType = Literal["free", "premium", "expired", "cancelled"]
 
@@ -85,8 +85,11 @@ class WebhookEventData(BaseModel):
     """Schema for the event object inside RevenueCat webhook payload."""
 
     type: WebhookEventType
-    app_user_id: str
+    app_user_id: str | None = None
     original_app_user_id: str | None = None
+    aliases: list[str] = Field(default_factory=list)
+    transferred_from: list[str] = Field(default_factory=list)
+    transferred_to: list[str] = Field(default_factory=list)
     transaction_id: str | None = None
     purchase_id: str | None = None
     observer_mode: bool = False
@@ -100,11 +103,23 @@ class WebhookEventData(BaseModel):
     product_id: str | None = None
     entitlement_ids: list[str] | None = None
     expiration_at_ms: int | None = Field(
-        default=None, strict=True, ge=0, le=253402300799999,
+        default=None,
+        strict=True,
+        ge=0,
+        le=253402300799999,
         description="Unix milliseconds, bounded by datetime's maximum year (9999)",
     )
     environment: EnvironmentType | None = None
     store: StoreType | None = None
+
+    @model_validator(mode="after")
+    def require_event_identity(self) -> WebhookEventData:
+        if self.type == "TRANSFER":
+            if not self.transferred_from and not self.transferred_to:
+                raise ValueError("TRANSFER requires transfer participants")
+        elif not self.app_user_id:
+            raise ValueError("Webhook event requires app_user_id")
+        return self
 
 
 class WebhookEvent(BaseModel):
@@ -116,7 +131,8 @@ class WebhookEvent(BaseModel):
 
     event: WebhookEventData
     api_version: str | None = Field(
-        default=None, validation_alias=AliasChoices("api_version", "web_hook_version"),
+        default=None,
+        validation_alias=AliasChoices("api_version", "web_hook_version"),
     )
 
 
@@ -154,9 +170,7 @@ class UserLimits(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     # AI scan limits
-    ai_scans_per_month: int = Field(
-        description="Monthly AI scan limit (-1 for unlimited)"
-    )
+    ai_scans_per_month: int = Field(description="Monthly AI scan limit (-1 for unlimited)")
 
     # Aquarium limits
     max_aquariums: int = Field(description="Maximum number of aquariums")

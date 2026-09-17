@@ -1,8 +1,9 @@
 """Purchase service for RevenueCat webhook processing and subscription management."""
 
 import hmac
+import secrets
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from math import ceil
 from typing import Literal
@@ -259,9 +260,7 @@ def _non_subscription_records(value: object) -> list[object]:
     return value
 
 
-def _ensure_unique_evidence_identities(
-    subscriptions: dict[str, object], non_subscriptions: dict[str, object]
-) -> None:
+def _ensure_unique_evidence_identities(subscriptions: dict[str, object], non_subscriptions: dict[str, object]) -> None:
     seen: set[tuple[str, datetime]] = set()
     for records_by_product, non_subscription in ((subscriptions, False), (non_subscriptions, True)):
         for product_id, value in records_by_product.items():
@@ -542,9 +541,7 @@ async def apply_reconciliation(db: AsyncSession, proposal: Reconciliation) -> Re
 
         await apply_free_tier_limits(db, user.id)
     elif (
-        proposal.outcome == "changed"
-        and proposal.before_status != "premium"
-        and proposal.snapshot.status == "premium"
+        proposal.outcome == "changed" and proposal.before_status != "premium" and proposal.snapshot.status == "premium"
     ):
         await _clear_downgrade_info(db, user.id)
 
@@ -628,7 +625,7 @@ async def check_idempotency(
     transaction_id: str,
     lock_timeout: int = 30,
     legacy_transaction_id: str | None = None,
-) -> tuple[bool, str | None]:
+) -> tuple[bool, tuple[str, str] | None]:
     """Check if webhook transaction has already been processed.
 
     Uses Redis lock for race condition protection and database for persistence.
@@ -641,52 +638,58 @@ async def check_idempotency(
         legacy_transaction_id: Store transaction key used by older webhook handlers.
 
     Returns:
-        Tuple of (is_duplicate, lock_key). If is_duplicate is True, the webhook
-        should not be processed. lock_key is returned for cleanup after processing.
+        Tuple of (is_duplicate, lock_handle). True only acknowledges committed
+        success or skipped audits; a failed audit is retried under a new handle.
     """
     lock_key = f"webhook_lock:{transaction_id}"
 
-    # Try to acquire Redis lock
-    lock_acquired = await redis.set(lock_key, "1", nx=True, ex=lock_timeout)
+    ownership_token = secrets.token_urlsafe(24)
+    lock_handle = (lock_key, ownership_token)
+    lock_acquired = await redis.set(lock_key, ownership_token, nx=True, ex=lock_timeout)
 
     if not lock_acquired:
-        # Another process is handling this transaction
         logger.info("Webhook is being processed by another worker", transaction_id=transaction_id)
-        return True, None
+        raise PurchaseError("Webhook is already being processed; retry", status_code=503)
 
-    # Check if transaction exists in database
-    stmt = select(WebhookTransaction).where(
-        WebhookTransaction.transaction_id == transaction_id
-    )
-    result = await db.execute(stmt)
-    existing = result.scalar_one_or_none()
-
-    if existing is None and legacy_transaction_id and legacy_transaction_id != transaction_id:
-        legacy = await db.scalar(
-            select(WebhookTransaction).where(WebhookTransaction.transaction_id == legacy_transaction_id)
+    try:
+        existing = await db.scalar(
+            select(WebhookTransaction).where(WebhookTransaction.transaction_id == transaction_id)
         )
-        # A store transaction alone must not suppress a different lifecycle event.
-        if legacy and legacy.payload.get("event", {}).get("id") == transaction_id:
-            existing = legacy
+        if existing is None and legacy_transaction_id and legacy_transaction_id != transaction_id:
+            legacy = await db.scalar(
+                select(WebhookTransaction).where(WebhookTransaction.transaction_id == legacy_transaction_id)
+            )
+            if legacy and legacy.payload.get("event", {}).get("id") == transaction_id:
+                existing = legacy
+        if existing and existing.processing_result in {"success", "skipped"}:
+            await release_idempotency_lock(redis, lock_handle)
+            logger.info("Webhook already processed", transaction_id=transaction_id, processed_at=existing.processed_at)
+            return True, None
+        return False, lock_handle
+    except BaseException:
+        await release_idempotency_lock(redis, lock_handle)
+        raise
 
-    if existing:
-        # Already processed, release lock
-        await redis.delete(lock_key)
-        logger.info("Webhook already processed", transaction_id=transaction_id, processed_at=existing.processed_at)
-        return True, None
 
-    return False, lock_key
-
-
-async def release_idempotency_lock(redis: Redis, lock_key: str | None) -> None:
+async def release_idempotency_lock(redis: Redis, lock_handle: tuple[str, str] | None) -> None:
     """Release the idempotency lock after processing.
 
     Args:
         redis: Redis client.
-        lock_key: Lock key to release (can be None if lock wasn't acquired).
+        lock_handle: Lock key and ownership token (or None if not acquired).
     """
-    if lock_key:
-        await redis.delete(lock_key)
+    if lock_handle is None:
+        return
+    try:
+        await redis.execute_command(
+            "EVAL",
+            "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0",
+            1,
+            lock_handle[0],
+            lock_handle[1],
+        )
+    except RedisError as error:
+        logger.warning("Webhook lock cleanup failed", lock_key=lock_handle[0], error=str(error))
 
 
 async def log_webhook_transaction(
@@ -714,16 +717,30 @@ async def log_webhook_transaction(
     Returns:
         Created WebhookTransaction record.
     """
-    transaction = WebhookTransaction(
-        transaction_id=transaction_id,
-        event_type=event_type,
-        user_id=user_id,
-        payload=payload,
-        correlation_id=correlation_id,
-        processing_result=processing_result,
-        error_message=error_message,
+    transaction = await db.scalar(
+        select(WebhookTransaction)
+        .where(WebhookTransaction.transaction_id == transaction_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
-    db.add(transaction)
+    if transaction is None:
+        transaction = WebhookTransaction(
+            transaction_id=transaction_id,
+            event_type=event_type,
+            user_id=user_id,
+            payload=payload,
+            correlation_id=correlation_id,
+            processing_result=processing_result,
+            error_message=error_message,
+        )
+        db.add(transaction)
+    elif transaction.processing_result not in {"success", "skipped"}:
+        transaction.event_type = event_type
+        transaction.user_id = user_id
+        transaction.payload = payload
+        transaction.correlation_id = correlation_id
+        transaction.processing_result = processing_result
+        transaction.error_message = error_message
     await db.flush()
 
     log_kwargs = dict(
@@ -776,7 +793,7 @@ async def _clear_downgrade_info(db: AsyncSession, user_id: UUID) -> None:
 
 async def _grant_non_subscription_entitlement(
     db: AsyncSession,
-    user: User,
+    user_id: UUID,
     product_id: str | None,
     entitlement_ids: list[str],
     transaction_id: str | None,
@@ -787,6 +804,15 @@ async def _grant_non_subscription_entitlement(
     is stored in user.settings.non_subscriptions as a deduplicated list of
     product IDs and as a flat list of entitlement IDs for fast lookup.
     """
+    stmt = (
+        select(User)
+        .where(User.id == user_id, User.deleted_at.is_(None))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    user = (await db.execute(stmt)).scalar_one_or_none()
+    if user is None:
+        raise PurchaseError("Webhook user disappeared; retry", status_code=503)
     settings_dict = dict(user.settings)
     non_sub = dict(settings_dict.get("non_subscriptions", {}))
 
@@ -818,156 +844,85 @@ async def _grant_non_subscription_entitlement(
     )
 
 
-async def process_webhook(db: AsyncSession, event: WebhookEvent) -> None:
+def _webhook_user_ids(event: WebhookEvent) -> list[UUID]:
+    event_data = event.event
+    values = [
+        event_data.app_user_id,
+        event_data.original_app_user_id,
+        *event_data.aliases,
+        *event_data.transferred_from,
+        *event_data.transferred_to,
+    ]
+    user_ids: set[UUID] = set()
+    for value in values:
+        if value:
+            try:
+                user_ids.add(UUID(value))
+            except ValueError:
+                continue
+    return sorted(user_ids, key=str)
+
+
+def _is_premium_event(event: WebhookEvent) -> bool:
+    event_data = event.event
+    if event_data.type != "NON_RENEWING_PURCHASE":
+        return event_data.type not in {"SUBSCRIBER_ALIAS"}
+    entitlement_ids = event_data.entitlement_ids or []
+    return "premium" in entitlement_ids or any(
+        entitlement.product_identifier == "premium" for entitlement in event_data.entitlements
+    )
+
+
+async def process_webhook(
+    db: AsyncSession,
+    event: WebhookEvent,
+    redis: Redis,
+) -> tuple[Literal["success", "skipped"], list[Reconciliation]]:
     """Process RevenueCat webhook event.
 
-    Handles subscription lifecycle events:
-    - INITIAL_PURCHASE: Set user to premium status
-    - RENEWAL: Extend subscription expiry
-    - CANCELLATION: Mark will_renew=False, keep premium until expiry
-    - EXPIRATION: Revert user to free tier
-    - BILLING_ISSUE: Log billing problem
-    - PRODUCT_CHANGE: Update product_id
-    - UNCANCELLATION: Restore will_renew=True
-    - NON_RENEWING_PURCHASE: Grant permanent non-subscription entitlement
-
-    Args:
-        db: Database session.
-        event: Validated webhook event from RevenueCat.
+    Webhooks are only authenticated triggers. RevenueCat's subscriber snapshot
+    remains the source of every premium projection.
     """
     event_data = event.event
     event_type = event_data.type
-    app_user_id = event_data.app_user_id
+    settings = get_settings()
+    if settings.ENVIRONMENT == "production" and event_data.environment in {"SANDBOX", "TEST"}:
+        logger.info("Skipping non-production webhook", event_type=event_type)
+        return "skipped", []
 
-    logger.info(
-        "Processing webhook event",
-        type=event_type,
-        app_user_id=app_user_id,
-        transaction_id=event_data.transaction_id,
+    user_ids = _webhook_user_ids(event)
+    if not user_ids:
+        logger.info("Skipping webhook without a local UUID identity", event_type=event_type)
+        return "skipped", []
+    existing_ids = set(
+        (await db.scalars(select(User.id).where(User.id.in_(user_ids), User.deleted_at.is_(None)))).all()
     )
+    user_ids = [user_id for user_id in user_ids if user_id in existing_ids]
+    if not user_ids:
+        logger.info("Skipping webhook without a local user", event_type=event_type)
+        return "skipped", []
 
-    user = await _get_user_by_app_user_id(db, app_user_id)
-    if user is None:
-        logger.warning("User not found for app_user_id", app_user_id=app_user_id)
-        return
-
-    # Flat RevenueCat fields are authoritative; retain the legacy nested format.
-    expires_at: datetime | None = None
-    product_id = event_data.product_id
-    is_flat_event = bool({"entitlement_ids", "expiration_at_ms"} & event_data.model_fields_set)
-
-    if event_data.expiration_at_ms is not None:
-        expires_at = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=event_data.expiration_at_ms)
-    elif not is_flat_event and event_data.entitlements:
-        entitlement = event_data.entitlements[0]
-        expires_at = entitlement.expires_at
-        product_id = product_id or entitlement.product_identifier
-    if product_id is None and event_data.transaction:
-        product_id = event_data.transaction.product_id
-
-    if (
-        is_flat_event
-        and event_type not in {"NON_RENEWING_PURCHASE", "SUBSCRIBER_ALIAS", "TRANSFER"}
-        and "premium" not in (event_data.entitlement_ids or [])
-    ):
-        logger.info("Ignoring non-premium subscription event", event_type=event_type, user_id=user.id)
-        return
-
-    if event_type in {"INITIAL_PURCHASE", "RENEWAL"} and expires_at is None:
-        raise PurchaseError("Subscription purchase is missing an expiration timestamp")
-
-    if event_type == "INITIAL_PURCHASE":
-        await update_subscription_status(
-            db=db,
-            user_id=user.id,
-            status="premium",
-            expires_at=expires_at,
-            product_id=product_id,
-            will_renew=True,
-        )
-        # Clear any limits exceeded from previous downgrade
-        await _clear_downgrade_info(db, user.id)
-        logger.info("User upgraded to premium via INITIAL_PURCHASE", user_id=user.id)
-
-    elif event_type == "RENEWAL":
-        await update_subscription_status(
-            db=db,
-            user_id=user.id,
-            status="premium",
-            expires_at=expires_at,
-            product_id=product_id,
-            will_renew=True,
-        )
-        # Clear any limits exceeded from previous downgrade (in case user resubscribed)
-        await _clear_downgrade_info(db, user.id)
-        logger.info("User subscription renewed", user_id=user.id, expires_at=expires_at)
-
-    elif event_type == "CANCELLATION":
-        # User cancelled but still has access until expires_at
-        subscription_settings = _get_subscription_settings(user)
-        subscription_settings["will_renew"] = False
-        _set_subscription_settings(user, subscription_settings)
-        await db.flush()
-        logger.info("User cancelled subscription", user_id=user.id, active_until=user.subscription_expires_at)
-
-    elif event_type == "EXPIRATION":
-        await revert_to_free(db, user.id)
-        logger.info("User subscription expired, reverted to free", user_id=user.id)
-
-    elif event_type == "BILLING_ISSUE":
-        logger.warning("Billing issue for user", user_id=user.id, transaction_id=event_data.transaction_id)
-        subscription_settings = _get_subscription_settings(user)
-        subscription_settings["billing_issue"] = True
-        subscription_settings["billing_issue_at"] = datetime.now(UTC).isoformat()
-        _set_subscription_settings(user, subscription_settings)
-        await db.flush()
-
-    elif event_type == "PRODUCT_CHANGE":
-        subscription_settings = _get_subscription_settings(user)
-        subscription_settings["product_id"] = product_id or event_data.product_id
-        _set_subscription_settings(user, subscription_settings)
-        await db.flush()
-        logger.info("User changed product", user_id=user.id, product_id=product_id or event_data.product_id)
-
-    elif event_type == "UNCANCELLATION":
-        subscription_settings = _get_subscription_settings(user)
-        subscription_settings["will_renew"] = True
-        _set_subscription_settings(user, subscription_settings)
-        await db.flush()
-        logger.info("User uncancelled subscription", user_id=user.id)
-
-    elif event_type == "SUBSCRIBER_ALIAS":
-        # User alias event - typically for anonymous to identified user transitions
-        logger.info("Subscriber alias event", app_user_id=app_user_id)
-
-    elif event_type == "TRANSFER":
-        # Transfer event - subscription transferred between users
-        logger.info("Transfer event", app_user_id=app_user_id)
-
-    elif event_type == "NON_RENEWING_PURCHASE":
-        # One-time non-subscription purchase (e.g. fishfeed_remove_ads).
-        # Grants a permanent entitlement with no expiry.
-        # For non-subscriptions we want the store SKU (transaction.product_id /
-        # event-level product_id), not entitlement.product_identifier — those
-        # describe the granted entitlement, not the purchased product.
-        nonsub_product_id = (
-            (event_data.transaction.product_id if event_data.transaction else None)
-            or event_data.product_id
-            or product_id
-        )
+    if not _is_premium_event(event):
+        if event_data.environment != "PRODUCTION":
+            raise PurchaseError("Webhook environment cannot authorize Remove Ads", status_code=503)
         await _grant_non_subscription_entitlement(
             db=db,
-            user=user,
-            product_id=nonsub_product_id,
-            entitlement_ids=(
-                (event_data.entitlement_ids or [])
-                if is_flat_event else [e.product_identifier for e in event_data.entitlements]
-            ),
+            user_id=user_ids[0],
+            product_id=(event_data.transaction.product_id if event_data.transaction else None) or event_data.product_id,
+            entitlement_ids=event_data.entitlement_ids
+            or [entitlement.product_identifier for entitlement in event_data.entitlements],
             transaction_id=event_data.transaction_id,
         )
+        return "success", []
 
-    else:
-        logger.warning("Unhandled webhook event type", event_type=event_type)
+    proposals = [await read_reconciliation(db, redis, user_id) for user_id in user_ids]
+    results: list[Reconciliation] = []
+    for proposal in proposals:
+        result = await apply_reconciliation(db, proposal)
+        if result.outcome == "conflict":
+            raise PurchaseError("Subscription changed during reconciliation; retry", status_code=503)
+        results.append(result)
+    return "success", results
 
 
 async def update_subscription_status(

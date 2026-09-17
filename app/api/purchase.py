@@ -1,6 +1,7 @@
 """API endpoints for RevenueCat webhook processing and subscription management."""
 
 import uuid
+from asyncio import CancelledError
 from typing import Annotated
 
 import structlog
@@ -8,12 +9,14 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import ValidationError
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import get_db
 from app.dependencies import CurrentActiveUser
+from app.models.purchase import WebhookTransaction
 from app.redis import get_redis
 from app.schemas.purchase import (
     RestorePurchaseRequest,
@@ -21,8 +24,11 @@ from app.schemas.purchase import (
     WebhookEvent,
     WebhookResponse,
 )
+from app.services.premium import invalidate_premium_cache
 from app.services.purchase import (
     PurchaseError,
+    RevenueCatAPIError,
+    RevenueCatNotConfiguredError,
     check_idempotency,
     get_subscription_status,
     log_webhook_transaction,
@@ -65,57 +71,69 @@ async def handle_webhook(
     """
     settings = get_settings()
     correlation_id = str(uuid.uuid4())
-    lock_key: str | None = None
+    lock_handle: tuple[str, str] | None = None
 
-    # Read raw body for downstream parsing
-    body = await request.body()
-
-    # Validate Authorization header against configured secret
-    if not settings.REVENUECAT_WEBHOOK_SECRET:
-        logger.warning(
-            "REVENUECAT_WEBHOOK_SECRET is not configured — webhook authorization is disabled. "
-            "Set this secret in production to prevent unauthorized webhook calls.",
-        )
-    else:
+    if not settings.REVENUECAT_WEBHOOK_SECRET and settings.ENVIRONMENT == "production":
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Webhook secret is not configured")
+    if settings.REVENUECAT_WEBHOOK_SECRET:
         if not authorization:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Missing Authorization header",
-            )
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Authorization header")
+        if not verify_webhook_authorization(authorization, settings.REVENUECAT_WEBHOOK_SECRET):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Authorization header")
 
-        if not verify_webhook_authorization(
-            authorization=authorization,
-            secret=settings.REVENUECAT_WEBHOOK_SECRET,
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid Authorization header",
-            )
+    body = await request.body()
 
     # Parse webhook event
     try:
         event = WebhookEvent.model_validate_json(body)
     except (ValidationError, ValueError) as e:
         # Log invalid payload but return 200 to prevent retries
-        await log_webhook_transaction(
-            db=db,
-            transaction_id=f"invalid_{correlation_id}",
-            event_type="PARSE_ERROR",
-            user_id=None,
-            payload={"raw_body": body.decode("utf-8", errors="replace")[:10000]},
-            correlation_id=correlation_id,
-            processing_result="error",
-            error_message=f"Failed to parse webhook: {e}",
-        )
+        try:
+            await log_webhook_transaction(
+                db=db,
+                transaction_id=f"invalid_{correlation_id}",
+                event_type="PARSE_ERROR",
+                user_id=None,
+                payload={"raw_body": body.decode("utf-8", errors="replace")[:10000]},
+                correlation_id=correlation_id,
+                processing_result="error",
+                error_message=f"Failed to parse webhook: {e}",
+            )
+            await db.commit()
+        except (RedisError, SQLAlchemyError):
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Webhook audit is unavailable",
+            ) from None
         return WebhookResponse(success=False, message="Invalid webhook payload")
 
     event_data = event.event
     # Lifecycle events can share a store transaction; only event IDs identify retries.
     transaction_id = event_data.id or event_data.transaction_id or correlation_id
 
+    async def record_error(message: str) -> None:
+        await db.rollback()
+        if lock_handle is None:
+            return
+        try:
+            await log_webhook_transaction(
+                db,
+                transaction_id,
+                event_data.type,
+                event_data.app_user_id,
+                event.model_dump(mode="json"),
+                correlation_id,
+                "error",
+                message,
+            )
+            await db.commit()
+        except SQLAlchemyError:
+            await db.rollback()
+
     try:
         # Check idempotency
-        is_duplicate, lock_key = await check_idempotency(
+        is_duplicate, lock_handle = await check_idempotency(
             db=db,
             redis=redis,
             transaction_id=transaction_id,
@@ -125,10 +143,7 @@ async def handle_webhook(
         if is_duplicate:
             return WebhookResponse(success=True, message="Already processed")
 
-        # Process the webhook
-        await process_webhook(db, event)
-
-        # Log successful transaction
+        audit_disposition, results = await process_webhook(db, event, redis)
         await log_webhook_transaction(
             db=db,
             transaction_id=transaction_id,
@@ -136,47 +151,50 @@ async def handle_webhook(
             user_id=event_data.app_user_id,
             payload=event.model_dump(mode="json"),
             correlation_id=correlation_id,
-            processing_result="success",
+            processing_result=audit_disposition,
         )
-
+        await db.commit()
+        for result in results:
+            await invalidate_premium_cache(str(result.user_id), redis)
         return WebhookResponse(success=True, message="Webhook processed successfully")
 
+    except CancelledError:
+        await db.rollback()
+        raise
+    except IntegrityError:
+        await db.rollback()
+        winner = await db.scalar(select(WebhookTransaction).where(WebhookTransaction.transaction_id == transaction_id))
+        if winner and winner.processing_result in {"success", "skipped"}:
+            return WebhookResponse(success=True, message="Already processed")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Webhook audit is busy") from None
     except PurchaseError as e:
-        # Log purchase-related errors
-        await log_webhook_transaction(
-            db=db,
-            transaction_id=transaction_id,
-            event_type=event_data.type,
-            user_id=event_data.app_user_id,
-            payload=event.model_dump(mode="json"),
-            correlation_id=correlation_id,
-            processing_result="error",
-            error_message=e.message,
-        )
-        # Still return 200 to prevent retries
-        return WebhookResponse(success=False, message=e.message)
+        await record_error(e.message)
+        if isinstance(e, RevenueCatAPIError):
+            error_status = 503 if e.upstream_status == 429 else 502
+        elif isinstance(e, RevenueCatNotConfiguredError) or e.status_code >= 500:
+            error_status = 503
+        else:
+            error_status = e.status_code
+        raise HTTPException(status_code=error_status, detail=e.message) from None
 
     except RedisError as e:
         logger.error("Redis error during webhook processing", error=str(e), correlation_id=correlation_id)
-        await log_webhook_transaction(
-            db=db,
-            transaction_id=transaction_id,
-            event_type=event_data.type,
-            user_id=event_data.app_user_id,
-            payload=event.model_dump(mode="json"),
-            correlation_id=correlation_id,
-            processing_result="error",
-            error_message=f"Redis error: {e}",
-        )
-        return WebhookResponse(success=False, message="Internal processing error")
+        await record_error(f"Redis error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Webhook storage is unavailable",
+        ) from None
 
     except SQLAlchemyError as e:
         logger.error("Database error during webhook processing", error=str(e), correlation_id=correlation_id)
-        return WebhookResponse(success=False, message="Internal processing error")
+        await record_error(f"Database error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Webhook storage is unavailable",
+        ) from None
 
     finally:
-        # Always release the lock
-        await release_idempotency_lock(redis, lock_key)
+        await release_idempotency_lock(redis, lock_handle)
 
 
 @router.post("/restore", response_model=SubscriptionStatus)
