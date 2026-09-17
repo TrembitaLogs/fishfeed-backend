@@ -217,14 +217,15 @@ def _parse_candidate(
 
 def _has_unmatched_active_evidence(
     records_by_product: dict[str, object],
-    matched_product_id: str,
-    nonpremium_mappings: set[tuple[str, datetime]],
+    matched_evidence: tuple[str, datetime],
+    entitlement_owners: dict[tuple[str, datetime], set[str]],
     now: datetime,
+    *,
+    non_subscription: bool,
 ) -> bool:
+    has_unmatched_active_evidence = False
     for product_id, value in records_by_product.items():
-        if product_id == matched_product_id:
-            continue
-        records = value if isinstance(value, list) else [value]
+        records = _non_subscription_records(value) if non_subscription else [value]
         for record in records:
             source = _as_dict(record, "unmatched subscription evidence")
             if "is_sandbox" not in source or not isinstance(source["is_sandbox"], bool):
@@ -234,7 +235,11 @@ def _has_unmatched_active_evidence(
             _required_string(source, "store")
             purchase_at = _datetime_value(source, "purchase_date", required=True)
             assert purchase_at is not None
-            if (product_id, purchase_at) in nonpremium_mappings:
+            evidence = (product_id, purchase_at)
+            if evidence == matched_evidence:
+                continue
+            owners = entitlement_owners.get(evidence, set())
+            if len(owners) == 1 and "premium" not in owners:
                 continue
             expires_at = _datetime_value(source, "expires_date")
             grace_at = _datetime_value(source, "grace_period_expires_date")
@@ -242,21 +247,27 @@ def _has_unmatched_active_evidence(
                 continue
             effective_expiry = _effective_expiry(expires_at, grace_at)
             if effective_expiry is None or effective_expiry > now:
-                return True
-    return False
+                has_unmatched_active_evidence = True
+    return has_unmatched_active_evidence
 
 
-def _nonpremium_entitlement_mappings(entitlements: dict[str, object]) -> set[tuple[str, datetime]]:
-    mappings: set[tuple[str, datetime]] = set()
+def _non_subscription_records(value: object) -> list[object]:
+    if not isinstance(value, list) or not value:
+        raise RevenueCatAPIError("RevenueCat response has invalid non-subscription evidence")
+    for record in value:
+        _as_dict(record, "non-subscription evidence")
+    return value
+
+
+def _entitlement_owners(entitlements: dict[str, object]) -> dict[tuple[str, datetime], set[str]]:
+    owners: dict[tuple[str, datetime], set[str]] = {}
     for entitlement_id, value in entitlements.items():
-        if entitlement_id == "premium":
-            continue
-        entitlement = _as_dict(value, "non-premium entitlement")
+        entitlement = _as_dict(value, "entitlement")
         product_id = _required_string(entitlement, "product_identifier")
         purchase_at = _datetime_value(entitlement, "purchase_date", required=True)
         assert purchase_at is not None
-        mappings.add((product_id, purchase_at))
-    return mappings
+        owners.setdefault((product_id, purchase_at), set()).add(entitlement_id)
+    return owners
 
 
 def parse_revenuecat_subscriber(
@@ -273,6 +284,8 @@ def parse_revenuecat_subscriber(
     entitlements = _as_dict(subscriber.get("entitlements"), "entitlements")
     subscriptions = _as_dict(subscriber.get("subscriptions"), "subscriptions")
     non_subscriptions = _as_dict(subscriber.get("non_subscriptions"), "non_subscriptions")
+    for value in non_subscriptions.values():
+        _non_subscription_records(value)
     if not entitlements:
         return _free_snapshot()
     if "premium" not in entitlements:
@@ -300,9 +313,7 @@ def parse_revenuecat_subscriber(
             candidates.append(candidate)
     if product_id in non_subscriptions:
         non_subscription = non_subscriptions[product_id]
-        records = non_subscription if isinstance(non_subscription, list) else [non_subscription]
-        if not records:
-            raise RevenueCatAPIError("RevenueCat response has empty non-subscription evidence")
+        records = _non_subscription_records(non_subscription)
         for record in records:
             candidate = _parse_candidate(
                 _as_dict(record, "non-subscription evidence"),
@@ -316,10 +327,15 @@ def parse_revenuecat_subscriber(
                 candidates.append(candidate)
     if not candidates:
         raise RevenueCatAPIError("RevenueCat premium entitlement has no matching evidence")
-    nonpremium_mappings = _nonpremium_entitlement_mappings(entitlements)
+    matched_evidence = (product_id, purchase_at)
+    entitlement_owners = _entitlement_owners(entitlements)
+    if entitlement_owners.get(matched_evidence) != {"premium"}:
+        raise RevenueCatAPIError("RevenueCat response has ambiguous entitlement evidence")
     if _has_unmatched_active_evidence(
-        subscriptions, product_id, nonpremium_mappings, now
-    ) or _has_unmatched_active_evidence(non_subscriptions, product_id, nonpremium_mappings, now):
+        subscriptions, matched_evidence, entitlement_owners, now, non_subscription=False
+    ) or _has_unmatched_active_evidence(
+        non_subscriptions, matched_evidence, entitlement_owners, now, non_subscription=True
+    ):
         raise RevenueCatAPIError("RevenueCat response has ambiguous unmatched premium evidence")
 
     allowed = [candidate for candidate in candidates if not candidate[4] and (not production or not candidate[0])]
@@ -423,7 +439,7 @@ async def read_reconciliation(
             f"RevenueCat API returned status {response.status_code}",
             upstream_status=response.status_code,
         )
-    if response.status_code == 201 and (dry_run or user.subscription_status != "free"):
+    if response.status_code == 201 and (dry_run or before_status != "free"):
         raise RevenueCatAPIError("RevenueCat unexpectedly created a customer", upstream_status=201)
     try:
         payload = response.json()

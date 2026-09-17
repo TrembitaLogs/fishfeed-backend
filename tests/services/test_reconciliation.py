@@ -254,6 +254,70 @@ def test_premium_allows_exactly_mapped_remove_ads_evidence() -> None:
     assert result.status == "premium"
 
 
+@pytest.mark.parametrize("sandbox", [False, True])
+def test_same_product_different_purchase_stays_ambiguous(sandbox: bool) -> None:
+    """Only the entitlement-selected purchase may be skipped from aggregate ambiguity checks."""
+    payload = subscriber_payload(sandbox=sandbox)
+    payload["subscriber"]["non_subscriptions"]["premium.monthly"] = [
+        {
+            "is_sandbox": False,
+            "store": "app_store",
+            "period_type": "normal",
+            "purchase_date": "2026-02-01T00:00:00Z",
+            "refunded_at": None,
+            "unsubscribe_detected_at": None,
+        }
+    ]
+
+    with pytest.raises(RevenueCatAPIError):
+        parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 17, tzinfo=UTC))
+
+
+@pytest.mark.parametrize("extra_entitlement", ["remove_ads_duplicate", "bonus"])
+def test_multiple_entitlement_owners_of_evidence_are_ambiguous(extra_entitlement: str) -> None:
+    """An evidence tuple may only be exempt when owned by one non-premium entitlement."""
+    payload = subscriber_payload()
+    if extra_entitlement == "remove_ads_duplicate":
+        payload["subscriber"]["entitlements"]["remove_ads"] = {
+            "product_identifier": "fishfeed_remove_ads",
+            "purchase_date": "2026-02-01T00:00:00Z",
+            "expires_date": None,
+            "grace_period_expires_date": None,
+        }
+        payload["subscriber"]["entitlements"][extra_entitlement] = deepcopy(
+            payload["subscriber"]["entitlements"]["remove_ads"]
+        )
+        payload["subscriber"]["non_subscriptions"]["fishfeed_remove_ads"] = [
+            {
+                "is_sandbox": False,
+                "store": "app_store",
+                "period_type": "normal",
+                "purchase_date": "2026-02-01T00:00:00Z",
+                "refunded_at": None,
+                "unsubscribe_detected_at": None,
+            }
+        ]
+    else:
+        payload["subscriber"]["entitlements"][extra_entitlement] = deepcopy(_entitlement(payload))
+
+    with pytest.raises(RevenueCatAPIError):
+        parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 17, tzinfo=UTC))
+
+
+def test_matching_non_subscription_requires_official_list_shape() -> None:
+    """A singleton object is not a valid v1 non-subscriptions aggregate."""
+    payload = subscriber_payload()
+    _entitlement(payload)["expires_date"] = None
+    record = deepcopy(_subscription(payload))
+    record.pop("expires_date")
+    record.pop("grace_period_expires_date")
+    payload["subscriber"]["subscriptions"] = {}
+    payload["subscriber"]["non_subscriptions"]["premium.monthly"] = record
+
+    with pytest.raises(RevenueCatAPIError):
+        parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 17, tzinfo=UTC))
+
+
 def test_present_invalid_matching_non_subscription_is_rejected() -> None:
     """A valid subscription cannot hide a malformed sibling aggregate value."""
     payload = subscriber_payload()
@@ -622,6 +686,42 @@ async def test_customer_creation_is_limited_to_routine_free_apply(
         else:
             result = await read_reconciliation(AsyncMock(), FakeRedis(), user.id, dry_run=dry_run)
             assert result.snapshot.status == "premium"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("before_status", "mutated_status", "raises"),
+    [("premium", "free", True), ("free", "premium", False)],
+)
+async def test_customer_creation_uses_pre_request_status(
+    before_status: str,
+    mutated_status: str,
+    raises: bool,
+) -> None:
+    """A delayed 201 decision must use the state captured before provider I/O."""
+    user = _user(before_status)
+    settings = SimpleNamespace(REVENUECAT_API_KEY="test-key", ENVIRONMENT="production")
+    real_client = httpx.AsyncClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        user.subscription_status = mutated_status
+        return httpx.Response(201, json=subscriber_payload())
+
+    def client_factory(**kwargs: object) -> httpx.AsyncClient:
+        return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    with (
+        patch("app.services.purchase.get_settings", return_value=settings),
+        patch("app.services.purchase._get_user_by_id", new=AsyncMock(return_value=user)),
+        patch("app.services.purchase.httpx.AsyncClient", side_effect=client_factory),
+    ):
+        if raises:
+            with pytest.raises(RevenueCatAPIError) as error:
+                await read_reconciliation(AsyncMock(), FakeRedis(), user.id)
+            assert error.value.upstream_status == 201
+        else:
+            result = await read_reconciliation(AsyncMock(), FakeRedis(), user.id)
+            assert result.before_status == "free"
 
 
 @pytest.mark.asyncio
