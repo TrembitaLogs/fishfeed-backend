@@ -328,6 +328,8 @@ async def test_dry_run_reports_bounded_reason_and_summary(capsys):
     assert "verified snapshot changes status" in output
     assert "unknown_or_deleted_local_user" in output
     assert "changed=1" in output and "skipped=1" in output and "errors=1" in output
+    assert "Subscription reconciliation dry-run result" in output
+    assert "Subscription reconciliation completed" in output
     assert "top-secret" not in output and "private@example.com" not in output
 
 

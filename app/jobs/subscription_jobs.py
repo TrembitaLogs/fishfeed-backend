@@ -108,6 +108,15 @@ async def check_expired_subscriptions_job(*, dry_run: bool = False, user_ids: tu
                     )
                     if dry_run:
                         counts[proposal.outcome] += 1
+                        reason = _dry_run_reason(proposal)
+                        print(
+                            "Subscription reconciliation dry-run result "
+                            f"id={user_id} before_status={proposal.before_status} "
+                            f"before_expires_at={proposal.before_expires_at} "
+                            f"proposed_status={proposal.snapshot.status} "
+                            f"proposed_expires_at={proposal.snapshot.expires_at} "
+                            f"outcome={proposal.outcome} reason={reason}"
+                        )
                         logger.info(
                             "Subscription reconciliation dry-run result",
                             user_id=user_id,
@@ -116,7 +125,7 @@ async def check_expired_subscriptions_job(*, dry_run: bool = False, user_ids: tu
                             proposed_status=proposal.snapshot.status,
                             proposed_expires_at=proposal.snapshot.expires_at,
                             outcome=proposal.outcome,
-                            reason=_dry_run_reason(proposal),
+                            reason=reason,
                         )
                         continue
 
@@ -153,6 +162,12 @@ async def check_expired_subscriptions_job(*, dry_run: bool = False, user_ids: tu
         if fatal_error is not None:
             break
 
+    if dry_run:
+        print(
+            "Subscription reconciliation completed "
+            f"changed={counts['changed']} unchanged={counts['unchanged']} "
+            f"skipped={counts['skipped']} errors={counts['errors']} total={len(ids)}"
+        )
     logger.info("Subscription reconciliation completed", dry_run=dry_run, total=len(ids), **counts)
     if fatal_error is not None:
         raise fatal_error
