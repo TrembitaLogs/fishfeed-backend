@@ -47,6 +47,7 @@ from app.jobs.backup_job import backup_database_job
 from app.jobs.image_cleanup import image_cleanup_job, s3_reconciliation_job
 from app.jobs.notification_jobs import re_engagement_job, weekly_summary_job
 from app.jobs.subscription_jobs import check_expired_subscriptions_job
+from app.services.purchase import RevenueCatAPIError
 
 logger = structlog.get_logger(__name__)
 settings = get_settings()
@@ -401,9 +402,13 @@ async def run_once(
             result = await job_func()
             logger.info("Job completed", job_name=name, result=result)
         except Exception as e:
-            logger.error("Job failed", job_name=name, error=str(e))
             if name == "check_expired_subscriptions":
+                metadata: dict[str, object] = {"error_type": type(e).__name__}
+                if isinstance(e, RevenueCatAPIError):
+                    metadata.update(upstream_status=e.upstream_status, retry_after_seconds=e.retry_after_seconds)
+                logger.error("Subscription job failed", job_name=name, **metadata)
                 raise
+            logger.error("Job failed", job_name=name, error=str(e))
 
 
 async def _run_with_redis(operation: Callable[[], Awaitable[None]]) -> None:
@@ -499,7 +504,12 @@ def main() -> None:
     )
 
     if args.run_once:
-        asyncio.run(_run_with_redis(lambda: run_once(args.job, dry_run=args.dry_run, user_ids=tuple(args.user_id))))
+        try:
+            asyncio.run(_run_with_redis(lambda: run_once(args.job, dry_run=args.dry_run, user_ids=tuple(args.user_id))))
+        except Exception:
+            if args.dry_run:
+                raise SystemExit(1) from None
+            raise
     else:
         asyncio.run(_run_with_redis(run_worker))
 

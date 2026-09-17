@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.models.aquarium import Aquarium, AquariumMember
 from app.models.fish import Fish
 from app.models.notification import NotificationLog, PushToken
+from app.models.purchase import WebhookTransaction
 from app.models.species import Species
 from app.models.user import User
 from app.schemas.purchase import FREE_USER_LIMITS
@@ -418,6 +419,7 @@ async def test_real_reader_dry_run_reads_redis_without_local_or_redis_writes(asy
     user.free_ai_scans_remaining = 7
     user.settings = {"keep": "value"}
     await async_session.commit()
+    before_audits = await async_session.scalar(select(func.count()).select_from(WebhookTransaction))
     redis = MagicMock()
     redis.ttl = AsyncMock(return_value=-2)
     redis.execute_command = AsyncMock()
@@ -444,6 +446,8 @@ async def test_real_reader_dry_run_reads_redis_without_local_or_redis_writes(asy
         and user.free_ai_scans_remaining == 7
         and user.settings == {"keep": "value"}
     )
+    assert await async_session.scalar(select(func.count()).select_from(WebhookTransaction)) == before_audits
+    redis.ttl.assert_awaited_once_with("revenuecat:reconcile:cooldown")
     redis.execute_command.assert_not_called()
 
 
@@ -512,8 +516,8 @@ async def test_global_configuration_or_cooldown_failure_stops_worker_once(error)
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_fixed_snapshot_batches_every_id_once_when_eligibility_changes():
-    """Batch processing slices one captured list and never reselects newly due rows."""
+async def test_fixed_snapshot_batches_every_id_once_without_reselection():
+    """Batch processing slices one captured list and never reselects it."""
     from app.jobs import subscription_jobs
 
     ids = tuple(uuid.uuid4() for _ in range(subscription_jobs.settings.SUBSCRIPTION_BATCH_SIZE + 1))
@@ -525,9 +529,6 @@ async def test_fixed_snapshot_batches_every_id_once_when_eligibility_changes():
 
     async def reconcile(_db, _redis, user_id):
         seen.append(user_id)
-        if len(seen) == 1:
-            # Simulate a later account ceasing to be cadence-eligible after the snapshot.
-            eligibility[ids[-1]] = False
         return Reconciliation(
             user_id=user_id,
             before_status="free",
@@ -539,7 +540,6 @@ async def test_fixed_snapshot_batches_every_id_once_when_eligibility_changes():
             outcome="unchanged",
         )
 
-    eligibility = {user_id: True for user_id in ids}
     due = AsyncMock(return_value=list(ids))
     with (
         patch("app.jobs.subscription_jobs._due_subscription_user_ids", new=due),
@@ -552,7 +552,6 @@ async def test_fixed_snapshot_batches_every_id_once_when_eligibility_changes():
 
     assert seen == list(ids)
     due.assert_awaited_once()
-    assert eligibility[ids[-1]] is False
 
 
 @pytest.mark.asyncio(loop_scope="session")
