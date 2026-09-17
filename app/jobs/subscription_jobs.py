@@ -39,6 +39,7 @@ async def check_expired_subscriptions_job() -> int:
 
     batch_size = settings.SUBSCRIPTION_BATCH_SIZE
     total_processed = 0
+    failed_user_ids: set[UUID] = set()
     now = datetime.now(UTC)
 
     async with async_session_maker() as db:
@@ -49,22 +50,29 @@ async def check_expired_subscriptions_job() -> int:
                 .where(User.subscription_status == "premium")
                 .where(User.subscription_expires_at < now)
                 .where(User.deleted_at.is_(None))
+                .where(User.id.not_in(failed_user_ids))
                 .limit(batch_size)
             )
             result = await db.execute(stmt)
             expired_users = list(result.scalars().all())
+            expired_user_ids = [user.id for user in expired_users]
 
             if not expired_users:
                 break
 
-            for user in expired_users:
+            for user_id in expired_user_ids:
                 try:
-                    await _process_expired_user(db, user)
+                    current_user = await db.get(User, user_id, populate_existing=True)
+                    if current_user is None:
+                        continue
+                    await _process_expired_user(db, current_user)
                     total_processed += 1
                 except Exception as e:
+                    await db.rollback()
+                    failed_user_ids.add(user_id)
                     logger.error(
                         "Failed to process expired subscription for user",
-                        user_id=user.id,
+                        user_id=user_id,
                         error=str(e),
                     )
                     continue

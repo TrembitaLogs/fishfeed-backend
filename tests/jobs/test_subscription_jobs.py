@@ -240,6 +240,50 @@ async def test_notification_provider_failure_cannot_rollback_committed_downgrade
         assert current is not None and current.subscription_status == "free"
 
 
+@pytest.mark.asyncio(loop_scope="session")
+async def test_failed_precommit_downgrade_rolls_back_before_next_user(async_engine):
+    """A's flushed revert cannot leak into B's later successful commit."""
+    from app.jobs.subscription_jobs import check_expired_subscriptions_job
+
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as setup:
+        await cleanup_subscription_data(setup)
+        expired_at = datetime.now(UTC) - timedelta(hours=1)
+        first = User(email="rollback-a@example.com", password_hash="test_hash", subscription_status="premium", subscription_expires_at=expired_at)
+        second = User(email="rollback-b@example.com", password_hash="test_hash", subscription_status="premium", subscription_expires_at=expired_at)
+        setup.add_all([first, second])
+        await setup.commit()
+        first_id, second_id = first.id, second.id
+
+    class WorkerContext:
+        async def __aenter__(self):
+            self.session = sessions()
+            return await self.session.__aenter__()
+
+        async def __aexit__(self, *args):
+            return await self.session.__aexit__(*args)
+
+    real_limits = __import__("app.jobs.subscription_jobs", fromlist=["apply_free_tier_limits"]).apply_free_tier_limits
+
+    async def fail_first(db: AsyncSession, user_id):
+        if user_id == first_id:
+            raise RuntimeError("pre-commit limits failure")
+        return await real_limits(db, user_id)
+
+    with (
+        patch("app.jobs.subscription_jobs.async_session_maker", return_value=WorkerContext()),
+        patch("app.jobs.subscription_jobs.apply_free_tier_limits", side_effect=fail_first),
+        patch("app.jobs.subscription_jobs._send_subscription_expired_notification", new=AsyncMock(return_value=False)),
+    ):
+        assert await check_expired_subscriptions_job() == 1
+
+    async with sessions() as check:
+        first = await check.get(User, first_id)
+        second = await check.get(User, second_id)
+        assert first is not None and first.subscription_status == "premium"
+        assert second is not None and second.subscription_status == "free"
+
+
 # check_expired_subscriptions_job tests
 
 
