@@ -405,6 +405,44 @@ def _retry_after_seconds(value: str | None) -> int:
     return 60
 
 
+async def _check_reconciliation_cooldown(redis: Redis) -> None:
+    try:
+        cooldown = await redis.ttl(_RECONCILIATION_COOLDOWN_KEY)
+    except RedisError as error:
+        raise RevenueCatAPIError("RevenueCat cooldown is unavailable", failure_kind="storage") from error
+    if cooldown > 0:
+        raise RevenueCatAPIError(
+            "RevenueCat reconciliation is cooling down",
+            upstream_status=429,
+            retry_after_seconds=cooldown,
+        )
+
+
+async def _set_reconciliation_cooldown(redis: Redis, retry_after: int) -> int:
+    try:
+        retained_ttl = await redis.execute_command(
+            "EVAL",
+            _COOLDOWN_SCRIPT,
+            1,
+            _RECONCILIATION_COOLDOWN_KEY,
+            retry_after,
+        )
+    except RedisError as error:
+        raise RevenueCatAPIError(
+            "RevenueCat cooldown is unavailable",
+            upstream_status=429,
+            retry_after_seconds=retry_after,
+            failure_kind="storage",
+        ) from error
+    if not isinstance(retained_ttl, int) or isinstance(retained_ttl, bool) or retained_ttl <= 0:
+        raise RevenueCatAPIError(
+            "RevenueCat cooldown returned an invalid TTL",
+            upstream_status=429,
+            retry_after_seconds=retry_after,
+        )
+    return retained_ttl
+
+
 async def read_reconciliation(
     db: AsyncSession,
     redis: Redis,
@@ -428,16 +466,7 @@ async def read_reconciliation(
     before_expires_at = user.subscription_expires_at
     before_verified_at = user.subscription_verified_at
     before_subscription = _get_subscription_settings(user)
-    try:
-        cooldown = await redis.ttl(_RECONCILIATION_COOLDOWN_KEY)
-    except RedisError as error:
-        raise RevenueCatAPIError("RevenueCat cooldown is unavailable", failure_kind="storage") from error
-    if cooldown > 0:
-        raise RevenueCatAPIError(
-            "RevenueCat reconciliation is cooling down",
-            upstream_status=429,
-            retry_after_seconds=cooldown,
-        )
+    await _check_reconciliation_cooldown(redis)
 
     url = f"https://api.revenuecat.com/v1/subscribers/{quote(str(user_id), safe='')}"
     try:
@@ -451,28 +480,7 @@ async def read_reconciliation(
     if response.status_code == 429:
         retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
         if not dry_run:
-            try:
-                retained_ttl = await redis.execute_command(
-                    "EVAL",
-                    _COOLDOWN_SCRIPT,
-                    1,
-                    _RECONCILIATION_COOLDOWN_KEY,
-                    retry_after,
-                )
-            except RedisError as error:
-                raise RevenueCatAPIError(
-                    "RevenueCat cooldown is unavailable",
-                    upstream_status=429,
-                    retry_after_seconds=retry_after,
-                    failure_kind="storage",
-                ) from error
-            if not isinstance(retained_ttl, int) or isinstance(retained_ttl, bool) or retained_ttl <= 0:
-                raise RevenueCatAPIError(
-                    "RevenueCat cooldown returned an invalid TTL",
-                    upstream_status=429,
-                    retry_after_seconds=retry_after,
-                )
-            retry_after = retained_ttl
+            retry_after = await _set_reconciliation_cooldown(redis, retry_after)
         raise RevenueCatAPIError(
             "RevenueCat API rate limit exceeded",
             upstream_status=429,
@@ -1075,6 +1083,7 @@ async def restore_purchases(
 
     # Verify user exists before making API call
     await _get_user_by_id(db, user_id)
+    await _check_reconciliation_cooldown(redis)
 
     # Call RevenueCat API to validate receipt and get subscriber info
     headers = {
@@ -1100,6 +1109,16 @@ async def restore_purchases(
             if response.status_code == 401:
                 logger.error("RevenueCat API authentication failed")
                 raise RevenueCatAPIError("API authentication failed", upstream_status=response.status_code)
+            if response.status_code == 429:
+                retry_after = await _set_reconciliation_cooldown(
+                    redis,
+                    _retry_after_seconds(response.headers.get("Retry-After")),
+                )
+                raise RevenueCatAPIError(
+                    "RevenueCat API rate limit exceeded",
+                    upstream_status=429,
+                    retry_after_seconds=retry_after,
+                )
             if response.status_code != 200:
                 logger.error("RevenueCat API error", status_code=response.status_code, response_text=response.text)
                 raise RevenueCatAPIError(

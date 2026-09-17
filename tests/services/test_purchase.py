@@ -2,7 +2,8 @@
 
 import asyncio
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
@@ -79,6 +80,21 @@ class ReceiptClient:
         return None
 
 
+class ReceiptRedis:
+    def __init__(self, ttl: int = -2, eval_result: int | None = None) -> None:
+        self.ttl_value = ttl
+        self.eval_result = eval_result
+        self.eval_calls: list[tuple[object, ...]] = []
+
+    async def ttl(self, key: str) -> int:
+        assert key == "revenuecat:reconcile:cooldown"
+        return self.ttl_value
+
+    async def execute_command(self, *args: object) -> int:
+        self.eval_calls.append(args)
+        return self.eval_result if self.eval_result is not None else int(args[-1])
+
+
 @pytest.mark.asyncio(loop_scope="session")
 async def test_restore_validates_receipt_then_reconciles_authoritative_snapshot(
     async_session: AsyncSession, redis_client
@@ -120,6 +136,79 @@ async def test_restore_preserves_receipt_provider_status(async_session: AsyncSes
             await restore_purchases(async_session, record.id, "receipt", "ios", redis_client)
 
         assert error.value.upstream_status == 401
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_restore_cooldown_prevents_receipt_post(async_session: AsyncSession):
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        client = ReceiptClient(SimpleNamespace(status_code=200, text="", json=lambda: {"subscriber": {}}))
+        redis = ReceiptRedis(ttl=2000)
+
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(REVENUECAT_API_KEY="key")),
+            patch("app.services.purchase.httpx.AsyncClient", return_value=client),
+            pytest.raises(RevenueCatAPIError) as error,
+        ):
+            await restore_purchases(async_session, record.id, "receipt", "ios", redis)  # type: ignore[arg-type]
+
+        assert error.value.upstream_status == 429
+        assert error.value.retry_after_seconds == 2000
+        client.post.assert_not_awaited()
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("retry_after", "expected"),
+    [("120", 120), ("invalid", 60)],
+)
+async def test_restore_rate_limit_sets_shared_cooldown(async_session: AsyncSession, retry_after: str, expected: int):
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        response = SimpleNamespace(status_code=429, text="limited", headers={"Retry-After": retry_after})
+        client = ReceiptClient(response)
+        redis = ReceiptRedis()
+
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(REVENUECAT_API_KEY="key")),
+            patch("app.services.purchase.httpx.AsyncClient", return_value=client),
+            pytest.raises(RevenueCatAPIError) as error,
+        ):
+            await restore_purchases(async_session, record.id, "receipt", "ios", redis)  # type: ignore[arg-type]
+
+        assert error.value.upstream_status == 429
+        assert error.value.retry_after_seconds == expected
+        assert redis.eval_calls[-1][-1] == expected
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_restore_rate_limit_parses_http_date_and_retains_longer_ttl(async_session: AsyncSession):
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        retry_after = format_datetime(datetime.now(UTC) + timedelta(seconds=120), usegmt=True)
+        response = SimpleNamespace(status_code=429, text="limited", headers={"Retry-After": retry_after})
+        client = ReceiptClient(response)
+        redis = ReceiptRedis(eval_result=2000)
+
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(REVENUECAT_API_KEY="key")),
+            patch("app.services.purchase.httpx.AsyncClient", return_value=client),
+            pytest.raises(RevenueCatAPIError) as error,
+        ):
+            await restore_purchases(async_session, record.id, "receipt", "ios", redis)  # type: ignore[arg-type]
+
+        assert error.value.upstream_status == 429
+        assert error.value.retry_after_seconds == 2000
+        assert 61 <= int(redis.eval_calls[-1][-1]) <= 120
     finally:
         await clear_purchase_state(async_session)
 

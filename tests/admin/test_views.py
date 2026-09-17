@@ -8,7 +8,7 @@ import uuid
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.views import (
@@ -229,6 +229,45 @@ class TestUserAdminUI:
             await async_session.refresh(user)
             assert user.nickname is None
             assert user.subscription_status == "free"
+        finally:
+            await _cleanup(async_session)
+
+    async def test_user_create_rejects_crafted_subscription_field(
+        self,
+        authed_admin_client: AsyncClient,
+        async_session: AsyncSession,
+        async_engine,
+    ):
+        email = f"viewtest-{uuid.uuid4().hex[:8]}@test.com"
+        try:
+            response = await authed_admin_client.post(
+                "/admin/user/create",
+                data={"email": email, "nickname": "safe-name", "subscription_status": "premium"},
+            )
+
+            assert response.status_code == 400
+            assert await async_session.scalar(select(User).where(User.email == email)) is None
+        finally:
+            await _cleanup(async_session)
+
+    async def test_user_create_allows_email_and_nickname(
+        self,
+        authed_admin_client: AsyncClient,
+        async_session: AsyncSession,
+        async_engine,
+    ):
+        email = f"viewtest-{uuid.uuid4().hex[:8]}@test.com"
+        try:
+            response = await authed_admin_client.post(
+                "/admin/user/create",
+                data={"email": email, "nickname": "Created"},
+                follow_redirects=False,
+            )
+
+            assert response.status_code == 302
+            created = await async_session.scalar(select(User).where(User.email == email))
+            assert created is not None
+            assert created.nickname == "Created"
         finally:
             await _cleanup(async_session)
 

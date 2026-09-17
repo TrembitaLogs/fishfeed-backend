@@ -17,7 +17,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.database import get_db
 from app.models.purchase import WebhookTransaction
 from app.models.user import User
-from app.schemas.purchase import SubscriptionStatus
 from app.services.purchase import (
     InvalidReceiptError,
     PurchaseError,
@@ -651,16 +650,19 @@ async def test_subscription_get_is_local_and_nonmutating(client: AsyncClient, as
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.parametrize("status", ["premium", "free"])
 async def test_restore_endpoint_commits_shared_reconciliation_before_returning_local_status(
-    client: AsyncClient, async_session: AsyncSession, status: str
+    client: AsyncClient, async_session: AsyncSession, async_engine, status: str
 ):
     await clear_webhooks(async_session)
     try:
         record = await webhook_user(async_session)
+        record.subscription_status = "free" if status == "premium" else "premium"
+        record.settings = {"subscription": {"product_id": "before"}}
+        await async_session.commit()
         from app.utils.jwt import create_access_token
 
         result = Reconciliation(
             user_id=record.id,
-            before_status="premium" if status == "free" else "free",
+            before_status=record.subscription_status,
             before_expires_at=None,
             before_verified_at=None,
             before_subscription={},
@@ -670,11 +672,33 @@ async def test_restore_endpoint_commits_shared_reconciliation_before_returning_l
             verified_at=datetime.now(UTC),
             outcome="changed",
         )
-        local_status = SubscriptionStatus(status=status, product_id=result.snapshot.product_id, will_renew=False)
+        observers = async_sessionmaker(async_engine, expire_on_commit=False)
+        events: list[str] = []
+
+        async def dirty_restore(db: AsyncSession, **_: object) -> Reconciliation:
+            events.append("restore")
+            request_user = await db.get(User, record.id)
+            assert request_user is not None
+            request_user.subscription_status = status
+            request_user.settings = {"subscription": {"product_id": result.snapshot.product_id}}
+            await db.flush()
+            return result
+
+        async def observe_committed_cache_invalidation(user_id: str, _redis: object) -> None:
+            events.append("invalidate")
+            assert user_id == str(record.id)
+            async with observers() as observer:
+                stored = await observer.get(User, record.id)
+                assert stored is not None
+                assert stored.subscription_status == status
+                assert stored.settings == {"subscription": {"product_id": result.snapshot.product_id}}
+
         with (
-            patch("app.api.purchase.restore_purchases", new=AsyncMock(return_value=result)) as restore,
-            patch("app.api.purchase.get_subscription_status", new=AsyncMock(return_value=local_status)),
-            patch("app.api.purchase.invalidate_premium_cache", new=AsyncMock()) as invalidate,
+            patch("app.api.purchase.restore_purchases", new=AsyncMock(side_effect=dirty_restore)) as restore,
+            patch(
+                "app.api.purchase.invalidate_premium_cache",
+                new=AsyncMock(side_effect=observe_committed_cache_invalidation),
+            ) as invalidate,
         ):
             response = await client.post(
                 "/api/v1/purchases/restore",
@@ -685,31 +709,67 @@ async def test_restore_endpoint_commits_shared_reconciliation_before_returning_l
         assert response.json()["status"] == status
         assert restore.await_args.kwargs["redis"] is not None
         invalidate.assert_awaited_once()
+        assert events == ["restore", "invalidate"]
+        async with observers() as observer:
+            stored = await observer.get(User, record.id)
+            assert stored is not None
+            assert stored.subscription_status == status
+            assert stored.settings == {"subscription": {"product_id": result.snapshot.product_id}}
     finally:
         await clear_webhooks(async_session)
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_restore_endpoint_rolls_back_on_invalid_receipt_or_provider_failure(
-    client: AsyncClient, async_session: AsyncSession
+@pytest.mark.parametrize(
+    ("error", "expected_status"),
+    [
+        (InvalidReceiptError(), 400),
+        (RevenueCatAPIError("provider failed"), 502),
+        (PurchaseError("Subscription changed during reconciliation; retry", status_code=503), 503),
+    ],
+)
+async def test_restore_endpoint_rolls_back_dirty_projection_on_failure(
+    client: AsyncClient, async_session: AsyncSession, async_engine, error: PurchaseError, expected_status: int
 ):
     await clear_webhooks(async_session)
     try:
         record = await webhook_user(async_session)
         record.subscription_status = "premium"
+        record.settings = {"subscription": {"product_id": "premium.before"}}
         await async_session.commit()
         from app.utils.jwt import create_access_token
 
-        for error, expected_status in ((InvalidReceiptError(), 400), (RevenueCatAPIError("provider failed"), 502)):
-            with patch("app.api.purchase.restore_purchases", new=AsyncMock(side_effect=error)):
-                response = await client.post(
-                    "/api/v1/purchases/restore",
-                    json={"user_id": str(record.id), "receipt": "receipt", "platform": "ios"},
-                    headers={"Authorization": f"Bearer {create_access_token(str(record.id))}"},
-                )
-            assert response.status_code == expected_status
-            await async_session.refresh(record)
-            assert record.subscription_status == "premium"
+        async def dirty_failure(db: AsyncSession, **_: object) -> Reconciliation:
+            events.append("restore")
+            request_user = await db.get(User, record.id)
+            assert request_user is not None
+            request_user.subscription_status = "free"
+            request_user.settings = {"subscription": {"product_id": "dirty"}}
+            await db.flush()
+            original_rollback = db.rollback
+
+            async def observe_rollback() -> None:
+                events.append("rollback")
+                await original_rollback()
+
+            db.rollback = observe_rollback  # type: ignore[method-assign]
+            raise error
+
+        events: list[str] = []
+        with patch("app.api.purchase.restore_purchases", new=AsyncMock(side_effect=dirty_failure)):
+            response = await client.post(
+                "/api/v1/purchases/restore",
+                json={"user_id": str(record.id), "receipt": "receipt", "platform": "ios"},
+                headers={"Authorization": f"Bearer {create_access_token(str(record.id))}"},
+            )
+        assert response.status_code == expected_status
+        assert events == ["restore", "rollback", "rollback"]
+        observers = async_sessionmaker(async_engine, expire_on_commit=False)
+        async with observers() as observer:
+            stored = await observer.get(User, record.id)
+            assert stored is not None
+            assert stored.subscription_status == "premium"
+            assert stored.settings == {"subscription": {"product_id": "premium.before"}}
     finally:
         await clear_webhooks(async_session)
 
