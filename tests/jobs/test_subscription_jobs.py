@@ -208,6 +208,47 @@ async def test_reconciliation_continues_after_account_failure_then_exits_nonzero
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_all_failing_fixed_pass_attempts_each_explicit_id_once():
+    """Account failures do not loop/reselect and the one-shot remains nonzero."""
+    from app.jobs import subscription_jobs
+
+    ids = (uuid.uuid4(), uuid.uuid4())
+    db = MagicMock()
+    db.__aenter__ = AsyncMock(return_value=db)
+    db.__aexit__ = AsyncMock(return_value=None)
+    reconcile = AsyncMock(side_effect=PurchaseError("account failure", status_code=503))
+    with (
+        patch("app.jobs.subscription_jobs.async_session_maker", return_value=db),
+        patch("app.redis.get_redis_client", return_value=MagicMock()),
+        patch("app.jobs.subscription_jobs.reconcile_user", reconcile),
+    ):
+        with pytest.raises(PurchaseError, match="incomplete"):
+            await subscription_jobs.check_expired_subscriptions_job(user_ids=ids)
+
+    assert [call.args[2] for call in reconcile.await_args_list] == list(ids)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_explicit_unknown_or_deleted_ids_are_skipped_by_worker():
+    """Explicit recovery never falls back to a sweep when local identities are absent."""
+    from app.jobs import subscription_jobs
+
+    unknown, deleted = uuid.uuid4(), uuid.uuid4()
+    db = MagicMock()
+    db.__aenter__ = AsyncMock(return_value=db)
+    db.__aexit__ = AsyncMock(return_value=None)
+    reconcile = AsyncMock(side_effect=[UserNotFoundError(unknown), UserNotFoundError(deleted)])
+    with (
+        patch("app.jobs.subscription_jobs.async_session_maker", return_value=db),
+        patch("app.redis.get_redis_client", return_value=MagicMock()),
+        patch("app.jobs.subscription_jobs.reconcile_user", reconcile),
+    ):
+        assert await subscription_jobs.check_expired_subscriptions_job(user_ids=(unknown, deleted)) == 0
+
+    assert [call.args[2] for call in reconcile.await_args_list] == [unknown, deleted]
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_configuration_failure_aborts_fixed_pass(async_engine):
     """One global configuration failure does not repeat for every selected account."""
     from app.jobs import subscription_jobs
