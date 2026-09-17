@@ -56,13 +56,46 @@ async def test_production_sandbox_event_is_audited_skipped_before_provider(clien
     route_settings = SimpleNamespace(ENVIRONMENT="production", REVENUECAT_WEBHOOK_SECRET="secret")
     with (
         patch("app.api.purchase.get_settings", return_value=route_settings),
-        patch("app.api.purchase.process_webhook", new=AsyncMock(return_value=("skipped", []))) as process,
+        patch("app.services.purchase.get_settings", return_value=route_settings),
+        patch("app.services.purchase.read_reconciliation", new=AsyncMock()) as reader,
     ):
         response = await client.post("/api/v1/purchases/webhook", json=payload, headers={"Authorization": "secret"})
 
     assert response.status_code == 200
-    process.assert_awaited_once()
+    reader.assert_not_awaited()
     audit = await async_session.scalar(
         select(WebhookTransaction).where(WebhookTransaction.transaction_id == "sandbox-contract")
+    )
+    assert audit is not None and audit.processing_result == "skipped"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_production_sandbox_remove_ads_is_audited_skipped_before_mutation(client: AsyncClient, async_session):
+    from app.models.user import User
+
+    record = User(email=f"{uuid4()}@example.com", password_hash="unused")
+    async_session.add(record)
+    await async_session.commit()
+    payload = {
+        "event": {
+            "id": "sandbox-ads-contract",
+            "type": "NON_RENEWING_PURCHASE",
+            "app_user_id": str(record.id),
+            "environment": "SANDBOX",
+            "entitlement_ids": ["remove_ads"],
+        }
+    }
+    route_settings = SimpleNamespace(ENVIRONMENT="production", REVENUECAT_WEBHOOK_SECRET="secret")
+    with (
+        patch("app.api.purchase.get_settings", return_value=route_settings),
+        patch("app.services.purchase.get_settings", return_value=route_settings),
+    ):
+        response = await client.post("/api/v1/purchases/webhook", json=payload, headers={"Authorization": "secret"})
+
+    assert response.status_code == 200
+    await async_session.refresh(record)
+    assert record.settings == {}
+    audit = await async_session.scalar(
+        select(WebhookTransaction).where(WebhookTransaction.transaction_id == "sandbox-ads-contract")
     )
     assert audit is not None and audit.processing_result == "skipped"

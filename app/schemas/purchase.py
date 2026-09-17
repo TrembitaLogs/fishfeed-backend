@@ -115,8 +115,8 @@ class WebhookEventData(BaseModel):
     @model_validator(mode="after")
     def require_event_identity(self) -> WebhookEventData:
         if self.type == "TRANSFER":
-            if not self.transferred_from and not self.transferred_to:
-                raise ValueError("TRANSFER requires transfer participants")
+            if not self.transferred_from or not self.transferred_to:
+                raise ValueError("TRANSFER requires both transfer participant sides")
         elif not self.app_user_id:
             raise ValueError("Webhook event requires app_user_id")
         return self

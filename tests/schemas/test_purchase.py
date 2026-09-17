@@ -36,6 +36,11 @@ class TestWebhookEvent:
         assert event.event.app_user_id is None
         assert len(event.event.transferred_to) == 1
 
+    @pytest.mark.parametrize("participants", [{"transferred_from": ["old"]}, {"transferred_to": ["new"]}])
+    def test_transfer_requires_both_participant_sides(self, participants: dict[str, list[str]]):
+        with pytest.raises(ValidationError, match="TRANSFER requires"):
+            WebhookEvent.model_validate({"event": {"type": "TRANSFER", **participants}})
+
     def test_promotional_purchase_is_parseable(self):
         """Dashboard promotional purchases retain the provider's store value."""
         event = WebhookEvent.model_validate(
@@ -271,10 +276,18 @@ class TestWebhookEventData:
         ]
 
         for event_type in event_types:
+            transfer_participants = (
+                {
+                    "transferred_from": ["$RCAnonymousID:old"],
+                    "transferred_to": ["11111111-1111-4111-8111-111111111111"],
+                }
+                if event_type == "TRANSFER"
+                else {}
+            )
             event_data = WebhookEventData(
                 type=event_type,
                 app_user_id="user123",
-                transferred_to=["11111111-1111-4111-8111-111111111111"] if event_type == "TRANSFER" else [],
+                **transfer_participants,
             )
             assert event_data.type == event_type
 

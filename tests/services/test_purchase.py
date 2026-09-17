@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
 import pytest
+from redis.exceptions import RedisError
 from sqlalchemy import func, select, text
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.purchase import WebhookTransaction
@@ -19,6 +19,9 @@ from app.services.purchase import (
     PurchaseError,
     Reconciliation,
     SubscriptionSnapshot,
+    UserNotFoundError,
+    WebhookAuditConflict,
+    WebhookRetryableError,
     apply_reconciliation,
     check_idempotency,
     log_webhook_transaction,
@@ -160,6 +163,104 @@ async def test_remove_ads_uses_fresh_locked_user_without_provider(async_session:
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_remove_ads_uses_exact_app_user_id_not_an_alias(async_session: AsyncSession, redis_client):
+    await clear_purchase_state(async_session)
+    try:
+        purchaser, alias = await user(async_session), await user(async_session)
+        webhook = event(
+            "NON_RENEWING_PURCHASE",
+            app_user_id=str(purchaser.id),
+            aliases=[str(alias.id)],
+            environment="PRODUCTION",
+            product_id="fishfeed_remove_ads",
+            entitlement_ids=["remove_ads"],
+        )
+        with patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")):
+            await process_webhook(async_session, webhook, redis_client)
+
+        await async_session.refresh(purchaser)
+        await async_session.refresh(alias)
+        assert purchaser.settings["non_subscriptions"]["products"] == ["fishfeed_remove_ads"]
+        assert "non_subscriptions" not in alias.settings
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_alias_and_unrelated_events_skip_without_ads_write(async_session: AsyncSession, redis_client):
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        webhook = event("SUBSCRIBER_ALIAS", app_user_id=str(record.id), aliases=[str(uuid4())])
+        with patch("app.services.purchase.read_reconciliation", new=AsyncMock()) as reader:
+            disposition, results = await process_webhook(async_session, webhook, redis_client)
+
+        assert (disposition, results) == ("skipped", [])
+        reader.assert_not_awaited()
+        await async_session.refresh(record)
+        assert record.settings == {}
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_unsupported_application_environment_cannot_write_remove_ads(async_session: AsyncSession, redis_client):
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        webhook = event(
+            "NON_RENEWING_PURCHASE",
+            app_user_id=str(record.id),
+            environment="PRODUCTION",
+            entitlement_ids=["remove_ads"],
+        )
+        with patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="staging")):
+            with pytest.raises(PurchaseError, match="unsupported environment") as error:
+                await process_webhook(async_session, webhook, redis_client)
+        assert error.value.status_code == 503
+        await async_session.refresh(record)
+        assert record.settings == {}
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_redis_reconciliation_failure_has_storage_cause(async_session: AsyncSession):
+    record = await user(async_session)
+    webhook = event("INITIAL_PURCHASE", app_user_id=str(record.id), environment="PRODUCTION")
+    unavailable_redis = SimpleNamespace(ttl=AsyncMock(side_effect=RedisError("unavailable")))
+    try:
+        with patch(
+            "app.services.purchase.get_settings",
+            return_value=SimpleNamespace(ENVIRONMENT="production", REVENUECAT_API_KEY="key"),
+        ):
+            with pytest.raises(PurchaseError) as error:
+                await process_webhook(async_session, webhook, unavailable_redis)
+        assert getattr(error.value, "failure_kind", None) == "storage"
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_disappearing_reconciliation_participant_is_retryable(async_session: AsyncSession, redis_client):
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        webhook = event("INITIAL_PURCHASE", app_user_id=str(record.id), environment="PRODUCTION")
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")),
+            patch(
+                "app.services.purchase.read_reconciliation",
+                side_effect=UserNotFoundError(record.id),
+            ),
+            pytest.raises(WebhookRetryableError, match="participant disappeared"),
+        ):
+            await process_webhook(async_session, webhook, redis_client)
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_unresolved_ads_environment_is_retryable(async_session: AsyncSession, redis_client):
     await clear_purchase_state(async_session)
     try:
@@ -275,6 +376,45 @@ async def test_failed_audit_is_retryable_but_terminal_audit_is_not_overwritten(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_legacy_dedup_fallback_requires_the_matching_event_id(async_session: AsyncSession, redis_client):
+    await clear_purchase_state(async_session)
+    await redis_client.flushdb()
+    try:
+        await log_webhook_transaction(
+            async_session,
+            "legacy-store-id",
+            "INITIAL_PURCHASE",
+            None,
+            {"event": {"id": "event-id"}},
+            processing_result="success",
+        )
+        await async_session.commit()
+        duplicate, handle = await check_idempotency(
+            async_session, redis_client, "event-id", legacy_transaction_id="legacy-store-id"
+        )
+        assert duplicate and handle is None
+
+        duplicate, handle = await check_idempotency(
+            async_session, redis_client, "different-event", legacy_transaction_id="legacy-store-id"
+        )
+        assert not duplicate and handle is not None
+        await release_idempotency_lock(redis_client, handle)
+    finally:
+        await clear_purchase_state(async_session)
+        await redis_client.flushdb()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_lookup_failure_releases_acquired_lock(redis_client):
+    await redis_client.flushdb()
+    database = SimpleNamespace(scalar=AsyncMock(side_effect=RuntimeError("lookup failed")))
+    with pytest.raises(RuntimeError, match="lookup failed"):
+        await check_idempotency(database, redis_client, "lookup-failure")
+    assert await redis_client.get("webhook_lock:lookup-failure") is None
+    await redis_client.flushdb()
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_expired_owner_cannot_delete_replacement_lock(redis_client):
     await redis_client.flushdb()
     try:
@@ -283,6 +423,12 @@ async def test_expired_owner_cannot_delete_replacement_lock(redis_client):
         assert await redis_client.get("webhook_lock:replacement") == "replacement"
     finally:
         await redis_client.flushdb()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_lock_release_failure_is_nonfatal():
+    unavailable_redis = SimpleNamespace(execute_command=AsyncMock(side_effect=RedisError("unavailable")))
+    await release_idempotency_lock(unavailable_redis, ("webhook_lock:failure", "token"))
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -312,7 +458,7 @@ async def test_two_sessions_keep_a_terminal_audit_when_a_late_writer_loses(async
         await asyncio.sleep(0.05)
         assert not loser.done()
         await first.commit()
-        with pytest.raises(IntegrityError):
+        with pytest.raises(WebhookAuditConflict):
             await loser
         await late.rollback()
 

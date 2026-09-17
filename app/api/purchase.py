@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -29,6 +29,7 @@ from app.services.purchase import (
     PurchaseError,
     RevenueCatAPIError,
     RevenueCatNotConfiguredError,
+    WebhookAuditConflict,
     check_idempotency,
     get_subscription_status,
     log_webhook_transaction,
@@ -112,10 +113,11 @@ async def handle_webhook(
     # Lifecycle events can share a store transaction; only event IDs identify retries.
     transaction_id = event_data.id or event_data.transaction_id or correlation_id
 
-    async def record_error(message: str) -> None:
+    async def record_error(message: str) -> tuple[WebhookResponse | None, bool]:
+        """Persist a retryable failure, or acknowledge a terminal race winner."""
         await db.rollback()
         if lock_handle is None:
-            return
+            return None, False
         try:
             await log_webhook_transaction(
                 db,
@@ -128,8 +130,19 @@ async def handle_webhook(
                 message,
             )
             await db.commit()
+            return None, False
+        except WebhookAuditConflict:
+            await db.rollback()
+            return await terminal_audit_response(), True
         except SQLAlchemyError:
             await db.rollback()
+            return None, False
+
+    async def terminal_audit_response() -> WebhookResponse | None:
+        winner = await db.scalar(select(WebhookTransaction).where(WebhookTransaction.transaction_id == transaction_id))
+        if winner and winner.processing_result in {"success", "skipped"}:
+            return WebhookResponse(success=True, message="Already processed")
+        return None
 
     try:
         # Check idempotency
@@ -161,16 +174,20 @@ async def handle_webhook(
     except CancelledError:
         await db.rollback()
         raise
-    except IntegrityError:
+    except WebhookAuditConflict:
         await db.rollback()
-        winner = await db.scalar(select(WebhookTransaction).where(WebhookTransaction.transaction_id == transaction_id))
-        if winner and winner.processing_result in {"success", "skipped"}:
-            return WebhookResponse(success=True, message="Already processed")
+        winner = await terminal_audit_response()
+        if winner is not None:
+            return winner
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Webhook audit is busy") from None
     except PurchaseError as e:
-        await record_error(e.message)
-        if isinstance(e, RevenueCatAPIError):
-            error_status = 503 if e.upstream_status == 429 else 502
+        winner, audit_busy = await record_error(e.message)
+        if winner is not None:
+            return winner
+        if audit_busy:
+            error_status = 503
+        elif isinstance(e, RevenueCatAPIError):
+            error_status = 503 if e.upstream_status == 429 or e.failure_kind != "provider" else 502
         elif isinstance(e, RevenueCatNotConfiguredError) or e.status_code >= 500:
             error_status = 503
         else:

@@ -15,6 +15,7 @@ import structlog
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -36,6 +37,17 @@ class PurchaseError(Exception):
         self.message = message
         self.status_code = status_code
         super().__init__(message)
+
+
+class WebhookRetryableError(PurchaseError):
+    """Raised when a webhook can safely retry after local state recovers."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, status_code=503)
+
+
+class WebhookAuditConflict(Exception):
+    """A concurrent writer won the webhook transaction unique key."""
 
 
 class UserNotFoundError(PurchaseError):
@@ -61,10 +73,12 @@ class RevenueCatAPIError(PurchaseError):
         *,
         upstream_status: int | None = None,
         retry_after_seconds: int | None = None,
+        failure_kind: Literal["provider", "storage", "configuration"] = "provider",
     ) -> None:
         super().__init__(message, status_code=502)
         self.upstream_status = upstream_status
         self.retry_after_seconds = retry_after_seconds
+        self.failure_kind = failure_kind
 
 
 class RevenueCatNotConfiguredError(PurchaseError):
@@ -405,7 +419,10 @@ async def read_reconciliation(
     try:
         production = _RECONCILIATION_ENVIRONMENTS[settings.ENVIRONMENT]
     except KeyError:
-        raise RevenueCatAPIError("RevenueCat reconciliation has unsupported environment") from None
+        raise RevenueCatAPIError(
+            "RevenueCat reconciliation has unsupported environment",
+            failure_kind="configuration",
+        ) from None
     user = await _get_user_by_id(db, user_id)
     before_status = user.subscription_status
     before_expires_at = user.subscription_expires_at
@@ -414,7 +431,7 @@ async def read_reconciliation(
     try:
         cooldown = await redis.ttl(_RECONCILIATION_COOLDOWN_KEY)
     except RedisError as error:
-        raise RevenueCatAPIError("RevenueCat cooldown is unavailable") from error
+        raise RevenueCatAPIError("RevenueCat cooldown is unavailable", failure_kind="storage") from error
     if cooldown > 0:
         raise RevenueCatAPIError(
             "RevenueCat reconciliation is cooling down",
@@ -447,6 +464,7 @@ async def read_reconciliation(
                     "RevenueCat cooldown is unavailable",
                     upstream_status=429,
                     retry_after_seconds=retry_after,
+                    failure_kind="storage",
                 ) from error
             if not isinstance(retained_ttl, int) or isinstance(retained_ttl, bool) or retained_ttl <= 0:
                 raise RevenueCatAPIError(
@@ -733,7 +751,14 @@ async def log_webhook_transaction(
             processing_result=processing_result,
             error_message=error_message,
         )
-        db.add(transaction)
+        try:
+            async with db.begin_nested():
+                db.add(transaction)
+                await db.flush()
+        except IntegrityError as error:
+            if _is_webhook_transaction_unique_conflict(error):
+                raise WebhookAuditConflict() from error
+            raise
     elif transaction.processing_result not in {"success", "skipped"}:
         transaction.event_type = event_type
         transaction.user_id = user_id
@@ -741,7 +766,8 @@ async def log_webhook_transaction(
         transaction.correlation_id = correlation_id
         transaction.processing_result = processing_result
         transaction.error_message = error_message
-    await db.flush()
+    if transaction not in db.new:
+        await db.flush()
 
     log_kwargs = dict(
         transaction_id=transaction_id,
@@ -756,6 +782,21 @@ async def log_webhook_transaction(
         logger.info("Webhook logged", **log_kwargs)
 
     return transaction
+
+
+def _is_webhook_transaction_unique_conflict(error: IntegrityError) -> bool:
+    """Return whether PostgreSQL rejected the webhook transaction id unique key."""
+    current: object | None = error.orig
+    while current is not None:
+        diagnostic = getattr(current, "diag", None)
+        constraint_name = getattr(current, "constraint_name", None) or getattr(diagnostic, "constraint_name", None)
+        if getattr(current, "sqlstate", None) == "23505" and constraint_name in {
+            "ix_webhook_transactions_transaction_id",
+            "webhook_transactions_transaction_id_key",
+        }:
+            return True
+        current = getattr(current, "__cause__", None)
+    return False
 
 
 async def _clear_downgrade_info(db: AsyncSession, user_id: UUID) -> None:
@@ -863,14 +904,30 @@ def _webhook_user_ids(event: WebhookEvent) -> list[UUID]:
     return sorted(user_ids, key=str)
 
 
-def _is_premium_event(event: WebhookEvent) -> bool:
+def _webhook_event_class(event: WebhookEvent) -> Literal["premium", "ads", "skipped"]:
+    """Classify the only webhook effects this endpoint is allowed to perform."""
     event_data = event.event
+    if event_data.type == "SUBSCRIBER_ALIAS":
+        return "skipped"
+    if event_data.type in {
+        "INITIAL_PURCHASE",
+        "RENEWAL",
+        "CANCELLATION",
+        "EXPIRATION",
+        "BILLING_ISSUE",
+        "PRODUCT_CHANGE",
+        "UNCANCELLATION",
+        "TRANSFER",
+    }:
+        return "premium"
     if event_data.type != "NON_RENEWING_PURCHASE":
-        return event_data.type not in {"SUBSCRIBER_ALIAS"}
+        return "skipped"
     entitlement_ids = event_data.entitlement_ids or []
-    return "premium" in entitlement_ids or any(
+    if "premium" in entitlement_ids or any(
         entitlement.product_identifier == "premium" for entitlement in event_data.entitlements
-    )
+    ):
+        return "premium"
+    return "ads"
 
 
 async def process_webhook(
@@ -890,6 +947,34 @@ async def process_webhook(
         logger.info("Skipping non-production webhook", event_type=event_type)
         return "skipped", []
 
+    event_class = _webhook_event_class(event)
+    if event_class == "skipped":
+        logger.info("Skipping non-mutating webhook", event_type=event_type)
+        return "skipped", []
+
+    if event_class == "ads":
+        try:
+            _RECONCILIATION_ENVIRONMENTS[settings.ENVIRONMENT]
+        except KeyError:
+            raise WebhookRetryableError("Webhook has unsupported environment") from None
+        if event_data.environment != "PRODUCTION":
+            raise WebhookRetryableError("Webhook environment cannot authorize Remove Ads")
+        if not event_data.app_user_id:
+            return "skipped", []
+        ads_user = await _get_user_by_app_user_id(db, event_data.app_user_id)
+        if ads_user is None:
+            logger.info("Skipping Remove Ads webhook without a local app user", event_type=event_type)
+            return "skipped", []
+        await _grant_non_subscription_entitlement(
+            db=db,
+            user_id=ads_user.id,
+            product_id=(event_data.transaction.product_id if event_data.transaction else None) or event_data.product_id,
+            entitlement_ids=event_data.entitlement_ids
+            or [entitlement.product_identifier for entitlement in event_data.entitlements],
+            transaction_id=event_data.transaction_id,
+        )
+        return "success", []
+
     user_ids = _webhook_user_ids(event)
     if not user_ids:
         logger.info("Skipping webhook without a local UUID identity", event_type=event_type)
@@ -902,20 +987,10 @@ async def process_webhook(
         logger.info("Skipping webhook without a local user", event_type=event_type)
         return "skipped", []
 
-    if not _is_premium_event(event):
-        if event_data.environment != "PRODUCTION":
-            raise PurchaseError("Webhook environment cannot authorize Remove Ads", status_code=503)
-        await _grant_non_subscription_entitlement(
-            db=db,
-            user_id=user_ids[0],
-            product_id=(event_data.transaction.product_id if event_data.transaction else None) or event_data.product_id,
-            entitlement_ids=event_data.entitlement_ids
-            or [entitlement.product_identifier for entitlement in event_data.entitlements],
-            transaction_id=event_data.transaction_id,
-        )
-        return "success", []
-
-    proposals = [await read_reconciliation(db, redis, user_id) for user_id in user_ids]
+    try:
+        proposals = [await read_reconciliation(db, redis, user_id) for user_id in user_ids]
+    except UserNotFoundError as error:
+        raise WebhookRetryableError("Webhook participant disappeared; retry") from error
     results: list[Reconciliation] = []
     for proposal in proposals:
         result = await apply_reconciliation(db, proposal)
