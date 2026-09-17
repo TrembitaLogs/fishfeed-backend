@@ -114,12 +114,14 @@ class Reconciliation:
 
 _RECONCILIATION_COOLDOWN_KEY = "revenuecat:reconcile:cooldown"
 _COOLDOWN_SCRIPT = """
+local requested = tonumber(ARGV[1])
 local current = redis.call('TTL', KEYS[1])
-if current < ARGV[1] then
-  redis.call('SET', KEYS[1], '1', 'EX', ARGV[1])
+if current < requested then
+  redis.call('SET', KEYS[1], '1', 'EX', requested)
 end
 return redis.call('TTL', KEYS[1])
 """
+_RECONCILIATION_ENVIRONMENTS = {"production": True, "development": False}
 
 
 def _as_dict(value: object, field: str) -> dict[str, object]:
@@ -188,7 +190,9 @@ def _parse_candidate(
     source_grace_at = _datetime_value(source, "grace_period_expires_date")
     if "expires_date" in source and source_expires_at != entitlement_expires_at:
         raise RevenueCatAPIError("RevenueCat response has inconsistent expiry")
-    if "grace_period_expires_date" in source and source_grace_at != entitlement_grace_at:
+    if source_grace_at != entitlement_grace_at and (
+        "grace_period_expires_date" in source or entitlement_grace_at is not None
+    ):
         raise RevenueCatAPIError("RevenueCat response has inconsistent grace expiry")
 
     store = _required_string(source, "store").lower()
@@ -211,6 +215,31 @@ def _parse_candidate(
     )
 
 
+def _has_unmatched_active_evidence(
+    records_by_product: dict[str, object], matched_product_id: str, now: datetime
+) -> bool:
+    for product_id, value in records_by_product.items():
+        if product_id == matched_product_id:
+            continue
+        records = value if isinstance(value, list) else [value]
+        for record in records:
+            source = _as_dict(record, "unmatched subscription evidence")
+            if "is_sandbox" not in source or not isinstance(source["is_sandbox"], bool):
+                raise RevenueCatAPIError("RevenueCat response has invalid is_sandbox")
+            if "product_identifier" in source and source["product_identifier"] != product_id:
+                raise RevenueCatAPIError("RevenueCat response has inconsistent product identity")
+            _required_string(source, "store")
+            _datetime_value(source, "purchase_date", required=True)
+            expires_at = _datetime_value(source, "expires_date")
+            grace_at = _datetime_value(source, "grace_period_expires_date")
+            if _datetime_value(source, "refunded_at") is not None or _datetime_value(source, "revoked_at") is not None:
+                continue
+            effective_expiry = _effective_expiry(expires_at, grace_at)
+            if effective_expiry is None or effective_expiry > now:
+                return True
+    return False
+
+
 def parse_revenuecat_subscriber(
     payload: object,
     *,
@@ -227,9 +256,9 @@ def parse_revenuecat_subscriber(
     non_subscriptions = _as_dict(subscriber.get("non_subscriptions"), "non_subscriptions")
     if not entitlements:
         return _free_snapshot()
-    premium = entitlements.get("premium")
-    if premium is None:
+    if "premium" not in entitlements:
         return _free_snapshot()
+    premium = entitlements["premium"]
     entitlement = _as_dict(premium, "premium entitlement")
     product_id = _required_string(entitlement, "product_identifier")
     purchase_at = _datetime_value(entitlement, "purchase_date", required=True)
@@ -268,6 +297,10 @@ def parse_revenuecat_subscriber(
                 candidates.append(candidate)
     if not candidates:
         raise RevenueCatAPIError("RevenueCat premium entitlement has no matching evidence")
+    if _has_unmatched_active_evidence(subscriptions, product_id, now) or _has_unmatched_active_evidence(
+        non_subscriptions, product_id, now
+    ):
+        raise RevenueCatAPIError("RevenueCat response has ambiguous unmatched premium evidence")
 
     allowed = [candidate for candidate in candidates if not candidate[4] and (not production or not candidate[0])]
     if not allowed:
@@ -314,6 +347,10 @@ async def read_reconciliation(
     settings = get_settings()
     if not settings.REVENUECAT_API_KEY:
         raise RevenueCatNotConfiguredError()
+    try:
+        production = _RECONCILIATION_ENVIRONMENTS[settings.ENVIRONMENT]
+    except KeyError:
+        raise RevenueCatAPIError("RevenueCat reconciliation has unsupported environment") from None
     user = await _get_user_by_id(db, user_id)
     before_status = user.subscription_status
     before_expires_at = user.subscription_expires_at
@@ -371,7 +408,7 @@ async def read_reconciliation(
     verified_at = datetime.now(UTC)
     snapshot = parse_revenuecat_subscriber(
         payload,
-        production=settings.ENVIRONMENT == "production",
+        production=production,
         now=verified_at,
     )
     unchanged = (
