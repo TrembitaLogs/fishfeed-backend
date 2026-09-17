@@ -3,8 +3,10 @@
 import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -407,6 +409,45 @@ async def test_dry_run_real_session_preserves_user_settings_and_audit(async_engi
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_real_reader_dry_run_reads_redis_without_local_or_redis_writes(async_session: AsyncSession):
+    """The production reader's dry-run HTTP/TTL path is read-only end to end."""
+    from app.services.purchase import read_reconciliation
+
+    await cleanup_subscription_data(async_session)
+    user = await create_test_user(async_session, subscription_status="free")
+    user.free_ai_scans_remaining = 7
+    user.settings = {"keep": "value"}
+    await async_session.commit()
+    redis = MagicMock()
+    redis.ttl = AsyncMock(return_value=-2)
+    redis.execute_command = AsyncMock()
+    payload = {"subscriber": {"entitlements": {}, "subscriptions": {}, "non_subscriptions": {}}}
+    client = httpx.AsyncClient
+    with (
+        patch(
+            "app.services.purchase.get_settings",
+            return_value=SimpleNamespace(REVENUECAT_API_KEY="test", ENVIRONMENT="production"),
+        ),
+        patch(
+            "app.services.purchase.httpx.AsyncClient",
+            side_effect=lambda **kwargs: client(
+                transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload)), **kwargs
+            ),
+        ),
+    ):
+        result = await read_reconciliation(async_session, redis, user.id, dry_run=True)
+    await async_session.refresh(user)
+    assert result.outcome == "unchanged"
+    assert user.subscription_status == "free" and user.subscription_expires_at is None
+    assert (
+        user.subscription_verified_at is None
+        and user.free_ai_scans_remaining == 7
+        and user.settings == {"keep": "value"}
+    )
+    redis.execute_command.assert_not_called()
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_configuration_failure_aborts_fixed_pass(async_engine):
     """One global configuration failure does not repeat for every selected account."""
     from app.jobs import subscription_jobs
@@ -484,6 +525,9 @@ async def test_fixed_snapshot_batches_every_id_once_when_eligibility_changes():
 
     async def reconcile(_db, _redis, user_id):
         seen.append(user_id)
+        if len(seen) == 1:
+            # Simulate a later account ceasing to be cadence-eligible after the snapshot.
+            eligibility[ids[-1]] = False
         return Reconciliation(
             user_id=user_id,
             before_status="free",
@@ -495,8 +539,10 @@ async def test_fixed_snapshot_batches_every_id_once_when_eligibility_changes():
             outcome="unchanged",
         )
 
+    eligibility = {user_id: True for user_id in ids}
+    due = AsyncMock(return_value=list(ids))
     with (
-        patch("app.jobs.subscription_jobs._due_subscription_user_ids", new=AsyncMock(return_value=list(ids))),
+        patch("app.jobs.subscription_jobs._due_subscription_user_ids", new=due),
         patch("app.jobs.subscription_jobs.async_session_maker", return_value=db),
         patch("app.redis.get_redis_client", return_value=MagicMock()),
         patch("app.jobs.subscription_jobs.reconcile_user", side_effect=reconcile),
@@ -505,6 +551,8 @@ async def test_fixed_snapshot_batches_every_id_once_when_eligibility_changes():
         assert await subscription_jobs.check_expired_subscriptions_job() == len(ids)
 
     assert seen == list(ids)
+    due.assert_awaited_once()
+    assert eligibility[ids[-1]] is False
 
 
 @pytest.mark.asyncio(loop_scope="session")
