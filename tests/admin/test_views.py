@@ -111,8 +111,6 @@ class TestUserAdminConfig:
     def test_user_form_allows_only_profile_fields(self):
         columns = [c.key if hasattr(c, "key") else str(c) for c in UserAdmin.form_columns]
         assert columns == ["email", "nickname"]
-        assert "settings" not in columns
-        assert "remove_ads" not in columns
 
     # Mutation caught: the formatter reads product history, accepts non-list entitlements,
     # or mishandles malformed settings instead of showing only current access.

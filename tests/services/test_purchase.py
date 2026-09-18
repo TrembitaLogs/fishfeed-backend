@@ -382,7 +382,6 @@ async def test_alias_and_unrelated_events_skip_without_ads_write(async_session: 
 
 
 @pytest.mark.asyncio(loop_scope="session")
-@pytest.mark.asyncio(loop_scope="session")
 async def test_redis_reconciliation_failure_has_storage_cause(async_session: AsyncSession):
     record = await user(async_session)
     webhook = event("INITIAL_PURCHASE", app_user_id=str(record.id), environment="PRODUCTION")
@@ -519,12 +518,22 @@ async def test_delayed_old_revoke_after_new_grant_uses_current_active_snapshot(a
     try:
         record = await user(async_session)
         active = SubscriptionSnapshot("free", None, None, False, False, "fishfeed_remove_ads")
-        delayed_revoke = replace(proposal(record.id, status="free"), snapshot=active, before_remove_ads=False)
         new_grant = Reconciliation(
             user_id=record.id,
             before_status="free",
             before_expires_at=None,
-            before_verified_at=delayed_revoke.verified_at,
+            before_verified_at=None,
+            before_subscription={},
+            snapshot=active,
+            verified_at=datetime.now(UTC),
+            outcome="changed",
+            before_remove_ads=False,
+        )
+        delayed_cancellation = Reconciliation(
+            user_id=record.id,
+            before_status="free",
+            before_expires_at=None,
+            before_verified_at=new_grant.verified_at,
             before_subscription={"will_renew": False},
             snapshot=active,
             verified_at=datetime.now(UTC),
@@ -533,11 +542,8 @@ async def test_delayed_old_revoke_after_new_grant_uses_current_active_snapshot(a
         )
         with (
             patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")),
-            patch("app.services.purchase.read_reconciliation", new=AsyncMock(side_effect=[delayed_revoke, new_grant])),
+            patch("app.services.purchase.read_reconciliation", new=AsyncMock(side_effect=[new_grant, delayed_cancellation])),
         ):
-            await process_webhook(
-                async_session, event("CANCELLATION", app_user_id=str(record.id), environment="PRODUCTION"), redis_client
-            )
             await process_webhook(
                 async_session,
                 event(
@@ -548,8 +554,14 @@ async def test_delayed_old_revoke_after_new_grant_uses_current_active_snapshot(a
                 ),
                 redis_client,
             )
-        await async_session.refresh(record)
-        assert record.settings["non_subscriptions"]["entitlements"] == ["remove_ads"]
+            await async_session.refresh(record)
+            assert record.settings["non_subscriptions"]["entitlements"] == ["remove_ads"]
+
+            await process_webhook(
+                async_session, event("CANCELLATION", app_user_id=str(record.id), environment="PRODUCTION"), redis_client
+            )
+            await async_session.refresh(record)
+            assert record.settings["non_subscriptions"]["entitlements"] == ["remove_ads"]
     finally:
         await clear_purchase_state(async_session)
 
