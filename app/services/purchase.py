@@ -104,13 +104,14 @@ class DuplicateWebhookError(PurchaseError):
 
 @dataclass(frozen=True)
 class SubscriptionSnapshot:
-    """Validated premium evidence returned by RevenueCat v1."""
+    """Validated RevenueCat customer access evidence."""
 
     status: Literal["free", "premium"]
     expires_at: datetime | None
     product_id: str | None
     will_renew: bool
     is_trial: bool
+    remove_ads_product_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -177,8 +178,15 @@ def _effective_expiry(expires_at: datetime | None, grace_at: datetime | None) ->
     return max(expires_at, grace_at) if grace_at is not None else expires_at
 
 
-def _free_snapshot() -> SubscriptionSnapshot:
-    return SubscriptionSnapshot(status="free", expires_at=None, product_id=None, will_renew=False, is_trial=False)
+def _free_snapshot(remove_ads_product_id: str | None = None) -> SubscriptionSnapshot:
+    return SubscriptionSnapshot(
+        status="free",
+        expires_at=None,
+        product_id=None,
+        will_renew=False,
+        is_trial=False,
+        remove_ads_product_id=remove_ads_product_id,
+    )
 
 
 def _parse_candidate(
@@ -236,6 +244,7 @@ def _has_unmatched_active_evidence(
     entitlement_owners: dict[tuple[str, datetime], set[str]],
     now: datetime,
     *,
+    entitlement_id: str,
     non_subscription: bool,
 ) -> bool:
     has_unmatched_active_evidence = False
@@ -254,7 +263,7 @@ def _has_unmatched_active_evidence(
             if evidence == matched_evidence:
                 continue
             owners = entitlement_owners.get(evidence, set())
-            if len(owners) == 1 and "premium" not in owners:
+            if len(owners) == 1 and entitlement_id not in owners:
                 continue
             expires_at = _datetime_value(source, "expires_date")
             grace_at = _datetime_value(source, "grace_period_expires_date")
@@ -302,6 +311,79 @@ def _entitlement_owners(entitlements: dict[str, object]) -> dict[tuple[str, date
     return owners
 
 
+def _parse_remove_ads_product_id(
+    entitlements: dict[str, object],
+    subscriptions: dict[str, object],
+    non_subscriptions: dict[str, object],
+    entitlement_owners: dict[tuple[str, datetime], set[str]],
+    *,
+    production: bool,
+    now: datetime,
+) -> str | None:
+    value = entitlements.get("remove_ads")
+    if value is None:
+        return None
+    entitlement = _as_dict(value, "remove_ads entitlement")
+    product_id = _required_string(entitlement, "product_identifier")
+    purchase_at = _datetime_value(entitlement, "purchase_date", required=True)
+    assert purchase_at is not None
+    matched_evidence = (product_id, purchase_at)
+    if entitlement_owners.get(matched_evidence) != {"remove_ads"}:
+        raise RevenueCatAPIError("RevenueCat response has ambiguous entitlement evidence")
+    expires_at = _datetime_value(entitlement, "expires_date")
+    grace_at = _datetime_value(entitlement, "grace_period_expires_date")
+    candidates: list[tuple[bool, datetime | None, bool, bool, bool]] = []
+    if product_id in subscriptions:
+        candidate = _parse_candidate(
+            _as_dict(subscriptions[product_id], "remove_ads subscription evidence"),
+            product_id=product_id,
+            purchase_at=purchase_at,
+            entitlement_expires_at=expires_at,
+            entitlement_grace_at=grace_at,
+            is_subscription=True,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+    if product_id in non_subscriptions:
+        for record in _non_subscription_records(non_subscriptions[product_id]):
+            candidate = _parse_candidate(
+                _as_dict(record, "remove_ads non-subscription evidence"),
+                product_id=product_id,
+                purchase_at=purchase_at,
+                entitlement_expires_at=expires_at,
+                entitlement_grace_at=grace_at,
+                is_subscription=False,
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+    if not candidates:
+        raise RevenueCatAPIError("RevenueCat remove_ads entitlement has no matching evidence")
+    if _has_unmatched_active_evidence(
+        subscriptions,
+        matched_evidence,
+        entitlement_owners,
+        now,
+        entitlement_id="remove_ads",
+        non_subscription=False,
+    ) or _has_unmatched_active_evidence(
+        non_subscriptions,
+        matched_evidence,
+        entitlement_owners,
+        now,
+        entitlement_id="remove_ads",
+        non_subscription=True,
+    ):
+        raise RevenueCatAPIError("RevenueCat response has ambiguous unmatched remove_ads evidence")
+    active = [
+        candidate
+        for candidate in candidates
+        if not candidate[4]
+        and (not production or not candidate[0])
+        and (candidate[1] is None or candidate[1] > now)
+    ]
+    return product_id if active else None
+
+
 def parse_revenuecat_subscriber(
     payload: object,
     *,
@@ -319,10 +401,19 @@ def parse_revenuecat_subscriber(
     for value in non_subscriptions.values():
         _non_subscription_records(value)
     _ensure_unique_evidence_identities(subscriptions, non_subscriptions)
+    entitlement_owners = _entitlement_owners(entitlements)
+    remove_ads_product_id = _parse_remove_ads_product_id(
+        entitlements,
+        subscriptions,
+        non_subscriptions,
+        entitlement_owners,
+        production=production,
+        now=now,
+    )
     if not entitlements:
-        return _free_snapshot()
+        return _free_snapshot(remove_ads_product_id)
     if "premium" not in entitlements:
-        return _free_snapshot()
+        return _free_snapshot(remove_ads_product_id)
     premium = entitlements["premium"]
     entitlement = _as_dict(premium, "premium entitlement")
     product_id = _required_string(entitlement, "product_identifier")
@@ -361,22 +452,31 @@ def parse_revenuecat_subscriber(
     if not candidates:
         raise RevenueCatAPIError("RevenueCat premium entitlement has no matching evidence")
     matched_evidence = (product_id, purchase_at)
-    entitlement_owners = _entitlement_owners(entitlements)
     if entitlement_owners.get(matched_evidence) != {"premium"}:
         raise RevenueCatAPIError("RevenueCat response has ambiguous entitlement evidence")
     if _has_unmatched_active_evidence(
-        subscriptions, matched_evidence, entitlement_owners, now, non_subscription=False
+        subscriptions,
+        matched_evidence,
+        entitlement_owners,
+        now,
+        entitlement_id="premium",
+        non_subscription=False,
     ) or _has_unmatched_active_evidence(
-        non_subscriptions, matched_evidence, entitlement_owners, now, non_subscription=True
+        non_subscriptions,
+        matched_evidence,
+        entitlement_owners,
+        now,
+        entitlement_id="premium",
+        non_subscription=True,
     ):
         raise RevenueCatAPIError("RevenueCat response has ambiguous unmatched premium evidence")
 
     allowed = [candidate for candidate in candidates if not candidate[4] and (not production or not candidate[0])]
     if not allowed:
-        return _free_snapshot()
+        return _free_snapshot(remove_ads_product_id)
     active = [candidate for candidate in allowed if candidate[1] is None or candidate[1] > now]
     if not active:
-        return _free_snapshot()
+        return _free_snapshot(remove_ads_product_id)
     sandbox, expires_at, will_renew, is_trial, blocked = max(
         active,
         key=lambda candidate: candidate[1] or datetime.max.replace(tzinfo=UTC),
@@ -388,6 +488,7 @@ def parse_revenuecat_subscriber(
         product_id=product_id,
         will_renew=will_renew,
         is_trial=is_trial,
+        remove_ads_product_id=remove_ads_product_id,
     )
 
 

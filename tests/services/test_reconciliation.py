@@ -79,6 +79,189 @@ def _entitlement(payload: dict) -> dict:
     return payload["subscriber"]["entitlements"]["premium"]
 
 
+def add_remove_ads(
+    payload: dict,
+    *,
+    product_id: str = "fishfeed_remove_ads",
+    purchase_date: str = "2026-02-01T00:00:00Z",
+    expires_date: str | None = None,
+    sandbox: bool = False,
+    refunded_at: str | None = None,
+    revoked_at: str | None = None,
+    store: str = "play_store",
+    in_subscriptions: bool = False,
+) -> None:
+    payload["subscriber"]["entitlements"]["remove_ads"] = {
+        "product_identifier": product_id,
+        "purchase_date": purchase_date,
+        "expires_date": expires_date,
+        "grace_period_expires_date": None,
+    }
+    record = {
+        "is_sandbox": sandbox,
+        "store": store,
+        "period_type": "promotional" if store == "promotional" else "normal",
+        "purchase_date": purchase_date,
+        "expires_date": expires_date,
+        "grace_period_expires_date": None,
+        "refunded_at": refunded_at,
+        "revoked_at": revoked_at,
+        "unsubscribe_detected_at": None,
+    }
+    if in_subscriptions:
+        payload["subscriber"]["subscriptions"][product_id] = record
+    else:
+        payload["subscriber"]["non_subscriptions"].setdefault(product_id, []).append(record)
+
+
+def test_ads_only_customer_stays_free_with_active_remove_ads() -> None:
+    """Catches dropping an active Remove Ads entitlement from a free snapshot."""
+    payload = subscriber_payload()
+    payload["subscriber"]["entitlements"].clear()
+    payload["subscriber"]["subscriptions"].clear()
+    add_remove_ads(payload)
+
+    result = parse_revenuecat_subscriber(
+        payload,
+        production=True,
+        now=datetime(2026, 9, 18, tzinfo=UTC),
+    )
+
+    assert result.status == "free"
+    assert result.remove_ads_product_id == "fishfeed_remove_ads"
+
+
+def test_separate_premium_and_remove_ads_evidence_are_both_active() -> None:
+    """Catches retaining Premium while discarding separate active Remove Ads evidence."""
+    payload = subscriber_payload()
+    add_remove_ads(payload)
+
+    result = parse_revenuecat_subscriber(
+        payload,
+        production=True,
+        now=datetime(2026, 9, 18, tzinfo=UTC),
+    )
+
+    assert result.status == "premium"
+    assert result.remove_ads_product_id == "fishfeed_remove_ads"
+
+
+@pytest.mark.parametrize(
+    ("name", "kwargs"),
+    [
+        ("promotional lifetime", {"store": "promotional", "in_subscriptions": True}),
+        (
+            "promotional finite",
+            {
+                "store": "promotional",
+                "in_subscriptions": True,
+                "expires_date": "2099-01-01T00:00:00Z",
+            },
+        ),
+    ],
+)
+def test_remove_ads_promotional_grants_remain_active(name: str, kwargs: dict) -> None:
+    """Catches treating valid promotional lifetime or finite grants as inactive."""
+    del name
+    payload = subscriber_payload()
+    add_remove_ads(payload, **kwargs)
+
+    result = parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 18, tzinfo=UTC))
+
+    assert result.remove_ads_product_id == "fishfeed_remove_ads"
+
+
+@pytest.mark.parametrize(
+    ("name", "kwargs"),
+    [
+        ("expired finite grant", {"expires_date": "2026-09-17T00:00:00Z"}),
+        ("refunded", {"refunded_at": "2026-09-17T00:00:00Z"}),
+        ("revoked", {"revoked_at": "2026-09-17T00:00:00Z"}),
+        ("sandbox in production", {"sandbox": True}),
+    ],
+)
+def test_remove_ads_inactive_evidence_is_not_granted(name: str, kwargs: dict) -> None:
+    """Catches granting expired, refunded, revoked, or sandbox Remove Ads evidence in production."""
+    del name
+    payload = subscriber_payload()
+    add_remove_ads(payload, **kwargs)
+
+    result = parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 18, tzinfo=UTC))
+
+    assert result.remove_ads_product_id is None
+
+
+def test_remove_ads_missing_evidence_is_rejected() -> None:
+    """Catches accepting an entitlement whose matching provider evidence disappeared."""
+    payload = subscriber_payload()
+    add_remove_ads(payload)
+    payload["subscriber"]["subscriptions"].pop("fishfeed_remove_ads", None)
+    del payload["subscriber"]["non_subscriptions"]["fishfeed_remove_ads"]
+
+    with pytest.raises(RevenueCatAPIError):
+        parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 18, tzinfo=UTC))
+
+
+def test_shared_evidence_between_premium_and_remove_ads_is_rejected() -> None:
+    """Catches treating one provider tuple as both Premium and Remove Ads."""
+    payload = subscriber_payload()
+    add_remove_ads(payload)
+    payload["subscriber"]["entitlements"]["remove_ads"] = deepcopy(_entitlement(payload))
+
+    with pytest.raises(RevenueCatAPIError):
+        parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 18, tzinfo=UTC))
+
+
+def test_remove_ads_revoked_old_promo_does_not_hide_active_store_source() -> None:
+    """Catches letting an older revoked promotion invalidate a mapped active store purchase."""
+    payload = subscriber_payload()
+    add_remove_ads(payload)
+    payload["subscriber"]["non_subscriptions"]["fishfeed_remove_ads"].append(
+        {
+            **payload["subscriber"]["non_subscriptions"]["fishfeed_remove_ads"][0],
+            "store": "promotional",
+            "period_type": "promotional",
+            "purchase_date": "2026-01-01T00:00:00Z",
+            "revoked_at": "2026-01-15T00:00:00Z",
+        }
+    )
+
+    result = parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 18, tzinfo=UTC))
+
+    assert result.remove_ads_product_id == "fishfeed_remove_ads"
+
+
+def test_remove_ads_two_active_sources_are_rejected() -> None:
+    """Catches silently accepting an unowned active Remove Ads aggregate tuple."""
+    payload = subscriber_payload()
+    add_remove_ads(payload)
+    payload["subscriber"]["non_subscriptions"]["fishfeed_remove_ads_legacy"] = [
+        {
+            **payload["subscriber"]["non_subscriptions"]["fishfeed_remove_ads"][0],
+            "purchase_date": "2026-01-01T00:00:00Z",
+        }
+    ]
+
+    with pytest.raises(RevenueCatAPIError):
+        parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 18, tzinfo=UTC))
+
+
+def test_remove_ads_sandbox_aggregate_with_production_source_is_rejected() -> None:
+    """Catches inferring a production grant from mixed-environment aggregates."""
+    payload = subscriber_payload()
+    add_remove_ads(payload, sandbox=True)
+    payload["subscriber"]["non_subscriptions"]["fishfeed_remove_ads_production"] = [
+        {
+            **payload["subscriber"]["non_subscriptions"]["fishfeed_remove_ads"][0],
+            "is_sandbox": False,
+            "purchase_date": "2026-01-01T00:00:00Z",
+        }
+    ]
+
+    with pytest.raises(RevenueCatAPIError):
+        parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 18, tzinfo=UTC))
+
+
 @pytest.mark.parametrize(
     ("name", "mutate", "expected"),
     [
@@ -158,22 +341,23 @@ def test_validated_lifetime_promo_and_one_time_premium() -> None:
     assert one_time_result.expires_at is None
 
 
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        lambda body: body["subscriber"]["entitlements"].clear(),
-        lambda body: body["subscriber"]["entitlements"].clear()
-        or body["subscriber"]["entitlements"].update(remove_ads={}),
-    ],
-)
-def test_absent_or_ads_only_entitlement_is_free(mutate) -> None:
-    """A non-premium entitlement cannot be promoted by a product name."""
+def test_absent_premium_entitlement_is_free() -> None:
+    """Catches treating the absence of Premium as a paid subscription."""
     payload = subscriber_payload()
-    mutate(payload)
+    payload["subscriber"]["entitlements"].clear()
 
     result = parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 17, tzinfo=UTC))
 
     assert result.status == "free"
+
+
+def test_malformed_remove_ads_entitlement_is_rejected() -> None:
+    """Catches treating a present malformed Remove Ads entitlement as absent."""
+    payload = subscriber_payload()
+    payload["subscriber"]["entitlements"]["remove_ads"] = {}
+
+    with pytest.raises(RevenueCatAPIError):
+        parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 17, tzinfo=UTC))
 
 
 @pytest.mark.parametrize(
