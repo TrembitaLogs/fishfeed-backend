@@ -1,6 +1,6 @@
 """Tests for admin user management endpoints (ban, unban, reset AI scans, grant premium)."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -51,6 +51,12 @@ def _redis_key(jti: str) -> str:
 BASE_URL = "/api/v1/admin/users"
 
 
+def test_grant_premium_openapi_declares_revenuecat_conflict(app) -> None:
+    responses = app.openapi()["paths"]["/api/v1/admin/users/{user_id}/grant-premium"]["post"]["responses"]
+    assert responses["409"]["description"] == "Manage premium grants and revocations in RevenueCat"
+    assert responses["409"]["content"]["application/json"]["schema"] == {"$ref": "#/components/schemas/ErrorResponse"}
+
+
 @pytest.mark.asyncio(loop_scope="session")
 class TestBanUser:
     """Test POST /admin/users/{user_id}/ban."""
@@ -64,12 +70,8 @@ class TestBanUser:
         """Banning a user should set deleted_at to a non-null datetime."""
         await _cleanup(async_session)
         try:
-            admin, admin_token = await _create_user(
-                async_session, email="admin@ban-test.com", is_admin=True
-            )
-            target, _ = await _create_user(
-                async_session, email="target@ban-test.com"
-            )
+            admin, admin_token = await _create_user(async_session, email="admin@ban-test.com", is_admin=True)
+            target, _ = await _create_user(async_session, email="target@ban-test.com")
             assert target.deleted_at is None
 
             response = await client.post(
@@ -97,12 +99,8 @@ class TestBanUser:
         await _cleanup(async_session)
         await redis_client.flushdb()
         try:
-            admin, admin_token = await _create_user(
-                async_session, email="admin@ban-token-test.com", is_admin=True
-            )
-            target, _ = await _create_user(
-                async_session, email="target@ban-token-test.com"
-            )
+            admin, admin_token = await _create_user(async_session, email="admin@ban-token-test.com", is_admin=True)
+            target, _ = await _create_user(async_session, email="target@ban-token-test.com")
 
             # Simulate active refresh tokens in Redis
             _, jti1 = create_refresh_token(str(target.id))
@@ -138,9 +136,7 @@ class TestBanUser:
         """Banning a non-existent user should return 404."""
         await _cleanup(async_session)
         try:
-            _, admin_token = await _create_user(
-                async_session, email="admin@ban-404-test.com", is_admin=True
-            )
+            _, admin_token = await _create_user(async_session, email="admin@ban-404-test.com", is_admin=True)
             fake_id = uuid4()
             response = await client.post(
                 f"{BASE_URL}/{fake_id}/ban",
@@ -163,12 +159,8 @@ class TestUnbanUser:
         """Unbanning a user should set deleted_at back to None."""
         await _cleanup(async_session)
         try:
-            _, admin_token = await _create_user(
-                async_session, email="admin@unban-test.com", is_admin=True
-            )
-            target, _ = await _create_user(
-                async_session, email="target@unban-test.com"
-            )
+            _, admin_token = await _create_user(async_session, email="admin@unban-test.com", is_admin=True)
+            target, _ = await _create_user(async_session, email="target@unban-test.com")
 
             # Ban first
             target.deleted_at = datetime.now(UTC)
@@ -204,9 +196,7 @@ class TestResetAIScans:
         """Resetting AI scans should restore free_ai_scans_remaining to 5."""
         await _cleanup(async_session)
         try:
-            _, admin_token = await _create_user(
-                async_session, email="admin@reset-scan-test.com", is_admin=True
-            )
+            _, admin_token = await _create_user(async_session, email="admin@reset-scan-test.com", is_admin=True)
             target, _ = await _create_user(
                 async_session,
                 email="target@reset-scan-test.com",
@@ -233,44 +223,30 @@ class TestResetAIScans:
 class TestGrantPremium:
     """Test POST /admin/users/{user_id}/grant-premium."""
 
-    async def test_grant_premium_sets_subscription_and_expiry(
+    async def test_grant_premium_is_rejected_without_mutating_subscription(
         self,
         client: AsyncClient,
         async_session: AsyncSession,
     ):
-        """Granting premium should set subscription_status and subscription_expires_at."""
+        """Premium grants must be managed by RevenueCat."""
         await _cleanup(async_session)
         try:
-            _, admin_token = await _create_user(
-                async_session, email="admin@premium-test.com", is_admin=True
-            )
-            target, _ = await _create_user(
-                async_session, email="target@premium-test.com"
-            )
+            _, admin_token = await _create_user(async_session, email="admin@premium-test.com", is_admin=True)
+            target, _ = await _create_user(async_session, email="target@premium-test.com")
             assert target.subscription_status == "free"
             assert target.subscription_expires_at is None
 
-            before = datetime.now(UTC)
             response = await client.post(
                 f"{BASE_URL}/{target.id}/grant-premium",
                 headers={"Authorization": f"Bearer {admin_token}"},
                 json={"days": 30},
             )
-            after = datetime.now(UTC)
-
-            assert response.status_code == 200
-            data = response.json()
-            assert data["action"] == "grant-premium"
-            assert data["success"] is True
+            assert response.status_code == 409
+            assert response.json()["detail"] == "Manage premium grants and revocations in RevenueCat"
 
             await async_session.refresh(target)
-            assert target.subscription_status == "premium"
-            assert target.subscription_expires_at is not None
-
-            # Verify expiry is approximately now + 30 days
-            expected_min = before + timedelta(days=30)
-            expected_max = after + timedelta(days=30)
-            assert expected_min <= target.subscription_expires_at <= expected_max
+            assert target.subscription_status == "free"
+            assert target.subscription_expires_at is None
         finally:
             await _cleanup(async_session)
 
@@ -282,12 +258,8 @@ class TestGrantPremium:
         """Providing days < 1 should return 422 validation error."""
         await _cleanup(async_session)
         try:
-            _, admin_token = await _create_user(
-                async_session, email="admin@premium-invalid-test.com", is_admin=True
-            )
-            target, _ = await _create_user(
-                async_session, email="target@premium-invalid-test.com"
-            )
+            _, admin_token = await _create_user(async_session, email="admin@premium-invalid-test.com", is_admin=True)
+            target, _ = await _create_user(async_session, email="target@premium-invalid-test.com")
             response = await client.post(
                 f"{BASE_URL}/{target.id}/grant-premium",
                 headers={"Authorization": f"Bearer {admin_token}"},
@@ -310,12 +282,8 @@ class TestEndpointsRequireAdmin:
         """Non-admin users should get 403 for all user management endpoints."""
         await _cleanup(async_session)
         try:
-            _, regular_token = await _create_user(
-                async_session, email="regular@auth-test.com", is_admin=False
-            )
-            target, _ = await _create_user(
-                async_session, email="target@auth-test.com"
-            )
+            _, regular_token = await _create_user(async_session, email="regular@auth-test.com", is_admin=False)
+            target, _ = await _create_user(async_session, email="target@auth-test.com")
 
             endpoints = [
                 f"{BASE_URL}/{target.id}/ban",

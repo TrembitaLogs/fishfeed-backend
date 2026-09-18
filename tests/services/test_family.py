@@ -27,6 +27,7 @@ from app.services.family import (
     MemberLimitExceededError,
     MemberNotFoundError,
     _generate_invite_code,
+    _get_member_limit,
     accept_invite,
     create_invite,
     get_family_members,
@@ -85,6 +86,21 @@ def test_generate_invite_code_alphanumeric():
         code = _generate_invite_code()
         # token_urlsafe can contain alphanumeric, - and _
         assert all(c.isalnum() or c in "-_" for c in code)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_verified_owner_keeps_premium_family_limit_after_local_expiry(async_session: AsyncSession):
+    """Family access uses the shared verified-premium predicate rather than status alone."""
+    await cleanup_family_data(async_session)
+    try:
+        owner = await create_test_user(async_session, subscription_status="premium")
+        owner.subscription_expires_at = datetime.now(UTC) - timedelta(days=1)
+        owner.subscription_verified_at = datetime.now(UTC)
+        await async_session.commit()
+
+        assert await _get_member_limit(async_session, owner.id) == PREMIUM_MEMBER_LIMIT
+    finally:
+        await cleanup_family_data(async_session)
 
 
 # get_family_members tests

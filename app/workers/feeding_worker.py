@@ -31,6 +31,7 @@ import signal
 from collections.abc import Awaitable, Callable
 from datetime import UTC
 from typing import Any
+from uuid import UUID
 
 import structlog
 from apscheduler import AsyncScheduler, ConflictPolicy, JobOutcome, JobReleased
@@ -46,6 +47,7 @@ from app.jobs.backup_job import backup_database_job
 from app.jobs.image_cleanup import image_cleanup_job, s3_reconciliation_job
 from app.jobs.notification_jobs import re_engagement_job, weekly_summary_job
 from app.jobs.subscription_jobs import check_expired_subscriptions_job
+from app.services.purchase import RevenueCatAPIError
 
 logger = structlog.get_logger(__name__)
 settings = get_settings()
@@ -222,7 +224,8 @@ async def _register_schedules(scheduler: AsyncScheduler) -> None:
         ),
     )
 
-    # Job 3: Check expired subscriptions (every N minutes)
+    # APScheduler's max_running_jobs=1 default is sufficient for this single worker.
+    # Job 3: Reconcile subscriptions (every N minutes)
     await scheduler.add_schedule(
         check_expired_subscriptions_job,
         IntervalTrigger(minutes=settings.SUBSCRIPTION_CHECK_INTERVAL_MINUTES),
@@ -355,7 +358,12 @@ async def stop_scheduler() -> None:
     logger.info("Scheduler stopped")
 
 
-async def run_once(job_name: str | None = None) -> None:
+async def run_once(
+    job_name: str | None = None,
+    *,
+    dry_run: bool = False,
+    user_ids: tuple[UUID, ...] = (),
+) -> None:
     """Run jobs once for testing/debugging.
 
     Args:
@@ -370,7 +378,10 @@ async def run_once(job_name: str | None = None) -> None:
     jobs: dict[str, tuple[str, JobFunc]] = {
         "weekly_summary": ("weekly_summary", weekly_summary_job),
         "re_engagement": ("re_engagement", re_engagement_job),
-        "check_subscriptions": ("check_expired_subscriptions", check_expired_subscriptions_job),
+        "check_subscriptions": (
+            "check_expired_subscriptions",
+            lambda: check_expired_subscriptions_job(dry_run=dry_run, user_ids=user_ids),
+        ),
         "analytics_cleanup": ("analytics_cleanup", analytics_cleanup_job),
         "image_cleanup": ("image_cleanup", image_cleanup_job),
         "s3_reconciliation": ("s3_reconciliation", s3_reconciliation_job),
@@ -391,7 +402,24 @@ async def run_once(job_name: str | None = None) -> None:
             result = await job_func()
             logger.info("Job completed", job_name=name, result=result)
         except Exception as e:
+            if name == "check_expired_subscriptions":
+                metadata: dict[str, object] = {"error_type": type(e).__name__}
+                if isinstance(e, RevenueCatAPIError):
+                    metadata.update(upstream_status=e.upstream_status, retry_after_seconds=e.retry_after_seconds)
+                logger.error("Subscription job failed", job_name=name, **metadata)
+                raise
             logger.error("Job failed", job_name=name, error=str(e))
+
+
+async def _run_with_redis(operation: Callable[[], Awaitable[None]]) -> None:
+    """Give the standalone worker the same Redis lifecycle as the API lifespan."""
+    from app.redis import close_redis, init_redis
+
+    await init_redis()
+    try:
+        await operation()
+    finally:
+        await close_redis()
 
 
 async def run_worker() -> None:
@@ -449,8 +477,25 @@ def main() -> None:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Logging level",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Read only: reconcile explicit RevenueCat customer IDs without local writes",
+    )
+    parser.add_argument(
+        "--user-id",
+        type=UUID,
+        action="append",
+        default=[],
+        help="RevenueCat customer UUID (repeatable; only with subscription recovery)",
+    )
 
     args = parser.parse_args()
+
+    if (args.dry_run or args.user_id) and not (args.run_once and args.job == "check_subscriptions"):
+        parser.error("--dry-run/--user-id require --run-once --job=check_subscriptions")
+    if args.dry_run and not args.user_id:
+        parser.error("Live dry-run requires --user-id for confirmed RevenueCat customers")
 
     # Configure logging
     logging.basicConfig(
@@ -459,9 +504,14 @@ def main() -> None:
     )
 
     if args.run_once:
-        asyncio.run(run_once(args.job))
+        try:
+            asyncio.run(_run_with_redis(lambda: run_once(args.job, dry_run=args.dry_run, user_ids=tuple(args.user_id))))
+        except Exception:
+            if args.dry_run:
+                raise SystemExit(1) from None
+            raise
     else:
-        asyncio.run(run_worker())
+        asyncio.run(_run_with_redis(run_worker))
 
 
 if __name__ == "__main__":

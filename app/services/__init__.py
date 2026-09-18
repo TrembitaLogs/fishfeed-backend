@@ -53,8 +53,6 @@ from app.services.purchase import (
     get_subscription_status,
     process_webhook,
     restore_purchases,
-    revert_to_free,
-    update_subscription_status,
 )
 from app.services.species import (
     SpeciesAlreadyExistsError,
@@ -130,6 +128,4 @@ __all__ = [
     "get_subscription_status",
     "process_webhook",
     "restore_purchases",
-    "revert_to_free",
-    "update_subscription_status",
 ]

@@ -24,6 +24,7 @@ from .utils import RESOLUTION_LABELS, _entity_to_dict, _group_changes_by_entity_
 logger = structlog.get_logger(__name__)
 
 VALID_WATER_TYPES = {"freshwater", "saltwater", "brackish"}
+SERVER_OWNED_SETTINGS = frozenset({"subscription", "non_subscriptions", "limits_exceeded", "downgraded_at"})
 
 
 def _validate_water_type(value: str | None) -> str | None:
@@ -1032,7 +1033,12 @@ async def _apply_user_profile_change(
     change: ChangeItem,
 ) -> ConflictItem | None:
     """Apply a user profile change. Only update operation is meaningful."""
-    stmt = select(User).where(User.id == user_id)
+    stmt = (
+        select(User)
+        .where(User.id == user_id, User.deleted_at.is_(None))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     result = await db.execute(stmt)
     existing = result.scalar_one_or_none()
 
@@ -1070,7 +1076,13 @@ async def _apply_user_profile_change(
                     entity_id=str(user_id),
                 )
         if "settings" in change.data:
-            existing.settings = change.data["settings"]
+            client_settings = dict(change.data["settings"])
+            for key in SERVER_OWNED_SETTINGS:
+                if key in existing.settings:
+                    client_settings[key] = existing.settings[key]
+                else:
+                    client_settings.pop(key, None)
+            existing.settings = client_settings
         logger.debug("Updated user_profile for user", user_id=user_id)
 
     elif change.operation == "delete":

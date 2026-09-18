@@ -34,6 +34,7 @@ from app.services.ai import (
 )
 from app.services.ai_provider import AIProviderError
 from app.services.image_processing import ImageProcessingError
+from app.services.premium import is_subscription_active
 from app.services.rate_limiter import AIRateLimiter
 
 router = APIRouter(prefix="/ai", tags=["AI Fish Recognition"])
@@ -56,7 +57,7 @@ async def _process_scan(
         )
 
         # Increment rate limit counter after successful scan
-        is_premium = current_user.subscription_status != "free"
+        is_premium = is_subscription_active(current_user)
         if not is_premium:
             limiter = AIRateLimiter(redis)
             await limiter.increment_scan_count(current_user.id)
@@ -182,7 +183,7 @@ async def get_scans_remaining(
     Premium users have unlimited scans (indicated by -1).
     Free users have a limited number of total scans.
     """
-    is_premium = current_user.subscription_status != "free"
+    is_premium = is_subscription_active(current_user)
     remaining = await get_remaining_scans(db, current_user.id)
 
     return ScansRemainingResponse(

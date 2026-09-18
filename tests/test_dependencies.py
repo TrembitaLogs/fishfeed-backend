@@ -5,9 +5,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 from app.dependencies import (
+    check_ai_scan_rate_limit,
     check_image_upload_rate_limit,
     get_current_active_user,
     get_current_user,
@@ -214,6 +215,7 @@ class TestRequirePremium:
         mock_user.id = uuid4()
         mock_user.subscription_status = "premium"
         mock_user.subscription_expires_at = datetime.now(UTC) - timedelta(days=1)
+        mock_user.subscription_verified_at = None
         mock_user.deleted_at = None
 
         mock_redis = AsyncMock()
@@ -242,6 +244,53 @@ class TestRequirePremium:
         result = await require_premium(current_user=mock_user, redis=mock_redis)
 
         assert result == mock_user
+
+
+class TestCheckAIScanRateLimit:
+    """Tests for the AI scan rate-limit dependency."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("status", "expires_in_days", "expected_remaining"),
+        [
+            ("free", None, 10),
+            ("expired", None, 10),
+            ("cancelled", None, 10),
+            ("premium", -1, 10),
+            ("premium", 1, -1),
+        ],
+    )
+    async def test_rate_limit_uses_active_subscription_policy(
+        self,
+        status: str,
+        expires_in_days: int | None,
+        expected_remaining: int,
+    ):
+        """Test only active premium subscriptions bypass the AI rate limit."""
+        user = MagicMock(spec=User)
+        user.id = uuid4()
+        user.subscription_status = status
+        user.subscription_expires_at = (
+            datetime.now(UTC) + timedelta(days=expires_in_days)
+            if expires_in_days is not None
+            else None
+        )
+        user.subscription_verified_at = None
+        redis = AsyncMock()
+        redis.get.return_value = None
+        response = Response()
+
+        result = await check_ai_scan_rate_limit(
+            current_user=user,
+            redis=redis,
+            response=response,
+        )
+
+        assert result.remaining == expected_remaining
+        if expected_remaining >= 0:
+            assert response.headers["X-RateLimit-Limit"] == "10"
+        else:
+            assert "X-RateLimit-Limit" not in response.headers
 
 
 class TestCheckImageUploadRateLimit:

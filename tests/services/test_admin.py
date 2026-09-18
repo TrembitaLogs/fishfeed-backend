@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,7 +14,7 @@ from app.models.feeding import FeedingLog, FeedingSchedule
 from app.models.fish import Fish
 from app.models.gamification import Achievement, Streak
 from app.models.user import User
-from app.services.admin import get_dashboard_stats
+from app.services.admin import get_dashboard_stats, grant_premium, update_subscription
 
 
 async def cleanup(session: AsyncSession) -> None:
@@ -27,9 +28,7 @@ async def cleanup(session: AsyncSession) -> None:
     await session.execute(text("TRUNCATE TABLE fish CASCADE"))
     await session.execute(text("TRUNCATE TABLE aquariums CASCADE"))
     await session.execute(text("TRUNCATE TABLE users CASCADE"))
-    await session.execute(
-        text("DELETE FROM species WHERE id = 'admin-test-species'")
-    )
+    await session.execute(text("DELETE FROM species WHERE id = 'admin-test-species'"))
     await session.commit()
 
 
@@ -112,6 +111,34 @@ async def _create_fish(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_direct_premium_grant_is_rejected(async_session: AsyncSession):
+    user = User(email=f"{uuid4()}@example.com", password_hash="unused")
+    async_session.add(user)
+    await async_session.flush()
+
+    with pytest.raises(HTTPException) as error:
+        await grant_premium(async_session, user.id, 30)
+
+    assert error.value.status_code == 409
+    assert error.value.detail == "Manage premium grants and revocations in RevenueCat"
+    assert user.subscription_status == "free"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_direct_subscription_update_is_rejected_after_user_lookup(async_session: AsyncSession):
+    user = User(email=f"{uuid4()}@example.com", password_hash="unused")
+    async_session.add(user)
+    await async_session.flush()
+
+    with pytest.raises(HTTPException) as error:
+        await update_subscription(async_session, user.id, "premium", datetime.now(UTC))
+
+    assert error.value.status_code == 409
+    assert error.value.detail == "Manage premium grants and revocations in RevenueCat"
+    assert user.subscription_status == "free"
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_get_dashboard_stats_empty_db(async_session: AsyncSession):
     """All stats should be zero when the database is empty."""
     await cleanup(async_session)
@@ -157,18 +184,14 @@ async def test_get_dashboard_stats_with_data(async_session: AsyncSession):
         ten_days_ago = now - timedelta(days=10)
 
         # --- Users ---
-        user1 = await _create_user(
-            async_session, email="active@test.com", created_at=today_start
-        )
+        user1 = await _create_user(async_session, email="active@test.com", created_at=today_start)
         user2 = await _create_user(
             async_session,
             email="premium@test.com",
             subscription_status="premium",
             created_at=ten_days_ago,
         )
-        user3 = await _create_user(
-            async_session, email="old@test.com", created_at=ten_days_ago
-        )
+        user3 = await _create_user(async_session, email="old@test.com", created_at=ten_days_ago)
         # Soft-deleted user — should NOT count
         await _create_user(
             async_session,
@@ -276,12 +299,8 @@ async def test_get_dashboard_stats_with_data(async_session: AsyncSession):
         async_session.add_all([streak1, streak2])
         await async_session.flush()
 
-        achievement_today = Achievement(
-            user_id=user1.id, achievement_type="first_feed", unlocked_at=now
-        )
-        achievement_old = Achievement(
-            user_id=user2.id, achievement_type="streak_7", unlocked_at=ten_days_ago
-        )
+        achievement_today = Achievement(user_id=user1.id, achievement_type="first_feed", unlocked_at=now)
+        achievement_old = Achievement(user_id=user2.id, achievement_type="streak_7", unlocked_at=ten_days_ago)
         async_session.add_all([achievement_today, achievement_old])
         await async_session.flush()
 

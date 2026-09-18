@@ -1,962 +1,684 @@
-"""Tests for purchase service (RevenueCat webhook processing and subscription management)."""
+"""RevenueCat webhook service contracts."""
 
+import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from redis.exceptions import RedisError
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.models.purchase import WebhookTransaction
 from app.models.user import User
-from app.schemas.purchase import (
-    WebhookEntitlement,
-    WebhookEvent,
-    WebhookEventData,
-)
+from app.schemas.purchase import WebhookEvent
 from app.services.purchase import (
-    DuplicateWebhookError,
-    InvalidSignatureError,
     PurchaseError,
+    Reconciliation,
     RevenueCatAPIError,
-    RevenueCatNotConfiguredError,
+    SubscriptionSnapshot,
     UserNotFoundError,
+    WebhookAuditConflict,
+    WebhookRetryableError,
+    apply_reconciliation,
     check_idempotency,
-    get_subscription_status,
+    has_terminal_webhook_audit,
     log_webhook_transaction,
     process_webhook,
     release_idempotency_lock,
     restore_purchases,
-    revert_to_free,
-    update_subscription_status,
     verify_webhook_authorization,
 )
 
 
-async def cleanup_users(session: AsyncSession) -> None:
-    """Helper to cleanup users and related data."""
-    await session.execute(text("TRUNCATE TABLE users CASCADE"))
+async def clear_purchase_state(session: AsyncSession) -> None:
+    await session.execute(text("TRUNCATE TABLE webhook_transactions, users CASCADE"))
     await session.commit()
 
 
-async def create_test_user(
-    session: AsyncSession,
-    email: str = "test@example.com",
-    subscription_status: str = "free",
-    subscription_expires_at: datetime | None = None,
-) -> User:
-    """Create a test user with specified subscription status."""
-    user = User(
-        email=email,
-        password_hash="test_hash",
-        subscription_status=subscription_status,
-        subscription_expires_at=subscription_expires_at,
+async def user(session: AsyncSession) -> User:
+    record = User(email=f"{uuid4()}@example.com", password_hash="unused")
+    session.add(record)
+    await session.commit()
+    return record
+
+
+def proposal(user_id: UUID, *, status: str = "premium") -> Reconciliation:
+    return Reconciliation(
+        user_id=user_id,
+        before_status="free",
+        before_expires_at=None,
+        before_verified_at=None,
+        before_subscription={},
+        snapshot=SubscriptionSnapshot(
+            status=status,  # type: ignore[arg-type]
+            expires_at=None,
+            product_id="premium.lifetime" if status == "premium" else None,
+            will_renew=False,
+            is_trial=False,
+        ),
+        verified_at=datetime.now(UTC),
+        outcome="changed",
     )
-    session.add(user)
-    await session.commit()
-    await session.refresh(user)
-    return user
-
-
-class TestUpdateSubscriptionStatus:
-    """Tests for update_subscription_status function."""
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_updates_user_to_premium(self, async_session: AsyncSession):
-        """Test updating user subscription to premium status."""
-        await cleanup_users(async_session)
-        try:
-            user = await create_test_user(async_session)
-            expires_at = datetime.now(UTC) + timedelta(days=30)
-
-            await update_subscription_status(
-                db=async_session,
-                user_id=user.id,
-                status="premium",
-                expires_at=expires_at,
-                product_id="com.example.premium_monthly",
-                will_renew=True,
-            )
-
-            await async_session.refresh(user)
-            assert user.subscription_status == "premium"
-            assert user.subscription_expires_at == expires_at
-            assert user.settings.get("subscription", {}).get("product_id") == "com.example.premium_monthly"
-            assert user.settings.get("subscription", {}).get("will_renew") is True
-        finally:
-            await cleanup_users(async_session)
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_raises_user_not_found_for_invalid_id(self, async_session: AsyncSession):
-        """Test that UserNotFoundError is raised for non-existent user."""
-        await cleanup_users(async_session)
-        try:
-            with pytest.raises(UserNotFoundError):
-                await update_subscription_status(
-                    db=async_session,
-                    user_id=uuid4(),
-                    status="premium",
-                )
-        finally:
-            await cleanup_users(async_session)
-
-
-class TestGetSubscriptionStatus:
-    """Tests for get_subscription_status function."""
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_returns_free_status_for_free_user(self, async_session: AsyncSession):
-        """Test getting subscription status for free user."""
-        await cleanup_users(async_session)
-        try:
-            user = await create_test_user(async_session)
-
-            status = await get_subscription_status(async_session, user.id)
-
-            assert status.status == "free"
-            assert status.expires_at is None
-            assert status.will_renew is False
-        finally:
-            await cleanup_users(async_session)
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_returns_premium_status_for_active_subscription(self, async_session: AsyncSession):
-        """Test getting subscription status for premium user with active subscription."""
-        await cleanup_users(async_session)
-        try:
-            expires_at = datetime.now(UTC) + timedelta(days=30)
-            user = await create_test_user(
-                async_session,
-                subscription_status="premium",
-                subscription_expires_at=expires_at,
-            )
-            # Set additional settings
-            user.settings = {"subscription": {"product_id": "premium_monthly", "will_renew": True}}
-            await async_session.commit()
-
-            status = await get_subscription_status(async_session, user.id)
-
-            assert status.status == "premium"
-            assert status.expires_at == expires_at
-            assert status.product_id == "premium_monthly"
-            assert status.will_renew is True
-        finally:
-            await cleanup_users(async_session)
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_returns_expired_and_reverts_for_expired_subscription(self, async_session: AsyncSession):
-        """Test that expired subscription returns expired status and reverts user to free."""
-        await cleanup_users(async_session)
-        try:
-            # Create user with expired subscription
-            expired_at = datetime.now(UTC) - timedelta(days=1)
-            user = await create_test_user(
-                async_session,
-                subscription_status="premium",
-                subscription_expires_at=expired_at,
-            )
-
-            status = await get_subscription_status(async_session, user.id)
-
-            assert status.status == "expired"
-            assert status.will_renew is False
-
-            # Verify user was reverted to free
-            await async_session.refresh(user)
-            assert user.subscription_status == "free"
-        finally:
-            await cleanup_users(async_session)
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_raises_user_not_found_for_invalid_id(self, async_session: AsyncSession):
-        """Test that UserNotFoundError is raised for non-existent user."""
-        await cleanup_users(async_session)
-        try:
-            with pytest.raises(UserNotFoundError):
-                await get_subscription_status(async_session, uuid4())
-        finally:
-            await cleanup_users(async_session)
-
-
-class TestRevertToFree:
-    """Tests for revert_to_free function."""
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_reverts_premium_user_to_free(self, async_session: AsyncSession):
-        """Test reverting premium user to free tier."""
-        await cleanup_users(async_session)
-        try:
-            expires_at = datetime.now(UTC) + timedelta(days=30)
-            user = await create_test_user(
-                async_session,
-                subscription_status="premium",
-                subscription_expires_at=expires_at,
-            )
-
-            await revert_to_free(async_session, user.id)
-
-            await async_session.refresh(user)
-            assert user.subscription_status == "free"
-            assert user.subscription_expires_at is None
-            assert user.settings.get("subscription", {}).get("will_renew") is False
-            assert "reverted_at" in user.settings.get("subscription", {})
-        finally:
-            await cleanup_users(async_session)
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_raises_user_not_found_for_invalid_id(self, async_session: AsyncSession):
-        """Test that UserNotFoundError is raised for non-existent user."""
-        await cleanup_users(async_session)
-        try:
-            with pytest.raises(UserNotFoundError):
-                await revert_to_free(async_session, uuid4())
-        finally:
-            await cleanup_users(async_session)
-
-
-class TestProcessWebhook:
-    """Tests for process_webhook function."""
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_initial_purchase_sets_premium_status(self, async_session: AsyncSession):
-        """Test INITIAL_PURCHASE webhook sets subscription_status to premium."""
-        await cleanup_users(async_session)
-        try:
-            user = await create_test_user(async_session)
-            expires_at = datetime.now(UTC) + timedelta(days=30)
-
-            event = WebhookEvent(
-                event=WebhookEventData(
-                    type="INITIAL_PURCHASE",
-                    app_user_id=str(user.id),
-                    entitlements=[
-                        WebhookEntitlement(
-                            product_identifier="com.example.premium",
-                            expires_at=expires_at,
-                        )
-                    ],
-                )
-            )
-
-            await process_webhook(async_session, event)
-
-            await async_session.refresh(user)
-            assert user.subscription_status == "premium"
-            assert user.subscription_expires_at is not None
-            assert user.settings.get("subscription", {}).get("will_renew") is True
-        finally:
-            await cleanup_users(async_session)
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_renewal_extends_expires_at(self, async_session: AsyncSession):
-        """Test RENEWAL webhook extends subscription expiry date."""
-        await cleanup_users(async_session)
-        try:
-            old_expires = datetime.now(UTC) + timedelta(days=5)
-            user = await create_test_user(
-                async_session,
-                subscription_status="premium",
-                subscription_expires_at=old_expires,
-            )
-            new_expires = datetime.now(UTC) + timedelta(days=35)
-
-            event = WebhookEvent(
-                event=WebhookEventData(
-                    type="RENEWAL",
-                    app_user_id=str(user.id),
-                    entitlements=[
-                        WebhookEntitlement(
-                            product_identifier="com.example.premium",
-                            expires_at=new_expires,
-                        )
-                    ],
-                )
-            )
-
-            await process_webhook(async_session, event)
-
-            await async_session.refresh(user)
-            assert user.subscription_status == "premium"
-            assert user.subscription_expires_at == new_expires
-        finally:
-            await cleanup_users(async_session)
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_cancellation_keeps_premium_until_expiry(self, async_session: AsyncSession):
-        """Test CANCELLATION webhook keeps premium active until expiry but sets will_renew=False."""
-        await cleanup_users(async_session)
-        try:
-            expires_at = datetime.now(UTC) + timedelta(days=15)
-            user = await create_test_user(
-                async_session,
-                subscription_status="premium",
-                subscription_expires_at=expires_at,
-            )
-            user.settings = {"subscription": {"will_renew": True}}
-            await async_session.commit()
-
-            event = WebhookEvent(
-                event=WebhookEventData(
-                    type="CANCELLATION",
-                    app_user_id=str(user.id),
-                )
-            )
-
-            await process_webhook(async_session, event)
-
-            await async_session.refresh(user)
-            # Still premium
-            assert user.subscription_status == "premium"
-            # But will_renew is False
-            assert user.settings.get("subscription", {}).get("will_renew") is False
-        finally:
-            await cleanup_users(async_session)
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_expiration_reverts_to_free(self, async_session: AsyncSession):
-        """Test EXPIRATION webhook reverts user to free status."""
-        await cleanup_users(async_session)
-        try:
-            user = await create_test_user(
-                async_session,
-                subscription_status="premium",
-                subscription_expires_at=datetime.now(UTC) - timedelta(hours=1),
-            )
-
-            event = WebhookEvent(
-                event=WebhookEventData(
-                    type="EXPIRATION",
-                    app_user_id=str(user.id),
-                )
-            )
-
-            await process_webhook(async_session, event)
-
-            await async_session.refresh(user)
-            assert user.subscription_status == "free"
-            assert user.subscription_expires_at is None
-        finally:
-            await cleanup_users(async_session)
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_billing_issue_logs_problem(self, async_session: AsyncSession):
-        """Test BILLING_ISSUE webhook logs billing problem in user settings."""
-        await cleanup_users(async_session)
-        try:
-            user = await create_test_user(
-                async_session,
-                subscription_status="premium",
-                subscription_expires_at=datetime.now(UTC) + timedelta(days=5),
-            )
-
-            event = WebhookEvent(
-                event=WebhookEventData(
-                    type="BILLING_ISSUE",
-                    app_user_id=str(user.id),
-                    transaction_id="txn_12345",
-                )
-            )
-
-            await process_webhook(async_session, event)
-
-            await async_session.refresh(user)
-            # Still premium during billing grace period
-            assert user.subscription_status == "premium"
-            # But billing issue is recorded
-            assert user.settings.get("subscription", {}).get("billing_issue") is True
-        finally:
-            await cleanup_users(async_session)
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_product_change_updates_product_id(self, async_session: AsyncSession):
-        """Test PRODUCT_CHANGE webhook updates product_id."""
-        await cleanup_users(async_session)
-        try:
-            user = await create_test_user(
-                async_session,
-                subscription_status="premium",
-            )
-            user.settings = {"subscription": {"product_id": "monthly"}}
-            await async_session.commit()
-
-            event = WebhookEvent(
-                event=WebhookEventData(
-                    type="PRODUCT_CHANGE",
-                    app_user_id=str(user.id),
-                    product_id="yearly",
-                )
-            )
-
-            await process_webhook(async_session, event)
-
-            await async_session.refresh(user)
-            assert user.settings.get("subscription", {}).get("product_id") == "yearly"
-        finally:
-            await cleanup_users(async_session)
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_uncancellation_restores_will_renew(self, async_session: AsyncSession):
-        """Test UNCANCELLATION webhook restores will_renew to True."""
-        await cleanup_users(async_session)
-        try:
-            user = await create_test_user(
-                async_session,
-                subscription_status="premium",
-            )
-            user.settings = {"subscription": {"will_renew": False}}
-            await async_session.commit()
-
-            event = WebhookEvent(
-                event=WebhookEventData(
-                    type="UNCANCELLATION",
-                    app_user_id=str(user.id),
-                )
-            )
-
-            await process_webhook(async_session, event)
-
-            await async_session.refresh(user)
-            assert user.settings.get("subscription", {}).get("will_renew") is True
-        finally:
-            await cleanup_users(async_session)
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_non_renewing_purchase_grants_remove_ads(self, async_session: AsyncSession):
-        """Test NON_RENEWING_PURCHASE stores entitlement and product in user settings."""
-        await cleanup_users(async_session)
-        try:
-            user = await create_test_user(async_session)
-
-            event = WebhookEvent(
-                event=WebhookEventData(
-                    type="NON_RENEWING_PURCHASE",
-                    app_user_id=str(user.id),
-                    transaction_id="txn_remove_ads_1",
-                    product_id="fishfeed_remove_ads",
-                    entitlements=[
-                        WebhookEntitlement(product_identifier="remove_ads")
-                    ],
-                )
-            )
-
-            await process_webhook(async_session, event)
-
-            await async_session.refresh(user)
-            non_sub = user.settings.get("non_subscriptions", {})
-            assert "fishfeed_remove_ads" in non_sub.get("products", [])
-            assert "remove_ads" in non_sub.get("entitlements", [])
-            assert non_sub.get("last_transaction_id") == "txn_remove_ads_1"
-            # Subscription state must remain untouched.
-            assert user.subscription_status == "free"
-        finally:
-            await cleanup_users(async_session)
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_non_renewing_purchase_is_idempotent(self, async_session: AsyncSession):
-        """Test NON_RENEWING_PURCHASE deduplicates products on repeated processing."""
-        await cleanup_users(async_session)
-        try:
-            user = await create_test_user(async_session)
-
-            event = WebhookEvent(
-                event=WebhookEventData(
-                    type="NON_RENEWING_PURCHASE",
-                    app_user_id=str(user.id),
-                    product_id="fishfeed_remove_ads",
-                    entitlements=[
-                        WebhookEntitlement(product_identifier="remove_ads")
-                    ],
-                )
-            )
-
-            await process_webhook(async_session, event)
-            await process_webhook(async_session, event)
-
-            await async_session.refresh(user)
-            non_sub = user.settings.get("non_subscriptions", {})
-            assert non_sub.get("products", []).count("fishfeed_remove_ads") == 1
-            assert non_sub.get("entitlements", []).count("remove_ads") == 1
-        finally:
-            await cleanup_users(async_session)
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_handles_unknown_user_gracefully(self, async_session: AsyncSession):
-        """Test webhook processing handles unknown user without raising error."""
-        await cleanup_users(async_session)
-        try:
-            event = WebhookEvent(
-                event=WebhookEventData(
-                    type="INITIAL_PURCHASE",
-                    app_user_id=str(uuid4()),  # Non-existent user
-                )
-            )
-
-            # Should not raise, just log warning
-            await process_webhook(async_session, event)
-        finally:
-            await cleanup_users(async_session)
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_handles_invalid_app_user_id_format(self, async_session: AsyncSession):
-        """Test webhook processing handles invalid app_user_id format."""
-        await cleanup_users(async_session)
-        try:
-            event = WebhookEvent(
-                event=WebhookEventData(
-                    type="INITIAL_PURCHASE",
-                    app_user_id="not-a-valid-uuid",
-                )
-            )
-
-            # Should not raise, just log warning
-            await process_webhook(async_session, event)
-        finally:
-            await cleanup_users(async_session)
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_idempotent_initial_purchase(self, async_session: AsyncSession):
-        """Test that processing same INITIAL_PURCHASE twice doesn't cause issues."""
-        await cleanup_users(async_session)
-        try:
-            user = await create_test_user(async_session)
-            expires_at = datetime.now(UTC) + timedelta(days=30)
-
-            event = WebhookEvent(
-                event=WebhookEventData(
-                    type="INITIAL_PURCHASE",
-                    app_user_id=str(user.id),
-                    transaction_id="txn_unique_123",
-                    entitlements=[
-                        WebhookEntitlement(
-                            product_identifier="com.example.premium",
-                            expires_at=expires_at,
-                        )
-                    ],
-                )
-            )
-
-            # Process twice
-            await process_webhook(async_session, event)
-            await process_webhook(async_session, event)
-
-            await async_session.refresh(user)
-            # Should still be premium, not cause any errors
-            assert user.subscription_status == "premium"
-        finally:
-            await cleanup_users(async_session)
-
-
-class TestRestorePurchases:
-    """Tests for restore_purchases function."""
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_raises_not_configured_when_api_key_missing(self, async_session: AsyncSession):
-        """Test that restore_purchases raises error when RevenueCat not configured."""
-        await cleanup_users(async_session)
-        try:
-            user = await create_test_user(async_session)
-
-            with patch("app.services.purchase.get_settings") as mock_settings:
-                mock_settings.return_value.REVENUECAT_API_KEY = None
-
-                with pytest.raises(RevenueCatNotConfiguredError):
-                    await restore_purchases(
-                        db=async_session,
-                        user_id=user.id,
-                        receipt="fake_receipt",
-                        platform="ios",
-                    )
-        finally:
-            await cleanup_users(async_session)
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_restores_active_subscription(self, async_session: AsyncSession):
-        """Test restoring active subscription from RevenueCat."""
-        await cleanup_users(async_session)
-        try:
-            user = await create_test_user(async_session)
-            expires_at = datetime.now(UTC) + timedelta(days=30)
-
-            response_data = {
-                "subscriber": {
-                    "entitlements": {
-                        "premium": {
-                            "expires_date": expires_at.isoformat(),
-                            "product_identifier": "com.example.premium_monthly",
-                            "unsubscribe_detected_at": None,
-                        }
-                    }
-                }
-            }
-
-            with patch("app.services.purchase.get_settings") as mock_settings:
-                mock_settings.return_value.REVENUECAT_API_KEY = "test_api_key"
-
-                with patch("httpx.AsyncClient") as mock_client_class:
-                    mock_response = AsyncMock()
-                    mock_response.status_code = 200
-                    mock_response.json = lambda: response_data  # Sync method
-
-                    mock_client = AsyncMock()
-                    mock_client.post.return_value = mock_response
-                    mock_client.__aenter__.return_value = mock_client
-                    mock_client.__aexit__.return_value = None
-                    mock_client_class.return_value = mock_client
-
-                    status = await restore_purchases(
-                        db=async_session,
-                        user_id=user.id,
-                        receipt="fake_receipt",
-                        platform="ios",
-                    )
-
-            assert status.status == "premium"
-            await async_session.refresh(user)
-            assert user.subscription_status == "premium"
-        finally:
-            await cleanup_users(async_session)
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_returns_free_status_when_no_active_entitlements(self, async_session: AsyncSession):
-        """Test restore returns free status when no active entitlements."""
-        await cleanup_users(async_session)
-        try:
-            user = await create_test_user(async_session)
-
-            response_data = {
-                "subscriber": {
-                    "entitlements": {}
-                }
-            }
-
-            with patch("app.services.purchase.get_settings") as mock_settings:
-                mock_settings.return_value.REVENUECAT_API_KEY = "test_api_key"
-
-                with patch("httpx.AsyncClient") as mock_client_class:
-                    mock_response = AsyncMock()
-                    mock_response.status_code = 200
-                    mock_response.json = lambda: response_data  # Sync method
-
-                    mock_client = AsyncMock()
-                    mock_client.post.return_value = mock_response
-                    mock_client.__aenter__.return_value = mock_client
-                    mock_client.__aexit__.return_value = None
-                    mock_client_class.return_value = mock_client
-
-                    status = await restore_purchases(
-                        db=async_session,
-                        user_id=user.id,
-                        receipt="fake_receipt",
-                        platform="ios",
-                    )
-
-            assert status.status == "free"
-        finally:
-            await cleanup_users(async_session)
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_raises_user_not_found_for_invalid_id(self, async_session: AsyncSession):
-        """Test that UserNotFoundError is raised for non-existent user."""
-        await cleanup_users(async_session)
-        try:
-            with patch("app.services.purchase.get_settings") as mock_settings:
-                mock_settings.return_value.REVENUECAT_API_KEY = "test_api_key"
-
-                with pytest.raises(UserNotFoundError):
-                    await restore_purchases(
-                        db=async_session,
-                        user_id=uuid4(),
-                        receipt="fake_receipt",
-                        platform="ios",
-                    )
-        finally:
-            await cleanup_users(async_session)
-
-
-class TestPurchaseExceptions:
-    """Tests for purchase service exceptions."""
-
-    def test_purchase_error_has_correct_attributes(self):
-        """Test PurchaseError exception attributes."""
-        error = PurchaseError("Test error", status_code=400)
-        assert error.message == "Test error"
-        assert error.status_code == 400
-        assert str(error) == "Test error"
-
-    def test_user_not_found_error(self):
-        """Test UserNotFoundError exception."""
-        user_id = uuid4()
-        error = UserNotFoundError(user_id)
-        assert str(user_id) in error.message
-        assert error.status_code == 404
-
-    def test_revenuecat_not_configured_error(self):
-        """Test RevenueCatNotConfiguredError exception."""
-        error = RevenueCatNotConfiguredError()
-        assert "not configured" in error.message.lower()
-        assert error.status_code == 500
-
-    def test_revenuecat_api_error(self):
-        """Test RevenueCatAPIError exception."""
-        error = RevenueCatAPIError("API timeout")
-        assert error.message == "API timeout"
-        assert error.status_code == 502
-
-    def test_invalid_signature_error(self):
-        """Test InvalidSignatureError exception."""
-        error = InvalidSignatureError()
-        assert error.status_code == 401
-        assert "signature" in error.message.lower()
-
-    def test_duplicate_webhook_error(self):
-        """Test DuplicateWebhookError exception."""
-        error = DuplicateWebhookError("txn_123")
-        assert error.status_code == 200
-        assert "txn_123" in error.message
-
-
-class TestVerifyWebhookAuthorization:
-    """Tests for verify_webhook_authorization function."""
-
-    def test_matching_authorization_returns_true(self):
-        """Test that Authorization equal to secret returns True."""
-        secret = "Bearer test_webhook_secret_value"
-
-        assert verify_webhook_authorization(secret, secret) is True
-
-    def test_mismatching_authorization_returns_false(self):
-        """Test that Authorization different from secret returns False."""
-        secret = "Bearer test_webhook_secret_value"
-
-        assert verify_webhook_authorization("Bearer wrong_value", secret) is False
-
-    def test_empty_authorization_returns_false(self):
-        """Test that empty Authorization returns False."""
-        assert verify_webhook_authorization("", "test_secret_key") is False
-
-    def test_empty_secret_returns_false(self):
-        """Test that empty secret returns False."""
-        assert verify_webhook_authorization("some_value", "") is False
-
-    def test_none_authorization_returns_false(self):
-        """Test that None Authorization returns False."""
-        assert verify_webhook_authorization(None, "test_secret_key") is False  # type: ignore
-
-    def test_constant_time_comparison(self):
-        """Test that comparison uses hmac.compare_digest (constant-time)."""
-        secret = "Bearer test_webhook_secret_value"
-
-        assert verify_webhook_authorization(secret, secret) is True
-        assert verify_webhook_authorization(secret + "x", secret) is False
-
-
-class TestCheckIdempotency:
-    """Tests for check_idempotency function."""
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_first_request_returns_not_duplicate(
-        self, async_session: AsyncSession, redis_client
+
+
+def event(event_type: str, **values: object) -> WebhookEvent:
+    return WebhookEvent.model_validate({"event": {"id": "service-event", "type": event_type, **values}})
+
+
+class ReceiptClient:
+    def __init__(self, response: object) -> None:
+        self.post = AsyncMock(return_value=response)
+
+    async def __aenter__(self) -> ReceiptClient:
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        return None
+
+
+class ReceiptRedis:
+    def __init__(self, ttl: int = -2, eval_result: int | None = None) -> None:
+        self.ttl_value = ttl
+        self.eval_result = eval_result
+        self.eval_calls: list[tuple[object, ...]] = []
+
+    async def ttl(self, key: str) -> int:
+        assert key == "revenuecat:reconcile:cooldown"
+        return self.ttl_value
+
+    async def execute_command(self, *args: object) -> int:
+        self.eval_calls.append(args)
+        return self.eval_result if self.eval_result is not None else int(args[-1])
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_restore_validates_receipt_then_reconciles_authoritative_snapshot(
+    async_session: AsyncSession, redis_client
+):
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        expected = proposal(record.id)
+        response = SimpleNamespace(status_code=200, text="", json=lambda: {"subscriber": {}})
+        client = ReceiptClient(response)
+
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(REVENUECAT_API_KEY="key")),
+            patch("app.services.purchase.httpx.AsyncClient", return_value=client),
+            patch("app.services.purchase.reconcile_user", new=AsyncMock(return_value=expected)) as reconcile,
+        ):
+            result = await restore_purchases(async_session, record.id, "receipt", "ios", redis_client)
+
+        assert result == expected
+        reconcile.assert_awaited_once_with(async_session, redis_client, record.id)
+        client.post.assert_awaited_once()
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_restore_preserves_receipt_provider_status(async_session: AsyncSession, redis_client):
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        response = SimpleNamespace(status_code=401, text="denied")
+        client = ReceiptClient(response)
+
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(REVENUECAT_API_KEY="key")),
+            patch("app.services.purchase.httpx.AsyncClient", return_value=client),
+            pytest.raises(RevenueCatAPIError) as error,
+        ):
+            await restore_purchases(async_session, record.id, "receipt", "ios", redis_client)
+
+        assert error.value.upstream_status == 401
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_restore_cooldown_prevents_receipt_post(async_session: AsyncSession):
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        client = ReceiptClient(SimpleNamespace(status_code=200, text="", json=lambda: {"subscriber": {}}))
+        redis = ReceiptRedis(ttl=2000)
+
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(REVENUECAT_API_KEY="key")),
+            patch("app.services.purchase.httpx.AsyncClient", return_value=client),
+            pytest.raises(RevenueCatAPIError) as error,
+        ):
+            await restore_purchases(async_session, record.id, "receipt", "ios", redis)  # type: ignore[arg-type]
+
+        assert error.value.upstream_status == 429
+        assert error.value.retry_after_seconds == 2000
+        client.post.assert_not_awaited()
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("retry_after", "expected"),
+    [("120", 120), ("invalid", 60)],
+)
+async def test_restore_rate_limit_sets_shared_cooldown(async_session: AsyncSession, retry_after: str, expected: int):
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        response = SimpleNamespace(status_code=429, text="limited", headers={"Retry-After": retry_after})
+        client = ReceiptClient(response)
+        redis = ReceiptRedis()
+
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(REVENUECAT_API_KEY="key")),
+            patch("app.services.purchase.httpx.AsyncClient", return_value=client),
+            pytest.raises(RevenueCatAPIError) as error,
+        ):
+            await restore_purchases(async_session, record.id, "receipt", "ios", redis)  # type: ignore[arg-type]
+
+        assert error.value.upstream_status == 429
+        assert error.value.retry_after_seconds == expected
+        assert redis.eval_calls[-1][-1] == expected
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_restore_rate_limit_parses_http_date_and_retains_longer_ttl(async_session: AsyncSession):
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        retry_after = format_datetime(datetime.now(UTC) + timedelta(seconds=120), usegmt=True)
+        response = SimpleNamespace(status_code=429, text="limited", headers={"Retry-After": retry_after})
+        client = ReceiptClient(response)
+        redis = ReceiptRedis(eval_result=2000)
+
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(REVENUECAT_API_KEY="key")),
+            patch("app.services.purchase.httpx.AsyncClient", return_value=client),
+            pytest.raises(RevenueCatAPIError) as error,
+        ):
+            await restore_purchases(async_session, record.id, "receipt", "ios", redis)  # type: ignore[arg-type]
+
+        assert error.value.upstream_status == 429
+        assert error.value.retry_after_seconds == 2000
+        assert 61 <= int(redis.eval_calls[-1][-1]) <= 120
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_promotional_premium_purchase_uses_authoritative_reconciliation(
+    async_session: AsyncSession, redis_client
+):
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        fetched = proposal(record.id)
+        webhook = event(
+            "NON_RENEWING_PURCHASE",
+            app_user_id=str(record.id),
+            store="PROMOTIONAL",
+            environment="PRODUCTION",
+            entitlement_ids=["premium"],
+        )
+        with patch("app.services.purchase.read_reconciliation", new=AsyncMock(return_value=fetched)):
+            disposition, results = await process_webhook(async_session, webhook, redis_client)
+
+        assert disposition == "success"
+        assert results == [fetched]
+        await async_session.refresh(record)
+        assert record.subscription_status == "premium"
+        assert record.subscription_verified_at == fetched.verified_at
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_raw_webhook_expiry_cannot_grant_lifetime_without_provider_snapshot(
+    async_session: AsyncSession, redis_client
+):
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        webhook = event(
+            "INITIAL_PURCHASE",
+            app_user_id=str(record.id),
+            environment="PRODUCTION",
+            entitlement_ids=["premium"],
+            expiration_at_ms=253402300799999,
+        )
+        with patch(
+            "app.services.purchase.read_reconciliation", new=AsyncMock(return_value=proposal(record.id, status="free"))
+        ):
+            await process_webhook(async_session, webhook, redis_client)
+
+        await async_session.refresh(record)
+        assert record.subscription_status == "free"
+        assert record.subscription_expires_at is None
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_production_sandbox_skips_before_identity_or_provider(async_session: AsyncSession, redis_client):
+    webhook = event("CANCELLATION", app_user_id=str(uuid4()), environment="SANDBOX")
+    with (
+        patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")),
+        patch("app.services.purchase.read_reconciliation", new=AsyncMock()) as reader,
     ):
-        """Test that first request for a transaction_id returns not duplicate."""
-        await cleanup_users(async_session)
+        disposition, results = await process_webhook(async_session, webhook, redis_client)
+
+    assert disposition == "skipped"
+    assert results == []
+    reader.assert_not_awaited()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_remove_ads_uses_fresh_locked_user_without_provider(async_session: AsyncSession, redis_client):
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        record.subscription_status = "premium"
+        await async_session.commit()
+        webhook = event(
+            "NON_RENEWING_PURCHASE",
+            app_user_id=str(record.id),
+            environment="PRODUCTION",
+            product_id="fishfeed_remove_ads",
+            entitlement_ids=["remove_ads"],
+        )
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")),
+            patch("app.services.purchase.read_reconciliation", new=AsyncMock()) as reader,
+        ):
+            disposition, results = await process_webhook(async_session, webhook, redis_client)
+
+        assert disposition == "success" and results == []
+        reader.assert_not_awaited()
+        await async_session.refresh(record)
+        assert record.subscription_status == "premium"
+        assert record.settings["non_subscriptions"]["products"] == ["fishfeed_remove_ads"]
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_remove_ads_uses_exact_app_user_id_not_an_alias(async_session: AsyncSession, redis_client):
+    await clear_purchase_state(async_session)
+    try:
+        purchaser, alias = await user(async_session), await user(async_session)
+        webhook = event(
+            "NON_RENEWING_PURCHASE",
+            app_user_id=str(purchaser.id),
+            aliases=[str(alias.id)],
+            environment="PRODUCTION",
+            product_id="fishfeed_remove_ads",
+            entitlement_ids=["remove_ads"],
+        )
+        with patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")):
+            await process_webhook(async_session, webhook, redis_client)
+
+        await async_session.refresh(purchaser)
+        await async_session.refresh(alias)
+        assert purchaser.settings["non_subscriptions"]["products"] == ["fishfeed_remove_ads"]
+        assert "non_subscriptions" not in alias.settings
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_alias_and_unrelated_events_skip_without_ads_write(async_session: AsyncSession, redis_client):
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        webhook = event("SUBSCRIBER_ALIAS", app_user_id=str(record.id), aliases=[str(uuid4())])
+        with patch("app.services.purchase.read_reconciliation", new=AsyncMock()) as reader:
+            disposition, results = await process_webhook(async_session, webhook, redis_client)
+
+        assert (disposition, results) == ("skipped", [])
+        reader.assert_not_awaited()
+        await async_session.refresh(record)
+        assert record.settings == {}
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_unsupported_application_environment_cannot_write_remove_ads(async_session: AsyncSession, redis_client):
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        webhook = event(
+            "NON_RENEWING_PURCHASE",
+            app_user_id=str(record.id),
+            environment="PRODUCTION",
+            entitlement_ids=["remove_ads"],
+        )
+        with patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="staging")):
+            with pytest.raises(PurchaseError, match="unsupported environment") as error:
+                await process_webhook(async_session, webhook, redis_client)
+        assert error.value.status_code == 503
+        await async_session.refresh(record)
+        assert record.settings == {}
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_redis_reconciliation_failure_has_storage_cause(async_session: AsyncSession):
+    record = await user(async_session)
+    webhook = event("INITIAL_PURCHASE", app_user_id=str(record.id), environment="PRODUCTION")
+    unavailable_redis = SimpleNamespace(ttl=AsyncMock(side_effect=RedisError("unavailable")))
+    try:
+        with patch(
+            "app.services.purchase.get_settings",
+            return_value=SimpleNamespace(ENVIRONMENT="production", REVENUECAT_API_KEY="key"),
+        ):
+            with pytest.raises(PurchaseError) as error:
+                await process_webhook(async_session, webhook, unavailable_redis)
+        assert getattr(error.value, "failure_kind", None) == "storage"
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_disappearing_reconciliation_participant_is_retryable(async_session: AsyncSession, redis_client):
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        webhook = event("INITIAL_PURCHASE", app_user_id=str(record.id), environment="PRODUCTION")
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")),
+            patch(
+                "app.services.purchase.read_reconciliation",
+                side_effect=UserNotFoundError(record.id),
+            ),
+            pytest.raises(WebhookRetryableError, match="participant disappeared"),
+        ):
+            await process_webhook(async_session, webhook, redis_client)
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_unresolved_ads_environment_is_retryable(async_session: AsyncSession, redis_client):
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        webhook = event("NON_RENEWING_PURCHASE", app_user_id=str(record.id), entitlement_ids=["remove_ads"])
+        with patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")):
+            with pytest.raises(PurchaseError, match="cannot authorize") as error:
+                await process_webhook(async_session, webhook, redis_client)
+        assert error.value.status_code == 503
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_transfer_fetches_every_snapshot_before_apply_and_rolls_back_group(async_engine, redis_client):
+    sessions = async_sessionmaker(async_engine, expire_on_commit=False)
+    async with sessions() as setup:
+        first, second = await user(setup), await user(setup)
+        first_id, second_id = first.id, second.id
+    webhook = event(
+        "TRANSFER",
+        transferred_from=[str(first_id)],
+        transferred_to=[str(second_id)],
+        environment="PRODUCTION",
+    )
+    reads: list[UUID] = []
+
+    async def read(_, __, user_id: UUID) -> Reconciliation:
+        reads.append(user_id)
+        return proposal(user_id)
+
+    async with sessions() as session:
+        applies = 0
+
+        async def apply(db, fetched: Reconciliation) -> Reconciliation:
+            nonlocal applies
+            assert reads == sorted([first_id, second_id], key=str)
+            applies += 1
+            if applies == 2:
+                return replace(fetched, outcome="conflict")
+            return await apply_reconciliation(db, fetched)
+
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")),
+            patch("app.services.purchase.read_reconciliation", side_effect=read),
+            patch("app.services.purchase.apply_reconciliation", side_effect=apply),
+            pytest.raises(PurchaseError, match="changed during reconciliation"),
+        ):
+            await process_webhook(session, webhook, redis_client)
+        await session.rollback()
+
+    async with sessions() as verify:
+        statuses = list(
+            (await verify.scalars(select(User.subscription_status).where(User.id.in_([first_id, second_id])))).all()
+        )
+    assert statuses == ["free", "free"]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_failed_audit_is_retryable_but_terminal_audit_is_not_overwritten(
+    async_session: AsyncSession, redis_client
+):
+    await clear_purchase_state(async_session)
+    await redis_client.flushdb()
+    try:
+        await log_webhook_transaction(
+            async_session,
+            "retry-audit",
+            "INITIAL_PURCHASE",
+            None,
+            {"event": {"id": "retry-audit"}},
+            processing_result="error",
+            error_message="timeout",
+        )
+        await async_session.commit()
+        duplicate, handle = await check_idempotency(async_session, redis_client, "retry-audit")
+        assert not duplicate and handle is not None
+        await release_idempotency_lock(redis_client, handle)
+
+        terminal = await log_webhook_transaction(
+            async_session,
+            "retry-audit",
+            "INITIAL_PURCHASE",
+            None,
+            {"event": {"id": "retry-audit"}},
+            processing_result="success",
+        )
+        await async_session.commit()
+        duplicate, handle = await check_idempotency(async_session, redis_client, "retry-audit")
+        assert duplicate and handle is None
+
+        unchanged = await log_webhook_transaction(
+            async_session,
+            "retry-audit",
+            "INITIAL_PURCHASE",
+            None,
+            {"event": {"id": "retry-audit"}},
+            processing_result="error",
+            error_message="late failure",
+        )
+        assert terminal.processing_result == unchanged.processing_result == "success"
+        assert (
+            await async_session.scalar(
+                select(func.count())
+                .select_from(WebhookTransaction)
+                .where(WebhookTransaction.transaction_id == "retry-audit")
+            )
+            == 1
+        )
+    finally:
+        await clear_purchase_state(async_session)
         await redis_client.flushdb()
 
-        try:
-            is_duplicate, lock_key = await check_idempotency(
-                db=async_session,
-                redis=redis_client,
-                transaction_id="new_txn_001",
-            )
 
-            assert is_duplicate is False
-            assert lock_key is not None
-            assert "webhook_lock:new_txn_001" == lock_key
-
-            # Clean up lock
-            await release_idempotency_lock(redis_client, lock_key)
-
-        finally:
-            await cleanup_users(async_session)
-            await redis_client.flushdb()
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_duplicate_in_database_returns_duplicate(
-        self, async_session: AsyncSession, redis_client
-    ):
-        """Test that existing transaction in database returns duplicate."""
-        await cleanup_users(async_session)
-        await redis_client.flushdb()
-
-        try:
-            # First, log a transaction
+@pytest.mark.asyncio(loop_scope="session")
+async def test_terminal_webhook_audit_requires_success_or_skipped(async_session: AsyncSession):
+    await clear_purchase_state(async_session)
+    try:
+        for transaction_id, processing_result in (
+            ("terminal-success", "success"),
+            ("terminal-skipped", "skipped"),
+            ("retryable-error", "error"),
+        ):
             await log_webhook_transaction(
-                db=async_session,
-                transaction_id="existing_txn_001",
-                event_type="INITIAL_PURCHASE",
-                user_id="test_user_id",
-                payload={"test": "data"},
+                async_session,
+                transaction_id,
+                "INITIAL_PURCHASE",
+                None,
+                {"event": {"id": transaction_id}},
+                processing_result=processing_result,
             )
+        await async_session.commit()
 
-            # Check idempotency
-            is_duplicate, lock_key = await check_idempotency(
-                db=async_session,
-                redis=redis_client,
-                transaction_id="existing_txn_001",
-            )
+        assert await has_terminal_webhook_audit(async_session, "terminal-success")
+        assert await has_terminal_webhook_audit(async_session, "terminal-skipped")
+        assert not await has_terminal_webhook_audit(async_session, "retryable-error")
+        assert not await has_terminal_webhook_audit(async_session, "missing")
+    finally:
+        await clear_purchase_state(async_session)
 
-            assert is_duplicate is True
-            assert lock_key is None
 
-        finally:
-            await async_session.execute(text("TRUNCATE TABLE webhook_transactions CASCADE"))
-            await async_session.commit()
-            await redis_client.flushdb()
+@pytest.mark.asyncio(loop_scope="session")
+async def test_legacy_dedup_fallback_requires_the_matching_event_id(async_session: AsyncSession, redis_client):
+    await clear_purchase_state(async_session)
+    await redis_client.flushdb()
+    try:
+        await log_webhook_transaction(
+            async_session,
+            "legacy-store-id",
+            "INITIAL_PURCHASE",
+            None,
+            {"event": {"id": "event-id"}},
+            processing_result="success",
+        )
+        await async_session.commit()
+        duplicate, handle = await check_idempotency(
+            async_session, redis_client, "event-id", legacy_transaction_id="legacy-store-id"
+        )
+        assert duplicate and handle is None
 
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_redis_lock_prevents_concurrent_access(
-        self, async_session: AsyncSession, redis_client
-    ):
-        """Test that Redis lock prevents concurrent processing."""
-        await cleanup_users(async_session)
+        duplicate, handle = await check_idempotency(
+            async_session, redis_client, "different-event", legacy_transaction_id="legacy-store-id"
+        )
+        assert not duplicate and handle is not None
+        await release_idempotency_lock(redis_client, handle)
+    finally:
+        await clear_purchase_state(async_session)
         await redis_client.flushdb()
 
-        try:
-            # Acquire lock manually
-            lock_key = "webhook_lock:locked_txn_001"
-            await redis_client.set(lock_key, "1", nx=True, ex=30)
 
-            # Try to check idempotency - should be blocked by lock
-            is_duplicate, returned_lock_key = await check_idempotency(
-                db=async_session,
-                redis=redis_client,
-                transaction_id="locked_txn_001",
-            )
-
-            assert is_duplicate is True
-            assert returned_lock_key is None
-
-        finally:
-            await cleanup_users(async_session)
-            await redis_client.flushdb()
+@pytest.mark.asyncio(loop_scope="session")
+async def test_lookup_failure_releases_acquired_lock(redis_client):
+    await redis_client.flushdb()
+    database = SimpleNamespace(scalar=AsyncMock(side_effect=RuntimeError("lookup failed")))
+    with pytest.raises(RuntimeError, match="lookup failed"):
+        await check_idempotency(database, redis_client, "lookup-failure")
+    assert await redis_client.get("webhook_lock:lookup-failure") is None
+    await redis_client.flushdb()
 
 
-class TestLogWebhookTransaction:
-    """Tests for log_webhook_transaction function."""
+@pytest.mark.asyncio(loop_scope="session")
+async def test_expired_owner_cannot_delete_replacement_lock(redis_client):
+    await redis_client.flushdb()
+    try:
+        await redis_client.set("webhook_lock:replacement", "replacement", ex=30)
+        await release_idempotency_lock(redis_client, ("webhook_lock:replacement", "expired-owner"))
+        assert await redis_client.get("webhook_lock:replacement") == "replacement"
+    finally:
+        await redis_client.flushdb()
 
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_logs_successful_transaction(self, async_session: AsyncSession):
-        """Test that successful transactions are logged correctly."""
-        await async_session.execute(text("TRUNCATE TABLE webhook_transactions CASCADE"))
-        await async_session.commit()
 
-        try:
-            transaction = await log_webhook_transaction(
-                db=async_session,
-                transaction_id="log_test_001",
-                event_type="INITIAL_PURCHASE",
-                user_id="user_123",
-                payload={"test": "payload", "nested": {"key": "value"}},
-                correlation_id="corr_123",
-                processing_result="success",
-            )
+@pytest.mark.asyncio(loop_scope="session")
+async def test_lock_release_failure_is_nonfatal():
+    unavailable_redis = SimpleNamespace(execute_command=AsyncMock(side_effect=RedisError("unavailable")))
+    await release_idempotency_lock(unavailable_redis, ("webhook_lock:failure", "token"))
 
-            assert transaction.transaction_id == "log_test_001"
-            assert transaction.event_type == "INITIAL_PURCHASE"
-            assert transaction.user_id == "user_123"
-            assert transaction.payload == {"test": "payload", "nested": {"key": "value"}}
-            assert transaction.correlation_id == "corr_123"
-            assert transaction.processing_result == "success"
-            assert transaction.error_message is None
-            assert transaction.processed_at is not None
 
-        finally:
-            await async_session.execute(text("TRUNCATE TABLE webhook_transactions CASCADE"))
-            await async_session.commit()
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_logs_failed_transaction_with_error(self, async_session: AsyncSession):
-        """Test that failed transactions are logged with error message."""
-        await async_session.execute(text("TRUNCATE TABLE webhook_transactions CASCADE"))
-        await async_session.commit()
-
-        try:
-            transaction = await log_webhook_transaction(
-                db=async_session,
-                transaction_id="log_error_001",
-                event_type="INITIAL_PURCHASE",
-                user_id="user_123",
-                payload={"test": "payload"},
+@pytest.mark.asyncio(loop_scope="session")
+async def test_two_sessions_keep_a_terminal_audit_when_a_late_writer_loses(async_engine, redis_client):
+    """The unique audit winner stays terminal after a concurrent losing insert."""
+    sessions = async_sessionmaker(async_engine, expire_on_commit=False)
+    async with sessions() as first, sessions() as late:
+        await log_webhook_transaction(
+            first,
+            "audit-race",
+            "INITIAL_PURCHASE",
+            None,
+            {"event": {"id": "audit-race"}},
+            processing_result="success",
+        )
+        loser = asyncio.create_task(
+            log_webhook_transaction(
+                late,
+                "audit-race",
+                "INITIAL_PURCHASE",
+                None,
+                {"event": {"id": "audit-race"}},
                 processing_result="error",
-                error_message="User not found in database",
+                error_message="late",
             )
+        )
+        await asyncio.sleep(0.05)
+        assert not loser.done()
+        await first.commit()
+        with pytest.raises(WebhookAuditConflict):
+            await loser
+        await late.rollback()
 
-            assert transaction.processing_result == "error"
-            assert transaction.error_message == "User not found in database"
-
-        finally:
-            await async_session.execute(text("TRUNCATE TABLE webhook_transactions CASCADE"))
-            await async_session.commit()
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_logs_transaction_with_null_user_id(self, async_session: AsyncSession):
-        """Test that transactions can be logged with null user_id."""
-        await async_session.execute(text("TRUNCATE TABLE webhook_transactions CASCADE"))
-        await async_session.commit()
-
-        try:
-            transaction = await log_webhook_transaction(
-                db=async_session,
-                transaction_id="log_null_user_001",
-                event_type="PARSE_ERROR",
-                user_id=None,
-                payload={"raw": "invalid payload"},
-                processing_result="error",
-                error_message="Failed to parse JSON",
-            )
-
-            assert transaction.user_id is None
-            assert transaction.event_type == "PARSE_ERROR"
-
-        finally:
-            await async_session.execute(text("TRUNCATE TABLE webhook_transactions CASCADE"))
-            await async_session.commit()
+    async with sessions() as verify:
+        winner = await verify.scalar(
+            select(WebhookTransaction).where(WebhookTransaction.transaction_id == "audit-race")
+        )
+        assert winner is not None and winner.processing_result == "success"
+        duplicate, handle = await check_idempotency(verify, redis_client, "audit-race")
+        assert duplicate and handle is None
 
 
-class TestReleaseIdempotencyLock:
-    """Tests for release_idempotency_lock function."""
+@pytest.mark.asyncio(loop_scope="session")
+async def test_stale_ads_session_preserves_newer_subscription_settings(async_engine, redis_client):
+    """The ads writer refreshes its locked row instead of writing a stale JSON snapshot."""
+    sessions = async_sessionmaker(async_engine, expire_on_commit=False)
+    async with sessions() as setup:
+        record = await user(setup)
+        user_id = record.id
+    async with sessions() as stale, sessions() as writer:
+        stale_user = await stale.get(User, user_id)
+        assert stale_user is not None and stale_user.settings == {}
+        current = await writer.get(User, user_id)
+        assert current is not None
+        current.settings = {"subscription": {"product_id": "premium.yearly", "will_renew": True}}
+        await writer.commit()
 
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_releases_existing_lock(self, redis_client):
-        """Test that existing lock is released."""
-        await redis_client.flushdb()
+        webhook = event(
+            "NON_RENEWING_PURCHASE",
+            app_user_id=str(user_id),
+            environment="PRODUCTION",
+            product_id="fishfeed_remove_ads",
+            entitlement_ids=["remove_ads"],
+        )
+        with patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")):
+            await process_webhook(stale, webhook, redis_client)
+        await stale.commit()
 
-        try:
-            lock_key = "webhook_lock:release_test"
-            await redis_client.set(lock_key, "1")
+    async with sessions() as verify:
+        merged = await verify.get(User, user_id)
+        assert merged is not None
+        assert merged.settings["subscription"] == {"product_id": "premium.yearly", "will_renew": True}
+        assert merged.settings["non_subscriptions"]["products"] == ["fishfeed_remove_ads"]
 
-            # Verify lock exists
-            assert await redis_client.exists(lock_key)
 
-            await release_idempotency_lock(redis_client, lock_key)
-
-            # Verify lock is released
-            assert not await redis_client.exists(lock_key)
-
-        finally:
-            await redis_client.flushdb()
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_handles_none_lock_key(self, redis_client):
-        """Test that None lock_key is handled gracefully."""
-        await redis_client.flushdb()
-
-        # Should not raise
-        await release_idempotency_lock(redis_client, None)
-
-    @pytest.mark.asyncio(loop_scope="session")
-    async def test_handles_nonexistent_lock(self, redis_client):
-        """Test that releasing non-existent lock doesn't raise."""
-        await redis_client.flushdb()
-
-        # Should not raise
-        await release_idempotency_lock(redis_client, "nonexistent_lock_key")
+def test_authorization_uses_exact_constant_time_value():
+    assert verify_webhook_authorization("secret", "secret")
+    assert not verify_webhook_authorization("wrong", "secret")

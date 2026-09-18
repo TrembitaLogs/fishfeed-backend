@@ -6,11 +6,12 @@ This module provides scheduled jobs for:
 - Sending push notifications about subscription expiry
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import structlog
-from sqlalchemy import func, select
+from redis.asyncio import Redis
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -20,88 +21,178 @@ from app.models.fish import Fish
 from app.models.user import User
 from app.schemas.purchase import FREE_USER_LIMITS
 from app.services.notification import NotificationService
-from app.services.purchase import revert_to_free
+from app.services.premium import invalidate_premium_cache
+from app.services.purchase import (
+    PurchaseError,
+    RevenueCatAPIError,
+    RevenueCatNotConfiguredError,
+    UserNotFoundError,
+    read_reconciliation,
+    reconcile_user,
+)
 
 logger = structlog.get_logger(__name__)
 settings = get_settings()
 
 
-async def check_expired_subscriptions_job() -> int:
-    """Check and process expired premium subscriptions.
+def _is_fatal_reconciliation_error(error: Exception, *, dry_run: bool) -> bool:
+    """Whether one provider failure makes the whole fixed pass unsafe to continue."""
+    return isinstance(error, RevenueCatNotConfiguredError) or (
+        isinstance(error, RevenueCatAPIError)
+        and (
+            error.failure_kind == "configuration"
+            or error.upstream_status in {401, 403, 429}
+            or (dry_run and error.upstream_status == 201)
+        )
+    )
 
-    Finds all users with premium status and expired subscription_expires_at,
-    processes them in batches, and reverts them to free tier.
 
-    Returns:
-        Number of users processed.
-    """
-    logger.info("Starting check_expired_subscriptions_job")
+def _dry_run_reason(proposal: object) -> str:
+    """Return a bounded operator explanation without exposing provider data."""
+    from app.services.purchase import Reconciliation
 
-    batch_size = settings.SUBSCRIPTION_BATCH_SIZE
-    total_processed = 0
-    now = datetime.now(UTC)
+    assert isinstance(proposal, Reconciliation)
+    if proposal.outcome == "unchanged":
+        return "local projection already matches the verified snapshot"
+    changed = []
+    if proposal.before_status != proposal.snapshot.status:
+        changed.append("status")
+    if proposal.before_expires_at != proposal.snapshot.expires_at:
+        changed.append("expiry")
+    if not changed:
+        changed.append("subscription metadata")
+    return f"verified snapshot changes {', '.join(changed)}"
 
+
+async def _due_subscription_user_ids(now: datetime, user_ids: tuple[UUID, ...]) -> list[UUID]:
+    """Capture one deterministic recovery snapshot before any account I/O."""
+    if user_ids:
+        return list(dict.fromkeys(user_ids))
+    due = or_(
+        User.subscription_verified_at.is_(None),
+        User.subscription_verified_at < now - timedelta(days=1),
+        and_(
+            User.subscription_status == "premium",
+            User.subscription_expires_at.is_not(None),
+            User.subscription_expires_at <= now + timedelta(hours=24),
+            User.subscription_verified_at < now - timedelta(hours=1),
+        ),
+    )
     async with async_session_maker() as db:
-        while True:
-            # Query expired premium users in batches
-            stmt = (
-                select(User)
-                .where(User.subscription_status == "premium")
-                .where(User.subscription_expires_at < now)
-                .where(User.deleted_at.is_(None))
-                .limit(batch_size)
-            )
-            result = await db.execute(stmt)
-            expired_users = list(result.scalars().all())
+        result = await db.execute(
+            select(User.id)
+            .where(User.deleted_at.is_(None), due)
+            .order_by(User.subscription_verified_at.nullsfirst(), User.id)
+        )
+        return list(result.scalars())
 
-            if not expired_users:
-                break
 
-            for user in expired_users:
-                try:
-                    await _process_expired_user(db, user)
-                    total_processed += 1
-                except Exception as e:
-                    logger.error(
-                        "Failed to process expired subscription for user",
-                        user_id=user.id,
-                        error=str(e),
+async def check_expired_subscriptions_job(*, dry_run: bool = False, user_ids: tuple[UUID, ...] = ()) -> int:
+    """Reconcile one fixed, cadence-selected set of RevenueCat accounts."""
+    from app.redis import get_redis_client
+
+    now = datetime.now(UTC)
+    ids = await _due_subscription_user_ids(now, user_ids)
+    redis: Redis = get_redis_client()
+    counts = {"changed": 0, "unchanged": 0, "skipped": 0, "errors": 0}
+    fatal_error: Exception | None = None
+
+    for offset in range(0, len(ids), settings.SUBSCRIPTION_BATCH_SIZE):
+        for user_id in ids[offset : offset + settings.SUBSCRIPTION_BATCH_SIZE]:
+            try:
+                async with async_session_maker() as db:
+                    proposal = (
+                        await read_reconciliation(db, redis, user_id, dry_run=True)
+                        if dry_run
+                        else await reconcile_user(db, redis, user_id)
                     )
-                    continue
+                    if dry_run:
+                        counts[proposal.outcome] += 1
+                        reason = _dry_run_reason(proposal)
+                        print(
+                            "Subscription reconciliation dry-run result "
+                            f"id={user_id} before_status={proposal.before_status} "
+                            f"before_expires_at={proposal.before_expires_at} "
+                            f"proposed_status={proposal.snapshot.status} "
+                            f"proposed_expires_at={proposal.snapshot.expires_at} "
+                            f"outcome={proposal.outcome} reason={reason}"
+                        )
+                        logger.info(
+                            "Subscription reconciliation dry-run result",
+                            user_id=user_id,
+                            before_status=proposal.before_status,
+                            before_expires_at=proposal.before_expires_at,
+                            proposed_status=proposal.snapshot.status,
+                            proposed_expires_at=proposal.snapshot.expires_at,
+                            outcome=proposal.outcome,
+                            reason=reason,
+                        )
+                        continue
 
-            # apply_free_tier_limits() commits per user, so every user's
-            # writes land except those made after their own commit — the
-            # notification log and any push tokens FCM reported as
-            # UNREGISTERED. Without this the last user of the batch loses
-            # them when the session closes.
-            await db.commit()
+                    await db.commit()
+                    counts[proposal.outcome] += 1
+                    await invalidate_premium_cache(str(user_id), redis)
+                    if proposal.before_status == "premium" and proposal.snapshot.status == "free":
+                        try:
+                            await _send_subscription_expired_notification(db, user_id)
+                            await db.commit()
+                        except Exception:
+                            await db.rollback()
+                            logger.exception("Failed to persist subscription expiry notification", user_id=user_id)
+            except UserNotFoundError:
+                counts["skipped"] += 1
+                if dry_run:
+                    print(
+                        "Subscription reconciliation dry-run result "
+                        f"id={user_id} outcome=skipped reason=unknown_or_deleted_local_user"
+                    )
+                logger.info(
+                    "Subscription reconciliation skipped unknown or deleted user",
+                    user_id=user_id,
+                    reason="unknown_or_deleted_local_user",
+                )
+            except Exception as error:
+                counts["errors"] += 1
+                error_metadata = ""
+                if isinstance(error, RevenueCatAPIError):
+                    error_metadata = (
+                        f" upstream_status={error.upstream_status} retry_after_seconds={error.retry_after_seconds}"
+                    )
+                if dry_run:
+                    print(
+                        "Subscription reconciliation dry-run result "
+                        f"id={user_id} outcome=error reason=reconciliation_error{error_metadata}"
+                    )
+                logger.error(
+                    "Subscription reconciliation failed",
+                    user_id=user_id,
+                    reason="reconciliation_error",
+                    error_type=type(error).__name__,
+                )
+                if _is_fatal_reconciliation_error(error, dry_run=dry_run):
+                    if dry_run and isinstance(error, RevenueCatAPIError) and error.upstream_status == 201:
+                        print(
+                            "Subscription reconciliation dry-run fatal "
+                            f"id={user_id} upstream_status=201 reason=upstream_customer_may_have_been_created"
+                        )
+                        logger.error("Dry-run stopped: upstream customer may have been created", user_id=user_id)
+                    fatal_error = error
+                    break
+        if fatal_error is not None:
+            break
 
-            logger.info("Processed batch of expired subscriptions", batch_size=len(expired_users))
-
-    logger.info("check_expired_subscriptions_job completed", users_processed=total_processed)
-    return total_processed
-
-
-async def _process_expired_user(db: AsyncSession, user: User) -> None:
-    """Process a single expired user subscription.
-
-    Args:
-        db: Database session.
-        user: User with expired subscription.
-    """
-    user_id = user.id
-    logger.info("Processing expired subscription for user", user_id=user_id)
-
-    # Revert to free tier
-    await revert_to_free(db, user_id)
-
-    # Apply free tier limits and record excess items
-    await apply_free_tier_limits(db, user_id)
-
-    # Send push notification about subscription expiry
-    await _send_subscription_expired_notification(db, user_id)
-
-    logger.info("User reverted to free tier after subscription expiry", user_id=user_id)
+    if dry_run:
+        print(
+            "Subscription reconciliation completed "
+            f"changed={counts['changed']} unchanged={counts['unchanged']} "
+            f"skipped={counts['skipped']} errors={counts['errors']} total={len(ids)}"
+        )
+    logger.info("Subscription reconciliation completed", dry_run=dry_run, total=len(ids), **counts)
+    if fatal_error is not None:
+        raise fatal_error
+    if counts["errors"]:
+        raise PurchaseError("Subscription reconciliation incomplete", status_code=503)
+    return counts["changed"] + counts["unchanged"]
 
 
 async def apply_free_tier_limits(db: AsyncSession, user_id: UUID) -> dict:
@@ -183,7 +274,7 @@ async def apply_free_tier_limits(db: AsyncSession, user_id: UUID) -> dict:
         user.settings = settings_dict
         logger.info("User limits exceeded", user_id=user_id, exceeded_limits=list(limits_exceeded.keys()))
 
-    await db.commit()
+    await db.flush()
 
     return {
         "user_id": str(user_id),
@@ -239,10 +330,7 @@ async def _get_aquariums_with_excess_fish(
     result = await db.execute(stmt)
     rows = result.all()
 
-    return [
-        {"aquarium_id": str(row.id), "fish_count": row.fish_count}
-        for row in rows
-    ]
+    return [{"aquarium_id": str(row.id), "fish_count": row.fish_count} for row in rows]
 
 
 async def _get_family_member_info(
@@ -270,10 +358,7 @@ async def _get_family_member_info(
     result = await db.execute(stmt)
     rows = result.all()
 
-    return [
-        {"aquarium_id": str(row.id), "member_count": row.member_count}
-        for row in rows
-    ]
+    return [{"aquarium_id": str(row.id), "member_count": row.member_count} for row in rows]
 
 
 async def _send_subscription_expired_notification(
@@ -289,30 +374,22 @@ async def _send_subscription_expired_notification(
     Returns:
         True if notification was sent successfully.
     """
-    try:
-        notification_service = NotificationService(db)
-
-        success = await notification_service.send_push(
-            user_id=user_id,
-            title="Premium subscription expired",
-            body="Your premium subscription has ended. Upgrade to continue enjoying unlimited features!",
-            data={
-                "type": "subscription_expired",
-                "action": "open_subscription_page",
-            },
-            bypass_throttle=True,  # System notification, bypass throttle
-        )
-
-        if success:
-            logger.info("Subscription expiry notification sent to user", user_id=user_id)
-        else:
-            logger.info("Failed to send subscription expiry notification to user", user_id=user_id)
-
-        return success
-
-    except Exception as e:
-        logger.error("Error sending subscription expiry notification", user_id=user_id, error=str(e))
-        return False
+    notification_service = NotificationService(db)
+    success = await notification_service.send_push(
+        user_id=user_id,
+        title="Premium subscription expired",
+        body="Your premium subscription has ended. Upgrade to continue enjoying unlimited features!",
+        data={
+            "type": "subscription_expired",
+            "action": "open_subscription_page",
+        },
+        bypass_throttle=True,  # System notification, bypass throttle
+    )
+    if success:
+        logger.info("Subscription expiry notification sent to user", user_id=user_id)
+    else:
+        logger.info("Failed to send subscription expiry notification", user_id=user_id)
+    return success
 
 
 async def clear_limits_exceeded(db: AsyncSession, user_id: UUID) -> None:

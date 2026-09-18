@@ -1,18 +1,31 @@
 """Tests for subscription background jobs."""
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
+import httpx
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.aquarium import Aquarium, AquariumMember
 from app.models.fish import Fish
+from app.models.notification import NotificationLog, PushToken
+from app.models.purchase import WebhookTransaction
 from app.models.species import Species
 from app.models.user import User
 from app.schemas.purchase import FREE_USER_LIMITS
+from app.services.purchase import (
+    PurchaseError,
+    Reconciliation,
+    RevenueCatAPIError,
+    RevenueCatNotConfiguredError,
+    SubscriptionSnapshot,
+    UserNotFoundError,
+)
 
 
 async def cleanup_subscription_data(session: AsyncSession) -> None:
@@ -45,6 +58,750 @@ async def create_test_user(
     await session.commit()
     await session.refresh(user)
     return user
+
+
+def reconciliation_for(user: User, *, outcome: str = "unchanged") -> Reconciliation:
+    """Small proposal factory for worker orchestration tests."""
+    return Reconciliation(
+        user_id=user.id,
+        before_status=user.subscription_status,
+        before_expires_at=user.subscription_expires_at,
+        before_verified_at=user.subscription_verified_at,
+        before_subscription={},
+        snapshot=SubscriptionSnapshot("free", None, None, False, False),
+        verified_at=datetime.now(UTC),
+        outcome=outcome,  # type: ignore[arg-type]
+    )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_due_snapshot_uses_cadence_boundaries(async_session: AsyncSession):
+    """Daily and hourly boundaries are strict, with the 24-hour expiry edge included."""
+    from app.jobs import subscription_jobs
+
+    await cleanup_subscription_data(async_session)
+    now = datetime.now(UTC)
+    daily_due = await create_test_user(async_session, email="daily-due@example.com")
+    daily_due.subscription_verified_at = now - timedelta(days=1, microseconds=1)
+    daily_edge = await create_test_user(async_session, email="daily-edge@example.com")
+    daily_edge.subscription_verified_at = now - timedelta(days=1)
+    near_due = await create_test_user(
+        async_session,
+        email="near-due@example.com",
+        subscription_status="premium",
+        subscription_expires_at=now + timedelta(hours=24),
+    )
+    near_due.subscription_verified_at = now - timedelta(hours=1, microseconds=1)
+    near_edge = await create_test_user(
+        async_session,
+        email="near-edge@example.com",
+        subscription_status="premium",
+        subscription_expires_at=now,
+    )
+    near_edge.subscription_verified_at = now - timedelta(hours=1)
+    far_future = await create_test_user(
+        async_session,
+        email="far-future@example.com",
+        subscription_status="premium",
+        subscription_expires_at=now + timedelta(hours=24, microseconds=1),
+    )
+    far_future.subscription_verified_at = now - timedelta(hours=2)
+    await async_session.commit()
+
+    with patch("app.jobs.subscription_jobs.async_session_maker", return_value=async_session):
+        ids = await subscription_jobs._due_subscription_user_ids(now, ())
+
+    assert set(ids) == {daily_due.id, near_due.id}
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_due_snapshot_orders_null_then_oldest_then_uuid_and_covers_daily_rows(async_session: AsyncSession):
+    """Cadence keeps unverified/free/lifetime/far-future rows daily and orders deterministically."""
+    from app.jobs import subscription_jobs
+
+    await cleanup_subscription_data(async_session)
+    now = datetime.now(UTC)
+    null_low = User(id=uuid.UUID(int=1), email="null-low@example.com", password_hash="x")
+    null_high = User(id=uuid.UUID(int=2), email="null-high@example.com", password_hash="x")
+    daily_free = User(id=uuid.UUID(int=3), email="daily-free@example.com", password_hash="x")
+    daily_free.subscription_verified_at = now - timedelta(days=1, microseconds=1)
+    lifetime = User(id=uuid.UUID(int=4), email="lifetime@example.com", password_hash="x", subscription_status="premium")
+    lifetime.subscription_verified_at = now - timedelta(days=1, microseconds=1)
+    far = User(
+        id=uuid.UUID(int=5),
+        email="far@example.com",
+        password_hash="x",
+        subscription_status="premium",
+        subscription_expires_at=now + timedelta(days=10),
+    )
+    far.subscription_verified_at = now - timedelta(days=1, microseconds=1)
+    past = User(
+        id=uuid.UUID(int=6),
+        email="past@example.com",
+        password_hash="x",
+        subscription_status="premium",
+        subscription_expires_at=now - timedelta(seconds=1),
+    )
+    past.subscription_verified_at = now - timedelta(hours=1, microseconds=1)
+    async_session.add_all([null_high, far, daily_free, null_low, lifetime, past])
+    await async_session.commit()
+    with patch("app.jobs.subscription_jobs.async_session_maker", return_value=async_session):
+        ids = await subscription_jobs._due_subscription_user_ids(now, ())
+
+    assert ids == [null_low.id, null_high.id, daily_free.id, lifetime.id, far.id, past.id]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_explicit_user_ids_bypass_cadence_and_deduplicate():
+    """A scoped recovery never falls back to a sweep."""
+    from app.jobs.subscription_jobs import _due_subscription_user_ids
+
+    first, second = uuid.uuid4(), uuid.uuid4()
+    assert await _due_subscription_user_ids(datetime.now(UTC), (first, second, first)) == [first, second]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_empty_due_snapshot_runs_no_accounts(async_session: AsyncSession):
+    """A fully current account set produces no recovery work."""
+    from app.jobs.subscription_jobs import _due_subscription_user_ids
+
+    await cleanup_subscription_data(async_session)
+    now = datetime.now(UTC)
+    user = await create_test_user(async_session, email="current@example.com")
+    user.subscription_verified_at = now
+    await async_session.commit()
+    with patch("app.jobs.subscription_jobs.async_session_maker", return_value=async_session):
+        assert await _due_subscription_user_ids(now, ()) == []
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_reconciliation_continues_after_account_failure_then_exits_nonzero(async_engine):
+    """A later successful account commits even though the fixed pass remains incomplete."""
+    from app.jobs import subscription_jobs
+
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as setup:
+        await cleanup_subscription_data(setup)
+        first = await create_test_user(setup, email="failure-first@example.com")
+        second = await create_test_user(setup, email="success-second@example.com")
+    calls: list[uuid.UUID] = []
+
+    async def reconcile(db: AsyncSession, redis, user_id: uuid.UUID):
+        del redis
+        calls.append(user_id)
+        if user_id == first.id:
+            raise PurchaseError("account failure", status_code=503)
+        user = await db.get(User, user_id)
+        assert user is not None
+        user.subscription_status = "premium"
+        return reconciliation_for(user, outcome="changed")
+
+    with (
+        patch("app.jobs.subscription_jobs.async_session_maker", sessions),
+        patch("app.redis.get_redis_client", return_value=MagicMock()),
+        patch("app.jobs.subscription_jobs.reconcile_user", side_effect=reconcile),
+        patch("app.jobs.subscription_jobs.invalidate_premium_cache", new=AsyncMock()),
+    ):
+        with pytest.raises(PurchaseError, match="incomplete"):
+            await subscription_jobs.check_expired_subscriptions_job(user_ids=(first.id, second.id))
+
+    assert calls == [first.id, second.id]
+    async with sessions() as check:
+        second_after = await check.get(User, second.id)
+        assert second_after is not None and second_after.subscription_status == "premium"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_failed_account_flush_rolls_back_before_later_success(async_engine):
+    """A flushed failed projection/settings/quota mutation cannot leak into B's commit."""
+    from app.jobs import subscription_jobs
+
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as setup:
+        await cleanup_subscription_data(setup)
+        first = await create_test_user(setup, email="mutating-failure@example.com")
+        second = await create_test_user(setup, email="later-success@example.com")
+
+    async def reconcile(db: AsyncSession, _redis, user_id: uuid.UUID):
+        user = await db.get(User, user_id)
+        assert user is not None
+        if user_id == first.id:
+            user.subscription_status = "premium"
+            user.free_ai_scans_remaining = 999
+            user.settings = {"leaked": True}
+            await db.flush()
+            raise PurchaseError("after flush", status_code=503)
+        user.subscription_status = "premium"
+        return reconciliation_for(user, outcome="changed")
+
+    with (
+        patch("app.jobs.subscription_jobs.async_session_maker", sessions),
+        patch("app.redis.get_redis_client", return_value=MagicMock()),
+        patch("app.jobs.subscription_jobs.reconcile_user", side_effect=reconcile),
+        patch("app.jobs.subscription_jobs.invalidate_premium_cache", new=AsyncMock()),
+    ):
+        with pytest.raises(PurchaseError, match="incomplete"):
+            await subscription_jobs.check_expired_subscriptions_job(user_ids=(first.id, second.id))
+
+    async with sessions() as observer:
+        failed = await observer.get(User, first.id)
+        succeeded = await observer.get(User, second.id)
+        assert failed is not None and failed.subscription_status == "free"
+        assert failed.free_ai_scans_remaining == 5 and failed.settings == {}
+        assert succeeded is not None and succeeded.subscription_status == "premium"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_all_failing_fixed_pass_attempts_each_explicit_id_once():
+    """Account failures do not loop/reselect and the one-shot remains nonzero."""
+    from app.jobs import subscription_jobs
+
+    ids = (uuid.uuid4(), uuid.uuid4())
+    db = MagicMock()
+    db.__aenter__ = AsyncMock(return_value=db)
+    db.__aexit__ = AsyncMock(return_value=None)
+    reconcile = AsyncMock(side_effect=PurchaseError("account failure", status_code=503))
+    with (
+        patch("app.jobs.subscription_jobs.async_session_maker", return_value=db),
+        patch("app.redis.get_redis_client", return_value=MagicMock()),
+        patch("app.jobs.subscription_jobs.reconcile_user", reconcile),
+    ):
+        with pytest.raises(PurchaseError, match="incomplete"):
+            await subscription_jobs.check_expired_subscriptions_job(user_ids=ids)
+
+    assert [call.args[2] for call in reconcile.await_args_list] == list(ids)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_apply_mode_existing_premium_201_continues_then_exits_nonzero():
+    """An identity-unsafe 201 leaves that account alone but does not stop later accounts."""
+    from app.jobs import subscription_jobs
+
+    first, second = uuid.uuid4(), uuid.uuid4()
+    db = MagicMock()
+    db.__aenter__ = AsyncMock(return_value=db)
+    db.__aexit__ = AsyncMock(return_value=None)
+    db.commit = AsyncMock()
+    success = Reconciliation(
+        first,
+        "free",
+        None,
+        None,
+        {},
+        SubscriptionSnapshot("free", None, None, False, False),
+        datetime.now(UTC),
+        "unchanged",
+    )
+    reconcile = AsyncMock(side_effect=[RevenueCatAPIError("unexpected customer", upstream_status=201), success])
+    with (
+        patch("app.jobs.subscription_jobs.async_session_maker", return_value=db),
+        patch("app.redis.get_redis_client", return_value=MagicMock()),
+        patch("app.jobs.subscription_jobs.reconcile_user", reconcile),
+        patch("app.jobs.subscription_jobs.invalidate_premium_cache", new=AsyncMock()),
+    ):
+        with pytest.raises(PurchaseError, match="incomplete"):
+            await subscription_jobs.check_expired_subscriptions_job(user_ids=(first, second))
+    assert [call.args[2] for call in reconcile.await_args_list] == [first, second]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_explicit_unknown_or_deleted_ids_are_skipped_by_worker():
+    """Explicit recovery never falls back to a sweep when local identities are absent."""
+    from app.jobs import subscription_jobs
+
+    unknown, deleted = uuid.uuid4(), uuid.uuid4()
+    db = MagicMock()
+    db.__aenter__ = AsyncMock(return_value=db)
+    db.__aexit__ = AsyncMock(return_value=None)
+    reconcile = AsyncMock(side_effect=[UserNotFoundError(unknown), UserNotFoundError(deleted)])
+    with (
+        patch("app.jobs.subscription_jobs.async_session_maker", return_value=db),
+        patch("app.redis.get_redis_client", return_value=MagicMock()),
+        patch("app.jobs.subscription_jobs.reconcile_user", reconcile),
+    ):
+        assert await subscription_jobs.check_expired_subscriptions_job(user_ids=(unknown, deleted)) == 0
+
+    assert [call.args[2] for call in reconcile.await_args_list] == [unknown, deleted]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("before_status", "before_expiry", "snapshot_status", "snapshot_expiry"),
+    [
+        ("premium", None, "premium", None),
+        ("free", None, "premium", None),
+        ("premium", timedelta(days=30), "free", None),
+    ],
+)
+async def test_apply_reconciliation_real_session_handles_legacy_grant_and_refund(
+    async_session: AsyncSession,
+    before_status: str,
+    before_expiry: timedelta | None,
+    snapshot_status: str,
+    snapshot_expiry: datetime | None,
+):
+    """The shared apply path corrects legacy, missed grant, and refunded-local states."""
+    from app.services.purchase import apply_reconciliation
+
+    await cleanup_subscription_data(async_session)
+    user = await create_test_user(
+        async_session,
+        subscription_status=before_status,
+        subscription_expires_at=(datetime.now(UTC) + before_expiry if before_expiry else None),
+    )
+    proposal = Reconciliation(
+        user_id=user.id,
+        before_status=user.subscription_status,
+        before_expires_at=user.subscription_expires_at,
+        before_verified_at=None,
+        before_subscription={},
+        snapshot=SubscriptionSnapshot(snapshot_status, snapshot_expiry, "premium.lifetime", False, False),
+        verified_at=datetime.now(UTC),
+        outcome="changed" if before_status != snapshot_status or before_expiry else "unchanged",
+    )
+    result = await apply_reconciliation(async_session, proposal)
+    await async_session.commit()
+    await async_session.refresh(user)
+
+    assert result.outcome in {"changed", "unchanged"}
+    assert user.subscription_status == snapshot_status
+    assert user.subscription_expires_at == snapshot_expiry
+    assert user.subscription_verified_at is not None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_dry_run_real_session_preserves_user_settings_and_audit(async_engine):
+    """Dry-run proposals do not alter real local projection/audit state or write Redis."""
+    from app.jobs import subscription_jobs
+    from app.models.purchase import WebhookTransaction
+
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as setup:
+        await cleanup_subscription_data(setup)
+        user = await create_test_user(setup, subscription_status="free")
+        user.settings = {"keep": "value"}
+        await setup.commit()
+        user_id = user.id
+        before_audits = await setup.scalar(select(func.count()).select_from(WebhookTransaction))
+    proposal = Reconciliation(
+        user_id=user_id,
+        before_status="free",
+        before_expires_at=None,
+        before_verified_at=None,
+        before_subscription={},
+        snapshot=SubscriptionSnapshot("premium", None, "premium.lifetime", False, False),
+        verified_at=datetime.now(UTC),
+        outcome="changed",
+    )
+    redis = MagicMock()
+    with (
+        patch("app.jobs.subscription_jobs.async_session_maker", sessions),
+        patch("app.redis.get_redis_client", return_value=redis),
+        patch("app.jobs.subscription_jobs.read_reconciliation", new=AsyncMock(return_value=proposal)),
+    ):
+        assert await subscription_jobs.check_expired_subscriptions_job(dry_run=True, user_ids=(user_id,)) == 1
+
+    async with sessions() as observer:
+        current = await observer.get(User, user_id)
+        assert current is not None and current.subscription_status == "free" and current.settings == {"keep": "value"}
+        assert await observer.scalar(select(func.count()).select_from(WebhookTransaction)) == before_audits
+    redis.set.assert_not_called()
+    redis.execute_command.assert_not_called()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_real_reader_dry_run_reads_redis_without_local_or_redis_writes(async_session: AsyncSession, async_engine):
+    """The production reader's dry-run HTTP/TTL path is read-only end to end."""
+    from app.services.purchase import read_reconciliation
+
+    await cleanup_subscription_data(async_session)
+    user = await create_test_user(async_session, subscription_status="free")
+    user_id = user.id
+    user.free_ai_scans_remaining = 7
+    user.settings = {"keep": "value"}
+    await async_session.commit()
+    before_audits = await async_session.scalar(select(func.count()).select_from(WebhookTransaction))
+    redis = MagicMock()
+    redis.ttl = AsyncMock(return_value=-2)
+    redis.execute_command = AsyncMock()
+    payload = {"subscriber": {"entitlements": {}, "subscriptions": {}, "non_subscriptions": {}}}
+    client = httpx.AsyncClient
+    with (
+        patch(
+            "app.services.purchase.get_settings",
+            return_value=SimpleNamespace(REVENUECAT_API_KEY="test", ENVIRONMENT="production"),
+        ),
+        patch(
+            "app.services.purchase.httpx.AsyncClient",
+            side_effect=lambda **kwargs: client(
+                transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload)), **kwargs
+            ),
+        ),
+        patch.object(async_session, "commit", new_callable=AsyncMock) as commit,
+    ):
+        result = await read_reconciliation(async_session, redis, user_id, dry_run=True)
+    await async_session.refresh(user)
+    assert result.outcome == "unchanged"
+    assert user.subscription_status == "free" and user.subscription_expires_at is None
+    assert (
+        user.subscription_verified_at is None
+        and user.free_ai_scans_remaining == 7
+        and user.settings == {"keep": "value"}
+    )
+    assert await async_session.scalar(select(func.count()).select_from(WebhookTransaction)) == before_audits
+    redis.ttl.assert_awaited_once_with("revenuecat:reconcile:cooldown")
+    assert redis.mock_calls == [call.ttl("revenuecat:reconcile:cooldown")]
+    commit.assert_not_awaited()
+    assert not async_session.new and not async_session.dirty and not async_session.deleted
+    await async_session.close()
+
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as observer:
+        current = await observer.get(User, user_id)
+        assert current is not None
+        assert current.subscription_status == "free" and current.subscription_expires_at is None
+        assert current.subscription_verified_at is None and current.free_ai_scans_remaining == 7
+        assert current.settings == {"keep": "value"}
+        assert await observer.scalar(select(func.count()).select_from(WebhookTransaction)) == before_audits
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_configuration_failure_aborts_fixed_pass(async_engine):
+    """One global configuration failure does not repeat for every selected account."""
+    from app.jobs import subscription_jobs
+
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    first, second = uuid.uuid4(), uuid.uuid4()
+    reconcile = AsyncMock(
+        side_effect=RevenueCatAPIError("bad environment", failure_kind="configuration"),
+    )
+    with (
+        patch("app.jobs.subscription_jobs.async_session_maker", sessions),
+        patch("app.redis.get_redis_client", return_value=MagicMock()),
+        patch("app.jobs.subscription_jobs.reconcile_user", reconcile),
+    ):
+        with pytest.raises(RevenueCatAPIError, match="bad environment"):
+            await subscription_jobs.check_expired_subscriptions_job(user_ids=(first, second))
+
+    reconcile.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RevenueCatAPIError("missing configuration", failure_kind="configuration"),
+        RevenueCatAPIError("unauthorized", upstream_status=401),
+        RevenueCatAPIError("forbidden", upstream_status=403),
+        RevenueCatAPIError("cooldown", upstream_status=429, retry_after_seconds=60),
+    ],
+)
+def test_fatal_provider_classification_is_metadata_based(error):
+    """Global failures use structured provider metadata rather than message text."""
+    from app.jobs.subscription_jobs import _is_fatal_reconciliation_error
+
+    assert _is_fatal_reconciliation_error(error, dry_run=False)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    "error",
+    [
+        RevenueCatNotConfiguredError(),
+        RevenueCatAPIError("cooldown storage", upstream_status=429, failure_kind="storage"),
+    ],
+)
+async def test_global_configuration_or_cooldown_failure_stops_worker_once(error):
+    """Missing configuration and cooldown storage failures cannot fan out across accounts."""
+    from app.jobs import subscription_jobs
+
+    ids = (uuid.uuid4(), uuid.uuid4())
+    db = MagicMock()
+    db.__aenter__ = AsyncMock(return_value=db)
+    db.__aexit__ = AsyncMock(return_value=None)
+    reconcile = AsyncMock(side_effect=error)
+    with (
+        patch("app.jobs.subscription_jobs.async_session_maker", return_value=db),
+        patch("app.redis.get_redis_client", return_value=MagicMock()),
+        patch("app.jobs.subscription_jobs.reconcile_user", reconcile),
+    ):
+        with pytest.raises(type(error)):
+            await subscription_jobs.check_expired_subscriptions_job(user_ids=ids)
+    reconcile.assert_awaited_once()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_fixed_snapshot_batches_every_id_once_without_reselection():
+    """Batch processing slices one captured list and never reselects it."""
+    from app.jobs import subscription_jobs
+
+    ids = tuple(uuid.uuid4() for _ in range(subscription_jobs.settings.SUBSCRIPTION_BATCH_SIZE + 1))
+    seen: list[uuid.UUID] = []
+    db = MagicMock()
+    db.__aenter__ = AsyncMock(return_value=db)
+    db.__aexit__ = AsyncMock(return_value=None)
+    db.commit = AsyncMock()
+
+    async def reconcile(_db, _redis, user_id):
+        seen.append(user_id)
+        return Reconciliation(
+            user_id=user_id,
+            before_status="free",
+            before_expires_at=None,
+            before_verified_at=None,
+            before_subscription={},
+            snapshot=SubscriptionSnapshot("free", None, None, False, False),
+            verified_at=datetime.now(UTC),
+            outcome="unchanged",
+        )
+
+    due = AsyncMock(return_value=list(ids))
+    with (
+        patch("app.jobs.subscription_jobs._due_subscription_user_ids", new=due),
+        patch("app.jobs.subscription_jobs.async_session_maker", return_value=db),
+        patch("app.redis.get_redis_client", return_value=MagicMock()),
+        patch("app.jobs.subscription_jobs.reconcile_user", side_effect=reconcile),
+        patch("app.jobs.subscription_jobs.invalidate_premium_cache", new=AsyncMock()),
+    ):
+        assert await subscription_jobs.check_expired_subscriptions_job() == len(ids)
+
+    assert seen == list(ids)
+    due.assert_awaited_once()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_dry_run_reads_only_and_aborts_on_unexpected_creation(capsys):
+    """Dry-run never reaches apply, commit, cache invalidation, or notification I/O."""
+    from app.jobs import subscription_jobs
+
+    first, second = uuid.uuid4(), uuid.uuid4()
+    db = MagicMock()
+    db.__aenter__ = AsyncMock(return_value=db)
+    db.__aexit__ = AsyncMock(return_value=None)
+    db.commit = AsyncMock()
+    read = AsyncMock(side_effect=RevenueCatAPIError("customer may have been created", upstream_status=201))
+    with (
+        patch("app.jobs.subscription_jobs._due_subscription_user_ids", new=AsyncMock(return_value=[first, second])),
+        patch("app.jobs.subscription_jobs.async_session_maker", return_value=db),
+        patch("app.redis.get_redis_client", return_value=MagicMock()),
+        patch("app.jobs.subscription_jobs.read_reconciliation", read),
+        patch("app.jobs.subscription_jobs.reconcile_user", new=AsyncMock()) as reconcile,
+        patch("app.jobs.subscription_jobs.invalidate_premium_cache", new=AsyncMock()) as invalidate,
+        patch("app.jobs.subscription_jobs._send_subscription_expired_notification", new=AsyncMock()) as notify,
+    ):
+        with pytest.raises(RevenueCatAPIError, match="may have been created"):
+            await subscription_jobs.check_expired_subscriptions_job(dry_run=True, user_ids=(first, second))
+
+    read.assert_awaited_once_with(db, ANY, first, dry_run=True)
+    reconcile.assert_not_awaited()
+    invalidate.assert_not_awaited()
+    notify.assert_not_awaited()
+    db.commit.assert_not_awaited()
+    output = capsys.readouterr().out
+    assert "outcome=error reason=reconciliation_error upstream_status=201" in output
+    assert "upstream_customer_may_have_been_created" in output
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_notification_partial_flush_rolls_back_after_projection_commit(async_engine):
+    """A notification failure cannot persist half its post-commit transaction."""
+    from app.jobs import subscription_jobs
+
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as setup:
+        await cleanup_subscription_data(setup)
+        user = await create_test_user(
+            setup,
+            email="notification-rollback@example.com",
+            subscription_status="premium",
+            subscription_expires_at=datetime.now(UTC) - timedelta(hours=1),
+        )
+        setup.add(PushToken(user_id=user.id, token="rollback-token", platform="android"))
+        await setup.commit()
+        user_id = user.id
+
+    async def reconcile(db: AsyncSession, redis, requested_id: uuid.UUID) -> Reconciliation:
+        del redis
+        current = await db.get(User, requested_id)
+        assert current is not None
+        proposal = reconciliation_for(current, outcome="changed")
+        current.subscription_status = "free"
+        current.subscription_expires_at = None
+        return proposal
+
+    class PartialNotificationService:
+        def __init__(self, db: AsyncSession):
+            self.db = db
+
+        async def send_push(self, **kwargs):
+            self.db.add(
+                NotificationLog(
+                    user_id=kwargs["user_id"],
+                    notification_type="subscription_expired",
+                    title="partial",
+                    body="partial",
+                    platform="android",
+                    success=False,
+                )
+            )
+            await self.db.execute(text("DELETE FROM push_tokens WHERE token = 'rollback-token'"))
+            await self.db.flush()
+            raise RuntimeError("second delivery failed")
+
+    with (
+        patch("app.jobs.subscription_jobs.async_session_maker", sessions),
+        patch("app.redis.get_redis_client", return_value=MagicMock()),
+        patch("app.jobs.subscription_jobs.reconcile_user", side_effect=reconcile),
+        patch("app.jobs.subscription_jobs.invalidate_premium_cache", new=AsyncMock()),
+        patch("app.jobs.subscription_jobs.NotificationService", PartialNotificationService),
+    ):
+        assert (
+            await asyncio.wait_for(subscription_jobs.check_expired_subscriptions_job(user_ids=(user_id,)), timeout=2)
+            == 1
+        )
+
+    async with sessions() as observer:
+        current = await observer.get(User, user_id)
+        assert current is not None and current.subscription_status == "free"
+        assert await observer.scalar(select(PushToken).where(PushToken.user_id == user_id)) is not None
+        assert await observer.scalar(select(NotificationLog).where(NotificationLog.user_id == user_id)) is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_expiry_notification_log_and_unregistered_token_commit_after_downgrade(async_engine):
+    """A handled delivery failure still commits its separate notification transaction."""
+    from app.jobs import subscription_jobs
+
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as setup:
+        await cleanup_subscription_data(setup)
+        user = await create_test_user(
+            setup,
+            email="notification-unregistered@example.com",
+            subscription_status="premium",
+            subscription_expires_at=datetime.now(UTC) - timedelta(hours=1),
+        )
+        setup.add(PushToken(user_id=user.id, token="unregistered-token", platform="android"))
+        await setup.commit()
+        user_id = user.id
+
+    async def reconcile(db: AsyncSession, redis, requested_id: uuid.UUID) -> Reconciliation:
+        del redis
+        current = await db.get(User, requested_id)
+        assert current is not None
+        proposal = reconciliation_for(current, outcome="changed")
+        current.subscription_status = "free"
+        current.subscription_expires_at = None
+        return proposal
+
+    fcm = MagicMock(is_configured=True)
+    fcm.send_multicast.return_value = [(False, "UNREGISTERED")]
+    with (
+        patch("app.jobs.subscription_jobs.async_session_maker", sessions),
+        patch("app.redis.get_redis_client", return_value=MagicMock()),
+        patch("app.jobs.subscription_jobs.reconcile_user", side_effect=reconcile),
+        patch("app.jobs.subscription_jobs.invalidate_premium_cache", new=AsyncMock()),
+        patch("app.services.notification.get_fcm_client", return_value=fcm),
+    ):
+        assert await subscription_jobs.check_expired_subscriptions_job(user_ids=(user_id,)) == 1
+
+    async with sessions() as observer:
+        current = await observer.get(User, user_id)
+        assert current is not None
+        assert current.subscription_status == "free"
+        assert current.subscription_expires_at is None
+        assert await observer.scalar(select(PushToken).where(PushToken.user_id == user_id)) is None
+        log = await observer.scalar(select(NotificationLog).where(NotificationLog.user_id == user_id))
+        assert log is not None
+        assert log.success is False
+        assert log.error_code == "UNREGISTERED"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_dry_run_reports_bounded_reason_and_summary(capsys):
+    """Operator output states the safe reason/counts without leaking provider details."""
+    from app.jobs import subscription_jobs
+
+    first, missing, failed = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    db = MagicMock()
+    db.__aenter__ = AsyncMock(return_value=db)
+    db.__aexit__ = AsyncMock(return_value=None)
+    changed = Reconciliation(
+        user_id=first,
+        before_status="free",
+        before_expires_at=None,
+        before_verified_at=None,
+        before_subscription={},
+        snapshot=SubscriptionSnapshot("premium", None, "premium", False, False),
+        verified_at=datetime.now(UTC),
+        outcome="changed",
+    )
+    read = AsyncMock(
+        side_effect=[
+            changed,
+            UserNotFoundError(missing),
+            RuntimeError("key=top-secret email=private@example.com"),
+        ]
+    )
+    with (
+        patch(
+            "app.jobs.subscription_jobs._due_subscription_user_ids",
+            new=AsyncMock(return_value=[first, missing, failed]),
+        ),
+        patch("app.jobs.subscription_jobs.async_session_maker", return_value=db),
+        patch("app.redis.get_redis_client", return_value=MagicMock()),
+        patch("app.jobs.subscription_jobs.read_reconciliation", read),
+    ):
+        with pytest.raises(PurchaseError, match="incomplete"):
+            await subscription_jobs.check_expired_subscriptions_job(dry_run=True, user_ids=(first, missing, failed))
+
+    output = capsys.readouterr().out
+    assert "verified snapshot changes status" in output
+    assert "unknown_or_deleted_local_user" in output
+    assert "outcome=skipped reason=unknown_or_deleted_local_user" in output
+    assert "outcome=error reason=reconciliation_error" in output
+    assert "changed=1" in output and "skipped=1" in output and "errors=1" in output
+    assert "Subscription reconciliation dry-run result" in output
+    assert "Subscription reconciliation completed" in output
+    assert "top-secret" not in output and "private@example.com" not in output
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_dry_run_reports_unchanged_and_safe_provider_metadata(capsys):
+    """Stable operator output keeps only bounded provider fields for failures."""
+    from app.jobs import subscription_jobs
+
+    unchanged_id, error_id = uuid.uuid4(), uuid.uuid4()
+    db = MagicMock()
+    db.__aenter__ = AsyncMock(return_value=db)
+    db.__aexit__ = AsyncMock(return_value=None)
+    unchanged = Reconciliation(
+        user_id=unchanged_id,
+        before_status="free",
+        before_expires_at=None,
+        before_verified_at=None,
+        before_subscription={},
+        snapshot=SubscriptionSnapshot("free", None, None, False, False),
+        verified_at=datetime.now(UTC),
+        outcome="unchanged",
+    )
+    error = RevenueCatAPIError(
+        "key=secret payload=email@example.com",
+        upstream_status=429,
+        retry_after_seconds=42,
+    )
+    with (
+        patch("app.jobs.subscription_jobs.async_session_maker", return_value=db),
+        patch("app.redis.get_redis_client", return_value=MagicMock()),
+        patch("app.jobs.subscription_jobs.read_reconciliation", new=AsyncMock(side_effect=[unchanged, error])),
+    ):
+        with pytest.raises(RevenueCatAPIError):
+            await subscription_jobs.check_expired_subscriptions_job(dry_run=True, user_ids=(unchanged_id, error_id))
+
+    output = capsys.readouterr().out
+    assert "local projection already matches the verified snapshot" in output
+    assert "unchanged=1" in output and "errors=1" in output
+    assert "upstream_status=429 retry_after_seconds=42" in output
+    assert "secret" not in output and "email@example.com" not in output
 
 
 async def create_test_aquarium(
@@ -133,165 +890,6 @@ async def add_family_member(
 
 
 # check_expired_subscriptions_job tests
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_check_expired_subscriptions_finds_expired_users(
-    async_session: AsyncSession,
-):
-    """Test that the job finds and processes expired premium users."""
-    await cleanup_subscription_data(async_session)
-    try:
-        from app.jobs.subscription_jobs import check_expired_subscriptions_job
-
-        now = datetime.now(UTC)
-        expired_at = now - timedelta(hours=1)
-
-        # Create expired premium user
-        expired_user = await create_test_user(
-            async_session,
-            email="expired@example.com",
-            subscription_status="premium",
-            subscription_expires_at=expired_at,
-        )
-
-        # Create active premium user (not expired)
-        active_user = await create_test_user(
-            async_session,
-            email="active@example.com",
-            subscription_status="premium",
-            subscription_expires_at=now + timedelta(days=30),
-        )
-
-        # Create free user (should be ignored)
-        free_user = await create_test_user(
-            async_session,
-            email="free@example.com",
-            subscription_status="free",
-        )
-
-        class MockSessionContext:
-            async def __aenter__(self):
-                return async_session
-
-            async def __aexit__(self, *args):
-                pass
-
-        with patch(
-            "app.jobs.subscription_jobs.async_session_maker"
-        ) as mock_session_maker:
-            mock_session_maker.return_value = MockSessionContext()
-
-            with patch(
-                "app.jobs.subscription_jobs.NotificationService"
-            ) as mock_service_class:
-                mock_service = AsyncMock()
-                mock_service.send_push = AsyncMock(return_value=True)
-                mock_service_class.return_value = mock_service
-
-                count = await check_expired_subscriptions_job()
-
-        assert count == 1
-
-        # Refresh and verify the expired user was reverted
-        await async_session.refresh(expired_user)
-        assert expired_user.subscription_status == "free"
-        assert expired_user.subscription_expires_at is None
-
-        # Active user should still be premium
-        await async_session.refresh(active_user)
-        assert active_user.subscription_status == "premium"
-
-    finally:
-        await cleanup_subscription_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_check_expired_subscriptions_no_expired_users(
-    async_session: AsyncSession,
-):
-    """Test that the job handles no expired users gracefully."""
-    await cleanup_subscription_data(async_session)
-    try:
-        from app.jobs.subscription_jobs import check_expired_subscriptions_job
-
-        now = datetime.now(UTC)
-
-        # Create only active premium user
-        await create_test_user(
-            async_session,
-            email="active@example.com",
-            subscription_status="premium",
-            subscription_expires_at=now + timedelta(days=30),
-        )
-
-        class MockSessionContext:
-            async def __aenter__(self):
-                return async_session
-
-            async def __aexit__(self, *args):
-                pass
-
-        with patch(
-            "app.jobs.subscription_jobs.async_session_maker"
-        ) as mock_session_maker:
-            mock_session_maker.return_value = MockSessionContext()
-
-            count = await check_expired_subscriptions_job()
-
-        assert count == 0
-
-    finally:
-        await cleanup_subscription_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_check_expired_subscriptions_sends_notification(
-    async_session: AsyncSession,
-):
-    """Test that the job sends push notification on subscription expiry."""
-    await cleanup_subscription_data(async_session)
-    try:
-        from app.jobs.subscription_jobs import check_expired_subscriptions_job
-
-        now = datetime.now(UTC)
-        expired_at = now - timedelta(hours=1)
-
-        await create_test_user(
-            async_session,
-            email="expired@example.com",
-            subscription_status="premium",
-            subscription_expires_at=expired_at,
-        )
-
-        class MockSessionContext:
-            async def __aenter__(self):
-                return async_session
-
-            async def __aexit__(self, *args):
-                pass
-
-        with patch(
-            "app.jobs.subscription_jobs.async_session_maker"
-        ) as mock_session_maker:
-            mock_session_maker.return_value = MockSessionContext()
-
-            with patch(
-                "app.jobs.subscription_jobs.NotificationService"
-            ) as mock_service_class:
-                mock_service = AsyncMock()
-                mock_service.send_push = AsyncMock(return_value=True)
-                mock_service_class.return_value = mock_service
-
-                await check_expired_subscriptions_job()
-
-        mock_service.send_push.assert_called_once()
-        call_kwargs = mock_service.send_push.call_args.kwargs
-        assert "Premium subscription expired" in call_kwargs["title"]
-        assert call_kwargs["bypass_throttle"] is True
-
-    finally:
-        await cleanup_subscription_data(async_session)
 
 
 # apply_free_tier_limits tests
@@ -543,16 +1141,12 @@ async def test_send_subscription_expired_notification_success(
 
         user = await create_test_user(async_session)
 
-        with patch(
-            "app.jobs.subscription_jobs.NotificationService"
-        ) as mock_service_class:
+        with patch("app.jobs.subscription_jobs.NotificationService") as mock_service_class:
             mock_service = AsyncMock()
             mock_service.send_push = AsyncMock(return_value=True)
             mock_service_class.return_value = mock_service
 
-            result = await _send_subscription_expired_notification(
-                async_session, user.id
-            )
+            result = await _send_subscription_expired_notification(async_session, user.id)
 
         assert result is True
         mock_service.send_push.assert_called_once()
@@ -567,7 +1161,7 @@ async def test_send_subscription_expired_notification_success(
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_send_subscription_expired_notification_handles_error(
+async def test_send_subscription_expired_notification_propagates_unexpected_error(
     async_session: AsyncSession,
 ):
     """Test that notification sending handles errors gracefully."""
@@ -577,131 +1171,19 @@ async def test_send_subscription_expired_notification_handles_error(
 
         user = await create_test_user(async_session)
 
-        with patch(
-            "app.jobs.subscription_jobs.NotificationService"
-        ) as mock_service_class:
+        with patch("app.jobs.subscription_jobs.NotificationService") as mock_service_class:
             mock_service = AsyncMock()
             mock_service.send_push = AsyncMock(side_effect=Exception("Network error"))
             mock_service_class.return_value = mock_service
 
-            result = await _send_subscription_expired_notification(
-                async_session, user.id
-            )
-
-        assert result is False
+            with pytest.raises(Exception, match="Network error"):
+                await _send_subscription_expired_notification(async_session, user.id)
 
     finally:
         await cleanup_subscription_data(async_session)
 
 
 # Batch processing tests
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_check_expired_subscriptions_batch_processing(
-    async_session: AsyncSession,
-):
-    """Test that the job processes users in batches."""
-    await cleanup_subscription_data(async_session)
-    try:
-        from app.jobs.subscription_jobs import check_expired_subscriptions_job
-
-        now = datetime.now(UTC)
-        expired_at = now - timedelta(hours=1)
-
-        # Create multiple expired users
-        for i in range(5):
-            await create_test_user(
-                async_session,
-                email=f"expired{i}@example.com",
-                subscription_status="premium",
-                subscription_expires_at=expired_at,
-            )
-
-        class MockSessionContext:
-            async def __aenter__(self):
-                return async_session
-
-            async def __aexit__(self, *args):
-                pass
-
-        with patch(
-            "app.jobs.subscription_jobs.async_session_maker"
-        ) as mock_session_maker:
-            mock_session_maker.return_value = MockSessionContext()
-
-            with patch(
-                "app.jobs.subscription_jobs.NotificationService"
-            ) as mock_service_class:
-                mock_service = AsyncMock()
-                mock_service.send_push = AsyncMock(return_value=True)
-                mock_service_class.return_value = mock_service
-
-                count = await check_expired_subscriptions_job()
-
-        assert count == 5
-        assert mock_service.send_push.call_count == 5
-
-    finally:
-        await cleanup_subscription_data(async_session)
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_check_expired_subscriptions_continues_on_error(
-    async_session: AsyncSession,
-):
-    """Test that the job continues processing even if one user fails."""
-    await cleanup_subscription_data(async_session)
-    try:
-        from app.jobs.subscription_jobs import check_expired_subscriptions_job
-
-        now = datetime.now(UTC)
-        expired_at = now - timedelta(hours=1)
-
-        # Create multiple expired users
-        for i in range(3):
-            await create_test_user(
-                async_session,
-                email=f"expired{i}@example.com",
-                subscription_status="premium",
-                subscription_expires_at=expired_at,
-            )
-
-        class MockSessionContext:
-            async def __aenter__(self):
-                return async_session
-
-            async def __aexit__(self, *args):
-                pass
-
-        call_count = 0
-
-        async def mock_send(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 2:
-                raise Exception("Network error")
-            return True
-
-        with patch(
-            "app.jobs.subscription_jobs.async_session_maker"
-        ) as mock_session_maker:
-            mock_session_maker.return_value = MockSessionContext()
-
-            with patch(
-                "app.jobs.subscription_jobs.NotificationService"
-            ) as mock_service_class:
-                mock_service = AsyncMock()
-                mock_service.send_push = mock_send
-                mock_service_class.return_value = mock_service
-
-                count = await check_expired_subscriptions_job()
-
-        # Should have processed all 3, even though one notification failed
-        assert count == 3
-
-    finally:
-        await cleanup_subscription_data(async_session)
 
 
 # Integration with purchase service tests

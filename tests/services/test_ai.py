@@ -1,6 +1,7 @@
 """Tests for AI fish recognition service."""
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -35,6 +36,7 @@ async def create_test_user(
     session: AsyncSession,
     email: str = "test@example.com",
     subscription_status: str = "free",
+    subscription_expires_at: datetime | None = None,
     free_ai_scans_remaining: int = 5,
 ) -> User:
     """Helper to create a test user."""
@@ -42,6 +44,7 @@ async def create_test_user(
         email=email,
         password_hash="hashed_password",
         subscription_status=subscription_status,
+        subscription_expires_at=subscription_expires_at,
         free_ai_scans_remaining=free_ai_scans_remaining,
     )
     session.add(user)
@@ -122,12 +125,48 @@ async def test_get_remaining_scans_premium_user(async_session: AsyncSession):
         user = await create_test_user(
             async_session,
             subscription_status="premium",
+            subscription_expires_at=datetime.now(UTC) + timedelta(days=1),
             free_ai_scans_remaining=0,
         )
 
         remaining = await get_remaining_scans(async_session, user.id)
 
         assert remaining == -1
+    finally:
+        await cleanup_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("status", ["free", "expired", "cancelled"])
+async def test_nonpremium_status_has_finite_scans(async_session: AsyncSession, status: str):
+    """Test inactive subscription statuses retain their finite scan quota."""
+    await cleanup_data(async_session)
+    try:
+        user = await create_test_user(
+            async_session,
+            email=f"{uuid.uuid4()}@example.com",
+            subscription_status=status,
+            free_ai_scans_remaining=2,
+        )
+
+        assert await get_remaining_scans(async_session, user.id) == 2
+    finally:
+        await cleanup_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_expired_premium_date_has_finite_scans(async_session: AsyncSession):
+    """Test a premium status with an expired date retains its finite scan quota."""
+    await cleanup_data(async_session)
+    try:
+        user = await create_test_user(
+            async_session,
+            subscription_status="premium",
+            subscription_expires_at=datetime.now(UTC) - timedelta(days=1),
+            free_ai_scans_remaining=2,
+        )
+
+        assert await get_remaining_scans(async_session, user.id) == 2
     finally:
         await cleanup_data(async_session)
 

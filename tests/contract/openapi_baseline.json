@@ -3825,7 +3825,7 @@
     },
     "/api/v1/admin/users/{user_id}/grant-premium": {
       "post": {
-        "description": "Grant premium subscription to a user for a specified number of days.",
+        "description": "Premium grants and revocations are managed in RevenueCat.",
         "operationId": "grant_premium_endpoint_api_v1_admin_users__user_id__grant_premium_post",
         "parameters": [
           {
@@ -3873,7 +3873,14 @@
             "description": "Not Found"
           },
           "409": {
-            "description": "Conflict"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Manage premium grants and revocations in RevenueCat"
           },
           "422": {
             "content": {
@@ -3971,7 +3978,7 @@
     },
     "/api/v1/admin/users/{user_id}/subscription": {
       "patch": {
-        "description": "Manually update a user's subscription status and expiration date.",
+        "description": "Subscription grants and revocations are managed in RevenueCat.",
         "operationId": "update_user_subscription_api_v1_admin_users__user_id__subscription_patch",
         "parameters": [
           {
@@ -4019,7 +4026,14 @@
             "description": "Not Found"
           },
           "409": {
-            "description": "Conflict"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Manage premium grants and revocations in RevenueCat"
           },
           "422": {
             "content": {
@@ -6833,7 +6847,7 @@
     },
     "/api/v1/purchases/restore": {
       "post": {
-        "description": "Restore purchases from app store receipt.\n\nUsed for cross-device subscription restoration when a user\nsigns in on a new device.\n\nArgs:\n    request_data: Contains receipt data and platform info.\n    db: Database session.\n    current_user: Authenticated user.\n\nReturns:\n    Current subscription status after restore attempt.\n\nRaises:\n    400: Invalid receipt data.\n    401: User not authenticated.\n    500: RevenueCat not configured.\n    502: RevenueCat API error.",
+        "description": "Restore purchases from app store receipt.\n\nUsed for cross-device subscription restoration when a user\nsigns in on a new device.\n\nArgs:\n    request_data: Contains receipt data and platform info.\n    db: Database session.\n    current_user: Authenticated user.\n\nReturns:\n    Current subscription status after restore attempt.\n\nRaises:\n    400: Invalid receipt data.\n    401: User not authenticated.\n    500: RevenueCat not configured.\n    502: RevenueCat API error.\n    503: Reconciliation conflict.",
         "operationId": "restore_user_purchases_api_v1_purchases_restore_post",
         "requestBody": {
           "content": {
@@ -6857,7 +6871,7 @@
             "description": "Successful Response"
           },
           "400": {
-            "description": "Bad Request"
+            "description": "Invalid receipt"
           },
           "401": {
             "description": "Unauthorized"
@@ -6883,6 +6897,26 @@
           },
           "429": {
             "description": "Too Many Requests"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "RevenueCat provider error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Subscription reconciliation conflict"
           }
         },
         "security": [
@@ -6943,7 +6977,7 @@
     },
     "/api/v1/purchases/webhook": {
       "post": {
-        "description": "Process RevenueCat webhook events.\n\nThis endpoint handles subscription lifecycle events from RevenueCat:\n- INITIAL_PURCHASE: New subscription created\n- RENEWAL: Subscription renewed\n- CANCELLATION: Subscription cancelled (still active until expiry)\n- EXPIRATION: Subscription expired\n- BILLING_ISSUE: Payment failed\n- PRODUCT_CHANGE: Subscription plan changed\n- UNCANCELLATION: Cancellation reversed\n\nSecurity:\n- Validates Authorization header against REVENUECAT_WEBHOOK_SECRET (constant-time compare)\n- Implements idempotency to handle duplicate webhooks\n- Uses Redis lock for race condition protection\n\nNote: Always returns 200 OK on accepted events to prevent RevenueCat retries.\nAuth failures return 401 so RevenueCat retries (or surfaces) the misconfiguration.",
+        "description": "Process RevenueCat webhook events.\n\nThis endpoint handles subscription lifecycle events from RevenueCat:\n- INITIAL_PURCHASE: New subscription created\n- RENEWAL: Subscription renewed\n- CANCELLATION: Subscription cancelled (still active until expiry)\n- EXPIRATION: Subscription expired\n- BILLING_ISSUE: Payment failed\n- PRODUCT_CHANGE: Subscription plan changed\n- UNCANCELLATION: Cancellation reversed\n\nSecurity:\n- Validates Authorization header against REVENUECAT_WEBHOOK_SECRET (constant-time compare)\n- Implements idempotency to handle duplicate webhooks\n- Uses Redis lock for race condition protection\n\nAccepted events return 200; retryable provider and storage failures return 502 or 503.\nAuth failures return 401 so RevenueCat retries (or surfaces) the misconfiguration.",
         "operationId": "handle_webhook_api_v1_purchases_webhook_post",
         "parameters": [
           {
@@ -7001,6 +7035,26 @@
           },
           "429": {
             "description": "Too Many Requests"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "RevenueCat provider error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Webhook processing is temporarily unavailable"
           }
         },
         "summary": "Handle Webhook",

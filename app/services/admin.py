@@ -68,32 +68,24 @@ async def _get_users_stats(
 ) -> DashboardUsersStats:
     """Aggregate user-related statistics."""
     # Total non-deleted users
-    total_result = await db.execute(
-        select(func.count()).select_from(User).where(User.deleted_at.is_(None))
-    )
+    total_result = await db.execute(select(func.count()).select_from(User).where(User.deleted_at.is_(None)))
     total = total_result.scalar_one()
 
     # Active in last 7 days: distinct users who have feeding logs
     active_result = await db.execute(
-        select(func.count(func.distinct(FeedingLog.acted_by_user_id))).where(
-            FeedingLog.acted_at >= seven_days_ago
-        )
+        select(func.count(func.distinct(FeedingLog.acted_by_user_id))).where(FeedingLog.acted_at >= seven_days_ago)
     )
     active_last_7d = active_result.scalar_one()
 
     # Premium users
     premium_result = await db.execute(
-        select(func.count())
-        .select_from(User)
-        .where(User.deleted_at.is_(None), User.subscription_status == "premium")
+        select(func.count()).select_from(User).where(User.deleted_at.is_(None), User.subscription_status == "premium")
     )
     premium = premium_result.scalar_one()
 
     # New users today
     new_today_result = await db.execute(
-        select(func.count())
-        .select_from(User)
-        .where(User.deleted_at.is_(None), User.created_at >= today_start)
+        select(func.count()).select_from(User).where(User.deleted_at.is_(None), User.created_at >= today_start)
     )
     new_today = new_today_result.scalar_one()
 
@@ -108,15 +100,11 @@ async def _get_users_stats(
 async def _get_aquariums_stats(db: AsyncSession) -> DashboardAquariumsStats:
     """Aggregate aquarium-related statistics."""
     # Total non-deleted aquariums
-    total_result = await db.execute(
-        select(func.count()).select_from(Aquarium).where(Aquarium.deleted_at.is_(None))
-    )
+    total_result = await db.execute(select(func.count()).select_from(Aquarium).where(Aquarium.deleted_at.is_(None)))
     total = total_result.scalar_one()
 
     # Aquariums with at least one family member
-    family_subquery = (
-        select(AquariumMember.aquarium_id).distinct().correlate(None).scalar_subquery()
-    )
+    family_subquery = select(AquariumMember.aquarium_id).distinct().correlate(None).scalar_subquery()
     family_result = await db.execute(
         select(func.count())
         .select_from(Aquarium)
@@ -138,17 +126,13 @@ async def _get_feeding_stats(
     """Aggregate feeding-related statistics."""
     # Feeding logs today
     logs_today_result = await db.execute(
-        select(func.count()).select_from(FeedingLog).where(
-            FeedingLog.acted_at >= today_start
-        )
+        select(func.count()).select_from(FeedingLog).where(FeedingLog.acted_at >= today_start)
     )
     logs_today = logs_today_result.scalar_one()
 
     # Active feeding schedules
     active_result = await db.execute(
-        select(func.count()).select_from(FeedingSchedule).where(
-            FeedingSchedule.active.is_(True)
-        )
+        select(func.count()).select_from(FeedingSchedule).where(FeedingSchedule.active.is_(True))
     )
     schedules_active = active_result.scalar_one()
 
@@ -165,17 +149,11 @@ async def _get_ai_stats(
 ) -> DashboardAIStats:
     """Aggregate AI scan statistics."""
     # Total AI scans
-    total_result = await db.execute(
-        select(func.count()).select_from(AIScan)
-    )
+    total_result = await db.execute(select(func.count()).select_from(AIScan))
     total = total_result.scalar_one()
 
     # AI scans today
-    today_result = await db.execute(
-        select(func.count()).select_from(AIScan).where(
-            AIScan.created_at >= today_start
-        )
-    )
+    today_result = await db.execute(select(func.count()).select_from(AIScan).where(AIScan.created_at >= today_start))
     today = today_result.scalar_one()
 
     return DashboardAIStats(total=total, today=today)
@@ -200,9 +178,7 @@ async def _get_gamification_stats(
 
     # Achievements unlocked today
     achievements_today_result = await db.execute(
-        select(func.count()).select_from(Achievement).where(
-            Achievement.unlocked_at >= today_start
-        )
+        select(func.count()).select_from(Achievement).where(Achievement.unlocked_at >= today_start)
     )
     achievements_unlocked_today = achievements_today_result.scalar_one()
 
@@ -302,7 +278,7 @@ async def reset_ai_scans(db: AsyncSession, user_id: UUID) -> None:
 
 
 async def grant_premium(db: AsyncSession, user_id: UUID, days: int) -> None:
-    """Grant premium subscription to a user for a given number of days.
+    """Reject local premium grants after confirming the user exists.
 
     Args:
         db: Database session.
@@ -311,11 +287,10 @@ async def grant_premium(db: AsyncSession, user_id: UUID, days: int) -> None:
 
     Raises:
         HTTPException: 404 if user not found.
+        HTTPException: 409 because premium grants are managed in RevenueCat.
     """
-    user = await _get_user_or_404(db, user_id)
-    user.subscription_status = "premium"
-    user.subscription_expires_at = datetime.now(UTC) + timedelta(days=days)
-    await db.flush()
+    await _get_user_or_404(db, user_id)
+    raise HTTPException(status_code=409, detail="Manage premium grants and revocations in RevenueCat")
 
 
 async def update_subscription(
@@ -324,7 +299,7 @@ async def update_subscription(
     status: str,
     expires_at: datetime | None,
 ) -> User:
-    """Update a user's subscription status and expiration.
+    """Reject local subscription writes after confirming the user exists.
 
     Args:
         db: Database session.
@@ -332,15 +307,9 @@ async def update_subscription(
         status: New subscription status ('free', 'premium', or 'expired').
         expires_at: New expiration datetime, or None to clear.
 
-    Returns:
-        Updated User object.
-
     Raises:
         HTTPException: 404 if user not found.
+        HTTPException: 409 because subscription writes are managed in RevenueCat.
     """
-    user = await _get_user_or_404(db, user_id)
-    user.subscription_status = status
-    user.subscription_expires_at = expires_at
-    await db.flush()
-    await db.refresh(user)
-    return user
+    await _get_user_or_404(db, user_id)
+    raise HTTPException(status_code=409, detail="Manage premium grants and revocations in RevenueCat")

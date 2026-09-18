@@ -21,6 +21,7 @@ from app.services.aquarium import (
 from app.services.gamification import check_achievements
 from app.services.image_service import batch_generate_presigned_urls
 from app.services.notification import NotificationService
+from app.services.premium import is_subscription_active
 
 logger = structlog.get_logger(__name__)
 
@@ -162,11 +163,11 @@ async def _get_member_limit(db: AsyncSession, owner_id: UUID) -> int:
     Returns:
         Maximum allowed members.
     """
-    stmt = select(User.subscription_status).where(User.id == owner_id)
+    stmt = select(User).where(User.id == owner_id, User.deleted_at.is_(None))
     result = await db.execute(stmt)
-    subscription_status = result.scalar_one_or_none()
+    owner = result.scalar_one_or_none()
 
-    if subscription_status == "premium":
+    if owner is not None and is_subscription_active(owner):
         return PREMIUM_MEMBER_LIMIT
     return FREE_MEMBER_LIMIT
 

@@ -1,6 +1,7 @@
 """Tests for AI fish recognition API endpoints."""
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -12,6 +13,7 @@ from app.models.ai import AIScan
 from app.models.species import Species
 from app.models.user import User
 from app.services.ai_provider import ClassificationResult, Prediction
+from app.services.rate_limiter import AIRateLimiter
 from app.utils.jwt import create_access_token
 
 
@@ -25,6 +27,7 @@ async def create_test_user(
     session: AsyncSession,
     email: str = "test@example.com",
     subscription_status: str = "free",
+    subscription_expires_at: datetime | None = None,
     free_ai_scans_remaining: int = 5,
 ) -> User:
     """Helper to create a test user."""
@@ -32,6 +35,7 @@ async def create_test_user(
         email=email,
         password_hash="hashed_password",
         subscription_status=subscription_status,
+        subscription_expires_at=subscription_expires_at,
         free_ai_scans_remaining=free_ai_scans_remaining,
     )
     session.add(user)
@@ -112,9 +116,7 @@ async def test_scan_with_base64_image(
         user = await create_test_user(async_session, free_ai_scans_remaining=5)
         await create_test_species(async_session, "goldfish", "Goldfish")
 
-        mock_result = ClassificationResult(
-            predictions=[Prediction(label="Goldfish", confidence=0.95)]
-        )
+        mock_result = ClassificationResult(predictions=[Prediction(label="Goldfish", confidence=0.95)])
 
         mock_storage = AsyncMock()
         mock_storage.upload_image = AsyncMock(return_value="scans/test.webp")
@@ -131,7 +133,9 @@ async def test_scan_with_base64_image(
             ),
         ):
             # 1x1 PNG image
-            image_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            image_base64 = (
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            )
 
             response = await client.post(
                 "/api/v1/ai/scan",
@@ -188,7 +192,9 @@ async def test_scan_limit_exceeded(
     try:
         user = await create_test_user(async_session, free_ai_scans_remaining=0)
 
-        image_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        image_base64 = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        )
 
         response = await client.post(
             "/api/v1/ai/scan",
@@ -201,20 +207,83 @@ async def test_scan_limit_exceeded(
         await cleanup_data(async_session)
 
 
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("status", "expires_in_days", "expected_counter"),
+    [
+        ("expired", None, 1),
+        ("cancelled", None, 1),
+        ("premium", -1, 1),
+        ("premium", 1, 0),
+    ],
+)
+async def test_successful_scan_counter_respects_active_subscription(
+    client: AsyncClient,
+    async_session: AsyncSession,
+    redis_client,
+    status: str,
+    expires_in_days: int | None,
+    expected_counter: int,
+):
+    """Test successful scans increment the hourly counter only for inactive users."""
+    await cleanup_data(async_session)
+    user = await create_test_user(
+        async_session,
+        subscription_status=status,
+        subscription_expires_at=(
+            datetime.now(UTC) + timedelta(days=expires_in_days) if expires_in_days is not None else None
+        ),
+        free_ai_scans_remaining=2,
+    )
+    limiter = AIRateLimiter(redis_client)
+    try:
+        await create_test_species(async_session, "goldfish", "Goldfish")
+        mock_result = ClassificationResult(predictions=[Prediction(label="Goldfish", confidence=0.95)])
+        mock_storage = AsyncMock()
+        mock_storage.upload_image = AsyncMock(return_value="scans/test.webp")
+
+        with (
+            patch(
+                "app.services.ai.classify_with_fallback",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ),
+            patch(
+                "app.services.ai.get_storage_service",
+                return_value=mock_storage,
+            ),
+        ):
+            response = await client.post(
+                "/api/v1/ai/scan",
+                json={
+                    "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+                },
+                headers=get_auth_headers(user.id),
+            )
+
+        assert response.status_code == 200
+        assert await limiter.get_current_count(user.id) == expected_counter
+    finally:
+        await redis_client.delete(limiter._get_rate_key(user.id))
+        await cleanup_data(async_session)
+
+
 # GET /ai/scans/remaining tests
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_get_scans_remaining_free_user(
+@pytest.mark.parametrize("status", ["free", "expired", "cancelled"])
+async def test_get_scans_remaining_nonpremium_user(
     client: AsyncClient,
     async_session: AsyncSession,
+    status: str,
 ):
-    """Test getting remaining scans for free user."""
+    """Test inactive subscription statuses retain their finite scan quota."""
     await cleanup_data(async_session)
     try:
         user = await create_test_user(
             async_session,
-            subscription_status="free",
+            subscription_status=status,
             free_ai_scans_remaining=3,
         )
 
@@ -242,6 +311,7 @@ async def test_get_scans_remaining_premium_user(
         user = await create_test_user(
             async_session,
             subscription_status="premium",
+            subscription_expires_at=datetime.now(UTC) + timedelta(days=1),
             free_ai_scans_remaining=0,
         )
 
@@ -254,6 +324,102 @@ async def test_get_scans_remaining_premium_user(
         data = response.json()
         assert data["scans_remaining"] == 999999  # Unlimited
         assert data["is_premium"] is True
+    finally:
+        await cleanup_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("expires_at", [None, datetime.now(UTC) - timedelta(days=1)])
+async def test_verified_premium_retains_ai_access_during_provider_outage(
+    client: AsyncClient,
+    async_session: AsyncSession,
+    expires_at: datetime | None,
+):
+    await cleanup_data(async_session)
+    try:
+        user = await create_test_user(
+            async_session,
+            subscription_status="premium",
+            subscription_expires_at=expires_at,
+            free_ai_scans_remaining=0,
+        )
+        user.subscription_verified_at = datetime.now(UTC)
+        await async_session.commit()
+
+        response = await client.get(
+            "/api/v1/ai/scans/remaining",
+            headers=get_auth_headers(user.id),
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"scans_remaining": 999999, "is_premium": True}
+    finally:
+        await cleanup_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_scans_remaining_expired_premium_date(
+    client: AsyncClient,
+    async_session: AsyncSession,
+):
+    """Test an expired premium date retains the finite scan quota."""
+    await cleanup_data(async_session)
+    try:
+        user = await create_test_user(
+            async_session,
+            subscription_status="premium",
+            subscription_expires_at=datetime.now(UTC) - timedelta(days=1),
+            free_ai_scans_remaining=3,
+        )
+
+        response = await client.get(
+            "/api/v1/ai/scans/remaining",
+            headers=get_auth_headers(user.id),
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["scans_remaining"] == 3
+        assert data["is_premium"] is False
+    finally:
+        await cleanup_data(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("status", "expires_in_days"),
+    [
+        ("free", None),
+        ("expired", None),
+        ("cancelled", None),
+        ("premium", -1),
+    ],
+)
+async def test_scan_upload_nonpremium_status_with_no_quota_returns_402(
+    client: AsyncClient,
+    async_session: AsyncSession,
+    status: str,
+    expires_in_days: int | None,
+):
+    """Test inactive subscription statuses cannot upload scans without quota."""
+    await cleanup_data(async_session)
+    try:
+        user = await create_test_user(
+            async_session,
+            subscription_status=status,
+            subscription_expires_at=(
+                datetime.now(UTC) + timedelta(days=expires_in_days) if expires_in_days is not None else None
+            ),
+            free_ai_scans_remaining=0,
+        )
+
+        response = await client.post(
+            "/api/v1/ai/scan/upload",
+            files={"file": ("fish.png", b"not read when quota is exhausted", "image/png")},
+            headers=get_auth_headers(user.id),
+        )
+
+        assert response.status_code == 402
     finally:
         await cleanup_data(async_session)
 

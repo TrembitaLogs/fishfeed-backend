@@ -1,11 +1,13 @@
 """Integration tests for sync service."""
 
+import asyncio
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.aquarium import Aquarium, AquariumMember
 from app.models.feeding import FeedingLog, FeedingSchedule
@@ -20,6 +22,7 @@ from app.services.sync import (
     _ensure_schedules_for_user,
     process_sync,
 )
+from app.services.sync.changes import apply_changes
 
 
 async def cleanup_sync_test_data(session: AsyncSession) -> None:
@@ -48,6 +51,89 @@ async def create_test_user(
     await session.commit()
     await session.refresh(user)
     return user
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_stale_profile_sync_preserves_current_server_owned_settings(async_engine):
+    """A stale authenticated object cannot erase a newer reconciliation or ads projection."""
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    protected = {
+        "subscription": {"product_id": "premium.monthly", "will_renew": True},
+        "non_subscriptions": {"products": ["remove_ads"]},
+        "limits_exceeded": {"aquariums": {"current": 3, "limit": 2}},
+        "downgraded_at": "2026-09-17T00:00:00+00:00",
+    }
+    async with sessions() as setup:
+        await setup.execute(text("DELETE FROM users"))
+        user = User(email="stale-profile@example.com", password_hash="test_hash", settings={"theme": "light"})
+        setup.add(user)
+        await setup.commit()
+        user_id = user.id
+
+    async with sessions() as session_a, sessions() as session_b:
+        stale = await session_a.get(User, user_id)
+        assert stale is not None
+        current = await session_b.get(User, user_id)
+        assert current is not None
+        current.settings = {**protected, "theme": "light"}
+        await session_b.commit()
+        await session_b.refresh(current)
+
+        change = ChangeItem(
+            entity_type="user_profile",
+            entity_id=user_id,
+            operation="update",
+            data={"settings": {"theme": "dark", "subscription": {}, "non_subscriptions": {}}},
+            client_updated_at=current.updated_at + timedelta(seconds=1),
+        )
+        assert await apply_changes(session_a, user_id, [change]) == []
+        await session_a.commit()
+        assert stale.settings["theme"] == "dark"
+
+    async with sessions() as check:
+        merged = await check.get(User, user_id)
+        assert merged is not None
+        assert merged.settings == {**protected, "theme": "dark"}
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_profile_sync_holds_lock_before_protected_writer_commits(async_engine):
+    """A protected-key writer waits until the locked profile transaction commits."""
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    user_id = uuid.uuid4()
+    avatar = f"avatars/{uuid.uuid4()}/{uuid.uuid4().hex}.webp"
+    async with sessions() as setup:
+        await setup.execute(text("DELETE FROM users"))
+        setup.add(User(id=user_id, email="profile-lock@example.com", password_hash="test_hash", avatar_key=avatar, settings={"theme": "light"}))
+        await setup.commit()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def pause_orphan(*args, **kwargs):
+        del args, kwargs
+        entered.set()
+        await release.wait()
+
+    async with sessions() as first, sessions() as second:
+        current = await first.get(User, user_id)
+        assert current is not None
+        change = ChangeItem(entity_type="user_profile", entity_id=user_id, operation="update", data={"avatar_key": None, "settings": {"theme": "dark"}}, client_updated_at=current.updated_at + timedelta(seconds=1))
+        with patch("app.services.sync.changes.register_orphaned", side_effect=pause_orphan):
+            task_a = asyncio.create_task(apply_changes(first, user_id, [change]))
+            await asyncio.wait_for(entered.wait(), timeout=1)
+
+            async def protected_writer() -> None:
+                writer = await second.get(User, user_id)
+                assert writer is not None
+                writer.settings = {"subscription": {"product_id": "writer"}}
+                await second.commit()
+
+            task_b = asyncio.create_task(protected_writer())
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(task_b), timeout=0.1)
+            release.set()
+            assert await asyncio.wait_for(task_a, timeout=1) == []
+            await first.commit()
+            await asyncio.wait_for(task_b, timeout=1)
 
 
 async def create_test_aquarium(

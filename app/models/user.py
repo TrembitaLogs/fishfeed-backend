@@ -72,6 +72,10 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
         DateTime(timezone=True),
         nullable=True,
     )
+    subscription_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     free_ai_scans_remaining: Mapped[int] = mapped_column(
         default=5,
         nullable=False,
