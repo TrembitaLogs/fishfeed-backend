@@ -35,7 +35,9 @@ def is_subscription_active(user: User) -> bool:
         user: User model instance.
 
     Returns:
-        True if user has premium status with valid expiry (or no expiry set).
+        True if a provider-verified premium projection is retained regardless
+        of local expiry, or if an unverified legacy premium row has no expiry
+        or a future expiry.
     """
     if user.subscription_status != "premium":
         return False
