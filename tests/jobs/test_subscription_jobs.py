@@ -25,6 +25,7 @@ from app.services.purchase import (
     RevenueCatNotConfiguredError,
     SubscriptionSnapshot,
     UserNotFoundError,
+    apply_reconciliation,
 )
 
 
@@ -72,6 +73,47 @@ def reconciliation_for(user: User, *, outcome: str = "unchanged") -> Reconciliat
         verified_at=datetime.now(UTC),
         outcome=outcome,  # type: ignore[arg-type]
     )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_subscription_job_commits_due_remove_ads_projection_in_its_current_transaction(async_engine) -> None:
+    """The worker must commit the proposal it already read, including Remove Ads, without another provider read."""
+    from app.jobs import subscription_jobs
+
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as setup:
+        await cleanup_subscription_data(setup)
+        user = await create_test_user(setup, email=f"{uuid.uuid4()}@example.com")
+        user_id = user.id
+
+    async def reconcile(db: AsyncSession, _redis, requested_id: uuid.UUID) -> Reconciliation:
+        current = await db.get(User, requested_id)
+        assert current is not None
+        proposal = Reconciliation(
+            user_id=current.id,
+            before_status=current.subscription_status,
+            before_expires_at=current.subscription_expires_at,
+            before_verified_at=current.subscription_verified_at,
+            before_subscription={},
+            snapshot=SubscriptionSnapshot("free", None, None, False, False, "fishfeed_remove_ads"),
+            verified_at=datetime(2026, 9, 18, tzinfo=UTC),
+            outcome="changed",
+        )
+        return await apply_reconciliation(db, proposal)
+
+    with (
+        patch("app.jobs.subscription_jobs.async_session_maker", sessions),
+        patch("app.redis.get_redis_client", return_value=MagicMock()),
+        patch("app.jobs.subscription_jobs.reconcile_user", side_effect=reconcile),
+        patch("app.jobs.subscription_jobs.invalidate_premium_cache", new=AsyncMock()),
+    ):
+        assert await subscription_jobs.check_expired_subscriptions_job(user_ids=(user_id,)) == 1
+
+    async with sessions() as check:
+        current = await check.get(User, user_id)
+        assert current is not None
+        assert current.settings["non_subscriptions"]["products"] == ["fishfeed_remove_ads"]
+        assert current.settings["non_subscriptions"]["entitlements"] == ["remove_ads"]
 
 
 @pytest.mark.asyncio(loop_scope="session")

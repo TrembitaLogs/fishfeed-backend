@@ -126,6 +126,7 @@ class Reconciliation:
     snapshot: SubscriptionSnapshot
     verified_at: datetime
     outcome: Literal["changed", "unchanged", "conflict"]
+    before_remove_ads: bool = False
 
 
 _RECONCILIATION_COOLDOWN_KEY = "revenuecat:reconcile:cooldown"
@@ -567,6 +568,7 @@ async def read_reconciliation(
     before_expires_at = user.subscription_expires_at
     before_verified_at = user.subscription_verified_at
     before_subscription = _get_subscription_settings(user)
+    before_remove_ads, before_products = _remove_ads_state(user.settings)
     await _check_reconciliation_cooldown(redis)
 
     url = f"https://api.revenuecat.com/v1/subscribers/{quote(str(user_id), safe='')}"
@@ -604,12 +606,16 @@ async def read_reconciliation(
         production=production,
         now=verified_at,
     )
+    remove_ads_matches = before_remove_ads == (snapshot.remove_ads_product_id is not None)
+    if snapshot.remove_ads_product_id is not None:
+        remove_ads_matches = remove_ads_matches and snapshot.remove_ads_product_id in before_products
     unchanged = (
         before_status == snapshot.status
         and before_expires_at == snapshot.expires_at
         and before_subscription.get("product_id") == snapshot.product_id
         and before_subscription.get("will_renew", False) == snapshot.will_renew
         and before_subscription.get("is_trial", False) == snapshot.is_trial
+        and remove_ads_matches
     )
     return Reconciliation(
         user_id=user.id,
@@ -620,6 +626,7 @@ async def read_reconciliation(
         snapshot=snapshot,
         verified_at=verified_at,
         outcome="unchanged" if unchanged else "changed",
+        before_remove_ads=before_remove_ads,
     )
 
 
@@ -640,6 +647,7 @@ async def apply_reconciliation(db: AsyncSession, proposal: Reconciliation) -> Re
         or user.subscription_expires_at != proposal.before_expires_at
         or user.subscription_verified_at != proposal.before_verified_at
         or _get_subscription_settings(user) != proposal.before_subscription
+        or _remove_ads_state(user.settings)[0] != proposal.before_remove_ads
     ):
         return replace(proposal, outcome="conflict")
 
@@ -659,6 +667,7 @@ async def apply_reconciliation(db: AsyncSession, proposal: Reconciliation) -> Re
             subscription.pop("billing_issue", None)
             subscription["will_renew"] = False
         _set_subscription_settings(user, subscription)
+        _set_remove_ads_projection(user, proposal.snapshot.remove_ads_product_id, proposal.verified_at)
 
     user.subscription_verified_at = proposal.verified_at
     await db.flush()
@@ -724,6 +733,48 @@ def _get_subscription_settings(user: User) -> dict:
     subscription = user.settings.get("subscription", {})
     # Return a copy to avoid in-place mutations that SQLAlchemy won't detect
     return dict(subscription)
+
+
+def _remove_ads_state(settings: object) -> tuple[bool, set[str]]:
+    """Return current Remove Ads access and immutable product purchase history."""
+    if not isinstance(settings, dict):
+        return False, set()
+    value = settings.get("non_subscriptions")
+    if not isinstance(value, dict):
+        return False, set()
+    entitlements = value.get("entitlements")
+    products = value.get("products")
+    active = isinstance(entitlements, list) and "remove_ads" in entitlements
+    product_ids = {item for item in products if isinstance(item, str)} if isinstance(products, list) else set()
+    return active, product_ids
+
+
+def _set_remove_ads_projection(user: User, product_id: str | None, updated_at: datetime) -> None:
+    """Merge verified Remove Ads access while retaining unrelated settings and history."""
+    settings = dict(user.settings)
+    raw = settings.get("non_subscriptions")
+    non_subscriptions = dict(raw) if isinstance(raw, dict) else {}
+    raw_products = non_subscriptions.get("products")
+    raw_entitlements = non_subscriptions.get("entitlements")
+    products = [item for item in raw_products if isinstance(item, str)] if isinstance(raw_products, list) else []
+    entitlements = (
+        [item for item in raw_entitlements if isinstance(item, str)] if isinstance(raw_entitlements, list) else []
+    )
+    before = (list(products), list(entitlements))
+    if product_id is None:
+        entitlements = [item for item in entitlements if item != "remove_ads"]
+    else:
+        if product_id not in products:
+            products.append(product_id)
+        if "remove_ads" not in entitlements:
+            entitlements.append("remove_ads")
+    if before == (products, entitlements):
+        return
+    non_subscriptions["products"] = products
+    non_subscriptions["entitlements"] = entitlements
+    non_subscriptions["updated_at"] = updated_at.isoformat()
+    settings["non_subscriptions"] = non_subscriptions
+    user.settings = settings
 
 
 def _set_subscription_settings(user: User, subscription_data: dict) -> None:
