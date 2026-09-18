@@ -264,7 +264,7 @@ def _has_unmatched_active_evidence(
             if evidence == matched_evidence:
                 continue
             owners = entitlement_owners.get(evidence, set())
-            if len(owners) == 1 and entitlement_id not in owners:
+            if len(owners) == 1:
                 continue
             expires_at = _datetime_value(source, "expires_date")
             grace_at = _datetime_value(source, "grace_period_expires_date")
@@ -331,6 +331,37 @@ def _parse_remove_ads_product_id(
     matched_evidence = (product_id, purchase_at)
     if entitlement_owners.get(matched_evidence) != {"remove_ads"}:
         raise RevenueCatAPIError("RevenueCat response has ambiguous entitlement evidence")
+    active_promotional_products: list[tuple[datetime | None, str]] = []
+    for promotional_product_id, value in subscriptions.items():
+        if not promotional_product_id.startswith("rc_promo_remove_ads_"):
+            continue
+        source = _as_dict(value, "remove_ads promotional evidence")
+        if _required_string(source, "store").lower() != "promotional":
+            continue
+        promotional_purchase_at = _datetime_value(source, "purchase_date", required=True)
+        assert promotional_purchase_at is not None
+        promotional_expires_at = _datetime_value(source, "expires_date", required=True)
+        promotional_grace_at = _datetime_value(source, "grace_period_expires_date")
+        candidate = _parse_candidate(
+            source,
+            product_id=promotional_product_id,
+            purchase_at=promotional_purchase_at,
+            entitlement_expires_at=promotional_expires_at,
+            entitlement_grace_at=promotional_grace_at,
+            is_subscription=True,
+        )
+        if (
+            candidate is not None
+            and not candidate[4]
+            and (not production or not candidate[0])
+            and (candidate[1] is None or candidate[1] > now)
+        ):
+            promotional_evidence = (promotional_product_id, promotional_purchase_at)
+            owners = entitlement_owners.get(promotional_evidence, set())
+            if owners and owners != {"remove_ads"}:
+                raise RevenueCatAPIError("RevenueCat response has ambiguous entitlement evidence")
+            entitlement_owners[promotional_evidence] = {"remove_ads"}
+            active_promotional_products.append((candidate[1], promotional_product_id))
     expires_at = _datetime_value(entitlement, "expires_date")
     grace_at = _datetime_value(entitlement, "grace_period_expires_date")
     candidates: list[tuple[bool, datetime | None, bool, bool, bool]] = []
@@ -375,6 +406,11 @@ def _parse_remove_ads_product_id(
         non_subscription=True,
     ):
         raise RevenueCatAPIError("RevenueCat response has ambiguous unmatched remove_ads evidence")
+    if active_promotional_products:
+        return max(
+            active_promotional_products,
+            key=lambda item: item[0] or datetime.max.replace(tzinfo=UTC),
+        )[1]
     active = [
         candidate
         for candidate in candidates

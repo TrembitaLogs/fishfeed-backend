@@ -171,6 +171,80 @@ def test_remove_ads_promotional_grants_remain_active(name: str, kwargs: dict) ->
     assert result.remove_ads_product_id == "fishfeed_remove_ads"
 
 
+def test_production_remove_ads_promo_wins_over_stale_sandbox_entitlement() -> None:
+    """A dashboard grant must survive RevenueCat v1 selecting older sandbox evidence."""
+    payload = subscriber_payload()
+    payload["subscriber"]["entitlements"].clear()
+    payload["subscriber"]["subscriptions"].clear()
+    add_remove_ads(payload, sandbox=True, purchase_date="2026-04-29T14:17:29Z")
+    payload["subscriber"]["subscriptions"]["rc_promo_remove_ads_daily"] = {
+        "is_sandbox": False,
+        "store": "promotional",
+        "period_type": "normal",
+        "purchase_date": "2026-09-18T11:48:54Z",
+        "expires_date": "2026-09-19T11:48:54Z",
+        "grace_period_expires_date": None,
+        "refunded_at": None,
+        "revoked_at": None,
+        "unsubscribe_detected_at": None,
+    }
+
+    result = parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 18, tzinfo=UTC))
+
+    assert result.status == "free"
+    assert result.remove_ads_product_id == "rc_promo_remove_ads_daily"
+
+
+def test_production_remove_ads_promo_does_not_invalidate_active_premium() -> None:
+    """Recognized Remove Ads promo evidence must not look unowned to Premium parsing."""
+    payload = subscriber_payload()
+    add_remove_ads(payload, sandbox=True, purchase_date="2026-04-29T14:17:29Z")
+    payload["subscriber"]["subscriptions"]["rc_promo_remove_ads_daily"] = {
+        "is_sandbox": False,
+        "store": "promotional",
+        "period_type": "normal",
+        "purchase_date": "2026-09-18T11:48:54Z",
+        "expires_date": "2026-09-19T11:48:54Z",
+        "grace_period_expires_date": None,
+        "refunded_at": None,
+        "revoked_at": None,
+        "unsubscribe_detected_at": None,
+    }
+
+    result = parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 18, tzinfo=UTC))
+
+    assert result.status == "premium"
+    assert result.remove_ads_product_id == "rc_promo_remove_ads_daily"
+
+
+def test_production_remove_ads_promo_does_not_hide_malformed_sibling() -> None:
+    """An accepted dashboard grant must not bypass validation of sibling evidence."""
+    payload = subscriber_payload()
+    payload["subscriber"]["entitlements"].clear()
+    payload["subscriber"]["subscriptions"].clear()
+    add_remove_ads(payload, sandbox=True, purchase_date="2026-04-29T14:17:29Z")
+    payload["subscriber"]["subscriptions"]["rc_promo_remove_ads_daily"] = {
+        "is_sandbox": False,
+        "store": "promotional",
+        "period_type": "normal",
+        "purchase_date": "2026-09-18T11:48:54Z",
+        "expires_date": "2026-09-19T11:48:54Z",
+        "grace_period_expires_date": None,
+        "refunded_at": None,
+        "revoked_at": None,
+        "unsubscribe_detected_at": None,
+    }
+    payload["subscriber"]["subscriptions"]["rc_promo_remove_ads_monthly"] = {
+        "store": "promotional",
+        "period_type": "normal",
+        "purchase_date": "2026-09-18T12:00:00Z",
+        "expires_date": "2026-10-18T12:00:00Z",
+    }
+
+    with pytest.raises(RevenueCatAPIError, match="invalid is_sandbox"):
+        parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 18, tzinfo=UTC))
+
+
 @pytest.mark.parametrize(
     ("name", "kwargs"),
     [
