@@ -60,6 +60,23 @@ Then perform an apply pass from fresh reads and verify webhook authentication
 rejection, committed audits, retry behavior, changed/unchanged/error totals,
 cache refresh, and the scheduled job.
 
+The existing Customer Info read now projects Premium and Remove Ads together.
+Ads-only `NON_RENEWING_PURCHASE`, `CANCELLATION`, `EXPIRATION`, and both sides
+of `TRANSFER` reconcile current provider state. The existing daily
+reconciliation of free users repairs missed Remove Ads events; it needs no
+additional API call or scheduler. Product history is retained after access
+ends.
+
+Promotional evidence is accepted from the v1 `subscriptions` container, while
+ordinary non-consumables remain under `non_subscriptions`. If v1 cannot map
+multiple active or mixed-environment sources, preserve the local access rather
+than downgrading it. Admin `Yes`/`No` is the backend projection; Flutter
+independently uses RevenueCat SDK active entitlements.
+
+Retrying an already terminal event ID is deduplicated. Recovery therefore uses
+a new provider event or scheduled reconciliation. Production promotional grant
+and revoke actions still require action-time approval.
+
 At the present distribution of three premium and 20 free test accounts, the
 estimated scheduled volume is 23–92 reads per day: daily for all users, and
 hourly only for premium users with a finite expiry near or past expiry. Scheduler
