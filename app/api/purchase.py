@@ -9,14 +9,12 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import ValidationError
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
-from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import get_db
 from app.dependencies import CurrentActiveUser
-from app.models.purchase import WebhookTransaction
 from app.redis import get_redis
 from app.schemas.purchase import (
     RestorePurchaseRequest,
@@ -32,6 +30,7 @@ from app.services.purchase import (
     WebhookAuditConflict,
     check_idempotency,
     get_subscription_status,
+    has_terminal_webhook_audit,
     log_webhook_transaction,
     process_webhook,
     release_idempotency_lock,
@@ -154,8 +153,7 @@ async def handle_webhook(
             return None, False
 
     async def terminal_audit_response() -> WebhookResponse | None:
-        winner = await db.scalar(select(WebhookTransaction).where(WebhookTransaction.transaction_id == transaction_id))
-        if winner and winner.processing_result in {"success", "skipped"}:
+        if await has_terminal_webhook_audit(db, transaction_id):
             return WebhookResponse(success=True, message="Already processed")
         return None
 

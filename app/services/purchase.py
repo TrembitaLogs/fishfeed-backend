@@ -697,6 +697,14 @@ async def check_idempotency(
         raise
 
 
+async def has_terminal_webhook_audit(db: AsyncSession, transaction_id: str) -> bool:
+    """Return whether an event has a committed terminal webhook audit."""
+    processing_result = await db.scalar(
+        select(WebhookTransaction.processing_result).where(WebhookTransaction.transaction_id == transaction_id)
+    )
+    return processing_result in {"success", "skipped"}
+
+
 async def release_idempotency_lock(redis: Redis, lock_handle: tuple[str, str] | None) -> None:
     """Release the idempotency lock after processing.
 
@@ -1008,48 +1016,6 @@ async def process_webhook(
     return "success", results
 
 
-async def update_subscription_status(
-    db: AsyncSession,
-    user_id: UUID,
-    status: str,
-    expires_at: datetime | None = None,
-    product_id: str | None = None,
-    will_renew: bool = False,
-) -> None:
-    """Update user subscription status.
-
-    Args:
-        db: Database session.
-        user_id: User UUID.
-        status: New subscription status (free, premium, expired, cancelled).
-        expires_at: Subscription expiry datetime.
-        product_id: Product identifier from app store.
-        will_renew: Whether subscription will auto-renew.
-    """
-    user = await _get_user_by_id(db, user_id)
-
-    user.subscription_status = status
-    user.subscription_expires_at = expires_at
-
-    # Store additional subscription data in settings JSON
-    subscription_settings = _get_subscription_settings(user)
-    if product_id:
-        subscription_settings["product_id"] = product_id
-    subscription_settings["will_renew"] = will_renew
-    subscription_settings["updated_at"] = datetime.now(UTC).isoformat()
-    _set_subscription_settings(user, subscription_settings)
-
-    await db.flush()
-
-    logger.info(
-        "Updated subscription for user",
-        user_id=user_id,
-        status=status,
-        expires_at=expires_at,
-        product_id=product_id,
-    )
-
-
 async def restore_purchases(
     db: AsyncSession,
     user_id: UUID,
@@ -1144,7 +1110,7 @@ async def restore_purchases(
 async def get_subscription_status(db: AsyncSession, user_id: UUID) -> SubscriptionStatus:
     """Get current subscription status for user.
 
-    Checks if subscription has expired and returns accurate status.
+    Returns the stored RevenueCat projection without provider calls or mutations.
 
     Args:
         db: Database session.
@@ -1170,32 +1136,3 @@ async def get_subscription_status(db: AsyncSession, user_id: UUID) -> Subscripti
         will_renew=subscription_settings.get("will_renew", False),
         original_purchase_date=None,
     )
-
-
-async def revert_to_free(db: AsyncSession, user_id: UUID) -> None:
-    """Revert user to free tier.
-
-    Clears subscription status and related settings.
-
-    Args:
-        db: Database session.
-        user_id: User UUID.
-
-    Raises:
-        UserNotFoundError: If user is not found.
-    """
-    user = await _get_user_by_id(db, user_id)
-
-    user.subscription_status = "free"
-    user.subscription_expires_at = None
-
-    # Clear subscription settings but keep history
-    subscription_settings = _get_subscription_settings(user)
-    subscription_settings["will_renew"] = False
-    subscription_settings["reverted_at"] = datetime.now(UTC).isoformat()
-    subscription_settings.pop("billing_issue", None)
-    _set_subscription_settings(user, subscription_settings)
-
-    await db.flush()
-
-    logger.info("User reverted to free tier", user_id=user_id)

@@ -26,6 +26,7 @@ from app.services.purchase import (
     WebhookRetryableError,
     apply_reconciliation,
     check_idempotency,
+    has_terminal_webhook_audit,
     log_webhook_transaction,
     process_webhook,
     release_idempotency_lock,
@@ -520,6 +521,33 @@ async def test_failed_audit_is_retryable_but_terminal_audit_is_not_overwritten(
     finally:
         await clear_purchase_state(async_session)
         await redis_client.flushdb()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_terminal_webhook_audit_requires_success_or_skipped(async_session: AsyncSession):
+    await clear_purchase_state(async_session)
+    try:
+        for transaction_id, processing_result in (
+            ("terminal-success", "success"),
+            ("terminal-skipped", "skipped"),
+            ("retryable-error", "error"),
+        ):
+            await log_webhook_transaction(
+                async_session,
+                transaction_id,
+                "INITIAL_PURCHASE",
+                None,
+                {"event": {"id": transaction_id}},
+                processing_result=processing_result,
+            )
+        await async_session.commit()
+
+        assert await has_terminal_webhook_audit(async_session, "terminal-success")
+        assert await has_terminal_webhook_audit(async_session, "terminal-skipped")
+        assert not await has_terminal_webhook_audit(async_session, "retryable-error")
+        assert not await has_terminal_webhook_audit(async_session, "missing")
+    finally:
+        await clear_purchase_state(async_session)
 
 
 @pytest.mark.asyncio(loop_scope="session")

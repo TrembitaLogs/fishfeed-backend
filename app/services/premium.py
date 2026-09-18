@@ -28,7 +28,7 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 
-def _is_subscription_active(user: User) -> bool:
+def is_subscription_active(user: User) -> bool:
     """Check if user has an active premium subscription.
 
     Args:
@@ -61,8 +61,9 @@ def _is_subscription_active(user: User) -> bool:
 async def is_premium(user: User, redis: Redis | None = None) -> bool:
     """Check if user has an active premium subscription.
 
-    Checks subscription_status and expires_at with optional Redis caching.
-    Cache is stored for 5 minutes to reduce database lookups.
+    Trusts a provider-verified premium projection; unverified legacy rows use
+    the local expiry fallback. Optional Redis caching stores the access result
+    for five minutes.
 
     Args:
         user: User model instance.
@@ -86,7 +87,7 @@ async def is_premium(user: User, redis: Redis | None = None) -> bool:
             logger.warning("Redis cache read error for premium status", error=str(e))
 
     # Check subscription status
-    is_active = _is_subscription_active(user)
+    is_active = is_subscription_active(user)
 
     # Cache the result if Redis is available
     if redis is not None:
@@ -130,7 +131,7 @@ def get_user_limits(user: User) -> UserLimits:
     Returns:
         UserLimits with appropriate limits for user's subscription tier.
     """
-    if _is_subscription_active(user):
+    if is_subscription_active(user):
         return PREMIUM_USER_LIMITS
     return FREE_USER_LIMITS
 
@@ -184,7 +185,7 @@ def premium_required(
                     detail="current_user not found in request context",
                 )
 
-            if not _is_subscription_active(current_user):  # type: ignore[arg-type]
+            if not is_subscription_active(current_user):  # type: ignore[arg-type]
                 detail = "Premium subscription required"
                 if feature_name:
                     detail = f"Premium subscription required for {feature_name}"

@@ -10,11 +10,11 @@ from app.models.user import User
 from app.schemas.purchase import FREE_USER_LIMITS, PREMIUM_USER_LIMITS, UserLimits
 from app.services.premium import (
     PREMIUM_CACHE_KEY_PREFIX,
-    _is_subscription_active,
     get_user_limits,
     get_user_limits_async,
     invalidate_premium_cache,
     is_premium,
+    is_subscription_active,
 )
 
 
@@ -56,7 +56,7 @@ class TestIsPremium:
         )
         user.subscription_verified_at = datetime(2026, 1, 1, tzinfo=UTC)
 
-        assert _is_subscription_active(user) is True
+        assert is_subscription_active(user) is True
 
     @pytest.mark.asyncio(loop_scope="session")
     async def test_returns_true_for_premium_user_with_valid_expiry(

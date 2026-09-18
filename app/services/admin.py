@@ -287,6 +287,7 @@ async def grant_premium(db: AsyncSession, user_id: UUID, days: int) -> None:
 
     Raises:
         HTTPException: 404 if user not found.
+        HTTPException: 409 because premium grants are managed in RevenueCat.
     """
     await _get_user_or_404(db, user_id)
     raise HTTPException(status_code=409, detail="Manage premium grants and revocations in RevenueCat")
@@ -306,11 +307,9 @@ async def update_subscription(
         status: New subscription status ('free', 'premium', or 'expired').
         expires_at: New expiration datetime, or None to clear.
 
-    Returns:
-        Updated User object.
-
     Raises:
         HTTPException: 404 if user not found.
+        HTTPException: 409 because subscription writes are managed in RevenueCat.
     """
     await _get_user_or_404(db, user_id)
     raise HTTPException(status_code=409, detail="Manage premium grants and revocations in RevenueCat")
