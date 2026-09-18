@@ -268,8 +268,14 @@ async def test_raw_webhook_expiry_cannot_grant_lifetime_without_provider_snapsho
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_production_sandbox_skips_before_identity_or_provider(async_session: AsyncSession, redis_client):
-    webhook = event("CANCELLATION", app_user_id=str(uuid4()), environment="SANDBOX")
+async def test_sandbox_remove_ads_event_skips_before_provider_read(async_session: AsyncSession, redis_client):
+    """Catches querying RevenueCat for an explicitly non-production Remove Ads event."""
+    webhook = event(
+        "NON_RENEWING_PURCHASE",
+        app_user_id=str(uuid4()),
+        environment="SANDBOX",
+        entitlement_ids=["remove_ads"],
+    )
     with (
         patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")),
         patch("app.services.purchase.read_reconciliation", new=AsyncMock()) as reader,
@@ -282,12 +288,11 @@ async def test_production_sandbox_skips_before_identity_or_provider(async_sessio
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_remove_ads_uses_fresh_locked_user_without_provider(async_session: AsyncSession, redis_client):
+async def test_remove_ads_purchase_reconciles_current_customer_state(async_session: AsyncSession, redis_client):
+    """Catches the purchase router bypassing the authoritative reconciliation reader."""
     await clear_purchase_state(async_session)
     try:
         record = await user(async_session)
-        record.subscription_status = "premium"
-        await async_session.commit()
         webhook = event(
             "NON_RENEWING_PURCHASE",
             app_user_id=str(record.id),
@@ -295,41 +300,66 @@ async def test_remove_ads_uses_fresh_locked_user_without_provider(async_session:
             product_id="fishfeed_remove_ads",
             entitlement_ids=["remove_ads"],
         )
+        current = replace(
+            proposal(record.id, status="free"),
+            snapshot=SubscriptionSnapshot("free", None, None, False, False, "fishfeed_remove_ads"),
+            before_remove_ads=False,
+        )
         with (
             patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")),
-            patch("app.services.purchase.read_reconciliation", new=AsyncMock()) as reader,
+            patch("app.services.purchase.read_reconciliation", new=AsyncMock(return_value=current)) as reader,
+            patch("app.services.purchase.apply_reconciliation", new=AsyncMock(return_value=current)) as apply,
         ):
             disposition, results = await process_webhook(async_session, webhook, redis_client)
 
-        assert disposition == "success" and results == []
-        reader.assert_not_awaited()
-        await async_session.refresh(record)
-        assert record.subscription_status == "premium"
-        assert record.settings["non_subscriptions"]["products"] == ["fishfeed_remove_ads"]
+        assert disposition == "success"
+        assert results == [current]
+        reader.assert_awaited_once_with(async_session, redis_client, record.id)
+        apply.assert_awaited_once_with(async_session, current)
     finally:
         await clear_purchase_state(async_session)
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_remove_ads_uses_exact_app_user_id_not_an_alias(async_session: AsyncSession, redis_client):
+async def test_remove_ads_reconciles_every_resolvable_identity_before_apply(async_session: AsyncSession, redis_client):
+    """Catches trusting only app_user_id or applying before every alias is read."""
     await clear_purchase_state(async_session)
     try:
-        purchaser, alias = await user(async_session), await user(async_session)
+        purchaser, original, alias = await user(async_session), await user(async_session), await user(async_session)
         webhook = event(
             "NON_RENEWING_PURCHASE",
             app_user_id=str(purchaser.id),
+            original_app_user_id=str(original.id),
             aliases=[str(alias.id)],
             environment="PRODUCTION",
             product_id="fishfeed_remove_ads",
             entitlement_ids=["remove_ads"],
         )
-        with patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")):
-            await process_webhook(async_session, webhook, redis_client)
+        user_ids = sorted([purchaser.id, original.id, alias.id], key=str)
+        reads: list[UUID] = []
+        applies: list[UUID] = []
 
-        await async_session.refresh(purchaser)
-        await async_session.refresh(alias)
-        assert purchaser.settings["non_subscriptions"]["products"] == ["fishfeed_remove_ads"]
-        assert "non_subscriptions" not in alias.settings
+        async def read(_, __, user_id: UUID) -> Reconciliation:
+            assert not applies
+            reads.append(user_id)
+            return proposal(user_id)
+
+        async def apply(_, fetched: Reconciliation) -> Reconciliation:
+            assert reads == user_ids
+            applies.append(fetched.user_id)
+            return fetched
+
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")),
+            patch("app.services.purchase.read_reconciliation", side_effect=read),
+            patch("app.services.purchase.apply_reconciliation", side_effect=apply),
+        ):
+            disposition, results = await process_webhook(async_session, webhook, redis_client)
+
+        assert disposition == "success"
+        assert reads == user_ids
+        assert applies == user_ids
+        assert [result.user_id for result in results] == user_ids
     finally:
         await clear_purchase_state(async_session)
 
@@ -352,26 +382,6 @@ async def test_alias_and_unrelated_events_skip_without_ads_write(async_session: 
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_unsupported_application_environment_cannot_write_remove_ads(async_session: AsyncSession, redis_client):
-    await clear_purchase_state(async_session)
-    try:
-        record = await user(async_session)
-        webhook = event(
-            "NON_RENEWING_PURCHASE",
-            app_user_id=str(record.id),
-            environment="PRODUCTION",
-            entitlement_ids=["remove_ads"],
-        )
-        with patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="staging")):
-            with pytest.raises(PurchaseError, match="unsupported environment") as error:
-                await process_webhook(async_session, webhook, redis_client)
-        assert error.value.status_code == 503
-        await async_session.refresh(record)
-        assert record.settings == {}
-    finally:
-        await clear_purchase_state(async_session)
-
-
 @pytest.mark.asyncio(loop_scope="session")
 async def test_redis_reconciliation_failure_has_storage_cause(async_session: AsyncSession):
     record = await user(async_session)
@@ -409,17 +419,202 @@ async def test_disappearing_reconciliation_participant_is_retryable(async_sessio
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_unresolved_ads_environment_is_retryable(async_session: AsyncSession, redis_client):
+async def test_missing_remove_ads_webhook_environment_reconciles_provider_evidence(async_session: AsyncSession, redis_client):
+    """Catches rejecting absent webhook metadata instead of using validated provider state."""
     await clear_purchase_state(async_session)
     try:
         record = await user(async_session)
         webhook = event("NON_RENEWING_PURCHASE", app_user_id=str(record.id), entitlement_ids=["remove_ads"])
-        with patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")):
-            with pytest.raises(PurchaseError, match="cannot authorize") as error:
-                await process_webhook(async_session, webhook, redis_client)
-        assert error.value.status_code == 503
+        current = replace(
+            proposal(record.id, status="free"),
+            snapshot=SubscriptionSnapshot("free", None, None, False, False, "fishfeed_remove_ads"),
+        )
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")),
+            patch("app.services.purchase.read_reconciliation", new=AsyncMock(return_value=current)) as reader,
+            patch("app.services.purchase.apply_reconciliation", new=AsyncMock(return_value=current)) as apply,
+        ):
+            disposition, results = await process_webhook(async_session, webhook, redis_client)
+        assert (disposition, results) == ("success", [current])
+        reader.assert_awaited_once_with(async_session, redis_client, record.id)
+        apply.assert_awaited_once_with(async_session, current)
     finally:
         await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("event_type", ["CANCELLATION", "EXPIRATION"])
+async def test_ads_only_cancellation_and_expiration_reconcile(
+    async_session: AsyncSession, redis_client, event_type: str
+) -> None:
+    """Catches lifecycle revocations skipping an ads-only customer refresh."""
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        current = proposal(record.id, status="free")
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")),
+            patch("app.services.purchase.read_reconciliation", new=AsyncMock(return_value=current)) as reader,
+            patch("app.services.purchase.apply_reconciliation", new=AsyncMock(return_value=current)) as apply,
+        ):
+            await process_webhook(
+                async_session,
+                event(event_type, app_user_id=str(record.id), environment="PRODUCTION"),
+                redis_client,
+            )
+        reader.assert_awaited_once_with(async_session, redis_client, record.id)
+        apply.assert_awaited_once_with(async_session, current)
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_delayed_grant_after_revoke_uses_current_inactive_snapshot(async_session: AsyncSession, redis_client) -> None:
+    """Catches a delayed purchase re-granting Remove Ads after provider revocation."""
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        record.settings = {"non_subscriptions": {"products": ["fishfeed_remove_ads"], "entitlements": ["remove_ads"]}}
+        await async_session.commit()
+        inactive = SubscriptionSnapshot("free", None, None, False, False)
+        revoked = replace(proposal(record.id, status="free"), snapshot=inactive, before_remove_ads=True)
+        delayed = Reconciliation(
+            user_id=record.id,
+            before_status="free",
+            before_expires_at=None,
+            before_verified_at=revoked.verified_at,
+            before_subscription={"will_renew": False},
+            snapshot=inactive,
+            verified_at=datetime.now(UTC),
+            outcome="unchanged",
+            before_remove_ads=False,
+        )
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")),
+            patch("app.services.purchase.read_reconciliation", new=AsyncMock(side_effect=[revoked, delayed])),
+        ):
+            await process_webhook(
+                async_session, event("CANCELLATION", app_user_id=str(record.id), environment="PRODUCTION"), redis_client
+            )
+            await process_webhook(
+                async_session,
+                event(
+                    "NON_RENEWING_PURCHASE",
+                    app_user_id=str(record.id),
+                    environment="PRODUCTION",
+                    entitlement_ids=["remove_ads"],
+                ),
+                redis_client,
+            )
+        await async_session.refresh(record)
+        assert "remove_ads" not in record.settings["non_subscriptions"]["entitlements"]
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_delayed_old_revoke_after_new_grant_uses_current_active_snapshot(async_session: AsyncSession, redis_client) -> None:
+    """Catches a delayed revoke clearing current provider-authoritative Remove Ads access."""
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        active = SubscriptionSnapshot("free", None, None, False, False, "fishfeed_remove_ads")
+        delayed_revoke = replace(proposal(record.id, status="free"), snapshot=active, before_remove_ads=False)
+        new_grant = Reconciliation(
+            user_id=record.id,
+            before_status="free",
+            before_expires_at=None,
+            before_verified_at=delayed_revoke.verified_at,
+            before_subscription={"will_renew": False},
+            snapshot=active,
+            verified_at=datetime.now(UTC),
+            outcome="unchanged",
+            before_remove_ads=True,
+        )
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")),
+            patch("app.services.purchase.read_reconciliation", new=AsyncMock(side_effect=[delayed_revoke, new_grant])),
+        ):
+            await process_webhook(
+                async_session, event("CANCELLATION", app_user_id=str(record.id), environment="PRODUCTION"), redis_client
+            )
+            await process_webhook(
+                async_session,
+                event(
+                    "NON_RENEWING_PURCHASE",
+                    app_user_id=str(record.id),
+                    environment="PRODUCTION",
+                    entitlement_ids=["remove_ads"],
+                ),
+                redis_client,
+            )
+        await async_session.refresh(record)
+        assert record.settings["non_subscriptions"]["entitlements"] == ["remove_ads"]
+    finally:
+        await clear_purchase_state(async_session)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_transfer_reconciles_remove_ads_for_source_and_destination(async_engine, redis_client) -> None:
+    """Catches transfer projection leaving access on the source or losing its purchase history."""
+    sessions = async_sessionmaker(async_engine, expire_on_commit=False)
+    async with sessions() as setup:
+        source, destination = await user(setup), await user(setup)
+        source.settings = {
+            "non_subscriptions": {
+                "products": ["fishfeed_remove_ads"],
+                "entitlements": ["remove_ads"],
+            }
+        }
+        await setup.commit()
+        source_id, destination_id = source.id, destination.id
+    webhook = event(
+        "TRANSFER",
+        transferred_from=[str(source_id)],
+        transferred_to=[str(destination_id)],
+        environment="PRODUCTION",
+    )
+    inactive_source = replace(
+        proposal(source_id, status="free"),
+        snapshot=SubscriptionSnapshot("free", None, None, False, False),
+        before_remove_ads=True,
+    )
+    active_destination = replace(
+        proposal(destination_id, status="free"),
+        snapshot=SubscriptionSnapshot("free", None, None, False, False, "fishfeed_remove_ads"),
+        before_remove_ads=False,
+    )
+    proposals = {source_id: inactive_source, destination_id: active_destination}
+    reads: list[UUID] = []
+    apply: AsyncMock
+
+    async def read(_, __, user_id: UUID) -> Reconciliation:
+        assert not apply.await_args_list
+        reads.append(user_id)
+        return proposals[user_id]
+
+    async with sessions() as session:
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")),
+            patch("app.services.purchase.read_reconciliation", side_effect=read),
+            patch("app.services.purchase.apply_reconciliation", wraps=apply_reconciliation) as apply,
+        ):
+            disposition, results = await process_webhook(session, webhook, redis_client)
+
+        expected_ids = sorted([source_id, destination_id], key=str)
+        assert disposition == "success"
+        assert reads == expected_ids
+        assert [call.args[1].user_id for call in apply.await_args_list] == expected_ids
+        assert [result.user_id for result in results] == expected_ids
+        await session.commit()
+
+    async with sessions() as verify:
+        source = await verify.get(User, source_id)
+        destination = await verify.get(User, destination_id)
+        assert source is not None and destination is not None
+        assert source.settings["non_subscriptions"]["products"] == ["fishfeed_remove_ads"]
+        assert "remove_ads" not in source.settings["non_subscriptions"]["entitlements"]
+        assert destination.settings["non_subscriptions"]["entitlements"] == ["remove_ads"]
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -427,6 +622,13 @@ async def test_transfer_fetches_every_snapshot_before_apply_and_rolls_back_group
     sessions = async_sessionmaker(async_engine, expire_on_commit=False)
     async with sessions() as setup:
         first, second = await user(setup), await user(setup)
+        first.settings = {
+            "non_subscriptions": {
+                "products": ["fishfeed_remove_ads"],
+                "entitlements": ["remove_ads"],
+            }
+        }
+        await setup.commit()
         first_id, second_id = first.id, second.id
     webhook = event(
         "TRANSFER",
@@ -438,7 +640,16 @@ async def test_transfer_fetches_every_snapshot_before_apply_and_rolls_back_group
 
     async def read(_, __, user_id: UUID) -> Reconciliation:
         reads.append(user_id)
-        return proposal(user_id)
+        if user_id == first_id:
+            return replace(
+                proposal(user_id, status="free"),
+                snapshot=SubscriptionSnapshot("free", None, None, False, False),
+                before_remove_ads=True,
+            )
+        return replace(
+            proposal(user_id, status="free"),
+            snapshot=SubscriptionSnapshot("free", None, None, False, False, "fishfeed_remove_ads"),
+        )
 
     async with sessions() as session:
         applies = 0
@@ -461,10 +672,46 @@ async def test_transfer_fetches_every_snapshot_before_apply_and_rolls_back_group
         await session.rollback()
 
     async with sessions() as verify:
-        statuses = list(
-            (await verify.scalars(select(User.subscription_status).where(User.id.in_([first_id, second_id])))).all()
+        first = await verify.get(User, first_id)
+        second = await verify.get(User, second_id)
+    assert first is not None and second is not None
+    assert first.subscription_status == second.subscription_status == "free"
+    assert first.settings["non_subscriptions"]["entitlements"] == ["remove_ads"]
+    assert second.settings == {}
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_remove_ads_apply_conflict_is_retryable(async_session: AsyncSession, redis_client) -> None:
+    """Catches treating a concurrent Remove Ads projection conflict as terminal success."""
+    await clear_purchase_state(async_session)
+    try:
+        record = await user(async_session)
+        current = replace(
+            proposal(record.id, status="free"),
+            snapshot=SubscriptionSnapshot("free", None, None, False, False, "fishfeed_remove_ads"),
         )
-    assert statuses == ["free", "free"]
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")),
+            patch("app.services.purchase.read_reconciliation", new=AsyncMock(return_value=current)),
+            patch(
+                "app.services.purchase.apply_reconciliation",
+                new=AsyncMock(return_value=replace(current, outcome="conflict")),
+            ),
+            pytest.raises(PurchaseError, match="changed during reconciliation") as error,
+        ):
+            await process_webhook(
+                async_session,
+                event(
+                    "NON_RENEWING_PURCHASE",
+                    app_user_id=str(record.id),
+                    environment="PRODUCTION",
+                    entitlement_ids=["remove_ads"],
+                ),
+                redis_client,
+            )
+        assert error.value.status_code == 503
+    finally:
+        await clear_purchase_state(async_session)
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -647,8 +894,8 @@ async def test_two_sessions_keep_a_terminal_audit_when_a_late_writer_loses(async
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_stale_ads_session_preserves_newer_subscription_settings(async_engine, redis_client):
-    """The ads writer refreshes its locked row instead of writing a stale JSON snapshot."""
+async def test_stale_ads_reconciliation_conflict_preserves_newer_subscription_settings(async_engine, redis_client):
+    """Catches a stale Remove Ads proposal overwriting newer subscription settings."""
     sessions = async_sessionmaker(async_engine, expire_on_commit=False)
     async with sessions() as setup:
         record = await user(setup)
@@ -668,15 +915,23 @@ async def test_stale_ads_session_preserves_newer_subscription_settings(async_eng
             product_id="fishfeed_remove_ads",
             entitlement_ids=["remove_ads"],
         )
-        with patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")):
+        stale_proposal = replace(
+            proposal(user_id, status="free"),
+            snapshot=SubscriptionSnapshot("free", None, None, False, False, "fishfeed_remove_ads"),
+        )
+        with (
+            patch("app.services.purchase.get_settings", return_value=SimpleNamespace(ENVIRONMENT="production")),
+            patch("app.services.purchase.read_reconciliation", new=AsyncMock(return_value=stale_proposal)),
+            pytest.raises(PurchaseError, match="changed during reconciliation"),
+        ):
             await process_webhook(stale, webhook, redis_client)
-        await stale.commit()
+        await stale.rollback()
 
     async with sessions() as verify:
         merged = await verify.get(User, user_id)
         assert merged is not None
         assert merged.settings["subscription"] == {"product_id": "premium.yearly", "will_renew": True}
-        assert merged.settings["non_subscriptions"]["products"] == ["fishfeed_remove_ads"]
+        assert "non_subscriptions" not in merged.settings
 
 
 def test_authorization_uses_exact_constant_time_value():

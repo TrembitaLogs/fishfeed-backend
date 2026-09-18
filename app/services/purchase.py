@@ -713,18 +713,6 @@ async def _get_user_by_id(db: AsyncSession, user_id: UUID) -> User:
     return user
 
 
-async def _get_user_by_app_user_id(db: AsyncSession, app_user_id: str) -> User | None:
-    """Get user by RevenueCat app_user_id (which is our user UUID as string)."""
-    try:
-        user_id = UUID(app_user_id)
-        stmt = select(User).where(User.id == user_id, User.deleted_at.is_(None))
-        result = await db.execute(stmt)
-        return result.scalar_one_or_none()
-    except ValueError:
-        logger.warning("Invalid app_user_id format", app_user_id=app_user_id)
-        return None
-
-
 def _get_subscription_settings(user: User) -> dict:
     """Get subscription-related settings from user settings JSON.
 
@@ -1000,59 +988,6 @@ async def _clear_downgrade_info(db: AsyncSession, user_id: UUID) -> None:
         logger.info("Cleared downgrade info for user", user_id=user_id)
 
 
-async def _grant_non_subscription_entitlement(
-    db: AsyncSession,
-    user_id: UUID,
-    product_id: str | None,
-    entitlement_ids: list[str],
-    transaction_id: str | None,
-) -> None:
-    """Grant a permanent (non-subscription) entitlement to the user.
-
-    Used for one-time purchases such as fishfeed_remove_ads. The entitlement
-    is stored in user.settings.non_subscriptions as a deduplicated list of
-    product IDs and as a flat list of entitlement IDs for fast lookup.
-    """
-    stmt = (
-        select(User)
-        .where(User.id == user_id, User.deleted_at.is_(None))
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    user = (await db.execute(stmt)).scalar_one_or_none()
-    if user is None:
-        raise PurchaseError("Webhook user disappeared; retry", status_code=503)
-    settings_dict = dict(user.settings)
-    non_sub = dict(settings_dict.get("non_subscriptions", {}))
-
-    products: list[str] = list(non_sub.get("products", []))
-    if product_id and product_id not in products:
-        products.append(product_id)
-    non_sub["products"] = products
-
-    entitlements: list[str] = list(non_sub.get("entitlements", []))
-    for ent_id in entitlement_ids:
-        if ent_id and ent_id not in entitlements:
-            entitlements.append(ent_id)
-    non_sub["entitlements"] = entitlements
-
-    non_sub["updated_at"] = datetime.now(UTC).isoformat()
-    if transaction_id:
-        non_sub["last_transaction_id"] = transaction_id
-
-    settings_dict["non_subscriptions"] = non_sub
-    user.settings = settings_dict
-    await db.flush()
-
-    logger.info(
-        "Granted non-subscription entitlement",
-        user_id=user.id,
-        product_id=product_id,
-        entitlements=entitlement_ids,
-        transaction_id=transaction_id,
-    )
-
-
 def _webhook_user_ids(event: WebhookEvent) -> list[UUID]:
     event_data = event.event
     values = [
@@ -1072,8 +1007,8 @@ def _webhook_user_ids(event: WebhookEvent) -> list[UUID]:
     return sorted(user_ids, key=str)
 
 
-def _webhook_event_class(event: WebhookEvent) -> Literal["premium", "ads", "skipped"]:
-    """Classify the only webhook effects this endpoint is allowed to perform."""
+def _webhook_event_class(event: WebhookEvent) -> Literal["reconcile", "skipped"]:
+    """Classify whether a webhook must refresh RevenueCat customer state."""
     event_data = event.event
     if event_data.type == "SUBSCRIBER_ALIAS":
         return "skipped"
@@ -1087,15 +1022,18 @@ def _webhook_event_class(event: WebhookEvent) -> Literal["premium", "ads", "skip
         "UNCANCELLATION",
         "TRANSFER",
     }:
-        return "premium"
+        return "reconcile"
     if event_data.type != "NON_RENEWING_PURCHASE":
         return "skipped"
-    entitlement_ids = event_data.entitlement_ids or []
-    if "premium" in entitlement_ids or any(
-        entitlement.product_identifier == "premium" for entitlement in event_data.entitlements
-    ):
-        return "premium"
-    return "ads"
+    entitlement_ids = set(event_data.entitlement_ids or [])
+    legacy_product_ids = {item.product_identifier for item in event_data.entitlements}
+    if event_data.product_id:
+        legacy_product_ids.add(event_data.product_id)
+    if event_data.transaction and event_data.transaction.product_id:
+        legacy_product_ids.add(event_data.transaction.product_id)
+    supported_entitlement = bool(entitlement_ids & {"premium", "remove_ads"})
+    supported_legacy_product = bool(legacy_product_ids & {"premium", "remove_ads", "fishfeed_remove_ads"})
+    return "reconcile" if supported_entitlement or supported_legacy_product else "skipped"
 
 
 async def process_webhook(
@@ -1106,7 +1044,7 @@ async def process_webhook(
     """Process RevenueCat webhook event.
 
     Webhooks are only authenticated triggers. RevenueCat's subscriber snapshot
-    remains the source of every premium projection.
+    remains the source of both Premium and Remove Ads projections.
     """
     event_data = event.event
     event_type = event_data.type
@@ -1119,29 +1057,6 @@ async def process_webhook(
     if event_class == "skipped":
         logger.info("Skipping non-mutating webhook", event_type=event_type)
         return "skipped", []
-
-    if event_class == "ads":
-        try:
-            _RECONCILIATION_ENVIRONMENTS[settings.ENVIRONMENT]
-        except KeyError:
-            raise WebhookRetryableError("Webhook has unsupported environment") from None
-        if event_data.environment != "PRODUCTION":
-            raise WebhookRetryableError("Webhook environment cannot authorize Remove Ads")
-        if not event_data.app_user_id:
-            return "skipped", []
-        ads_user = await _get_user_by_app_user_id(db, event_data.app_user_id)
-        if ads_user is None:
-            logger.info("Skipping Remove Ads webhook without a local app user", event_type=event_type)
-            return "skipped", []
-        await _grant_non_subscription_entitlement(
-            db=db,
-            user_id=ads_user.id,
-            product_id=(event_data.transaction.product_id if event_data.transaction else None) or event_data.product_id,
-            entitlement_ids=event_data.entitlement_ids
-            or [entitlement.product_identifier for entitlement in event_data.entitlements],
-            transaction_id=event_data.transaction_id,
-        )
-        return "success", []
 
     user_ids = _webhook_user_ids(event)
     if not user_ids:
