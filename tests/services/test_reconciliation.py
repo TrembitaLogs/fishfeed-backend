@@ -1644,6 +1644,52 @@ async def test_customer_creation_is_limited_to_routine_free_apply(
             assert result.snapshot.status == "premium"
 
 
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("provider_status", [200, 201])
+async def test_created_customer_cannot_revoke_existing_remove_ads(
+    async_session: AsyncSession,
+    provider_status: int,
+) -> None:
+    """A newly created provider profile cannot disprove existing Remove Ads access."""
+    record = User(
+        email=f"{uuid4()}@example.com",
+        password_hash="unused",
+        subscription_status="free",
+        settings={
+            "non_subscriptions": {
+                "products": ["fishfeed_remove_ads"],
+                "entitlements": ["remove_ads"],
+            }
+        },
+    )
+    async_session.add(record)
+    await async_session.commit()
+    payload = {"subscriber": {"entitlements": {}, "subscriptions": {}, "non_subscriptions": {}}}
+    settings = SimpleNamespace(REVENUECAT_API_KEY="test-key", ENVIRONMENT="production")
+    real_client = httpx.AsyncClient
+
+    def client_factory(**kwargs: object) -> httpx.AsyncClient:
+        transport = httpx.MockTransport(lambda request: httpx.Response(provider_status, json=payload))
+        return real_client(transport=transport, **kwargs)
+
+    with (
+        patch("app.services.purchase.get_settings", return_value=settings),
+        patch("app.services.purchase.httpx.AsyncClient", side_effect=client_factory),
+    ):
+        if provider_status == 201:
+            with pytest.raises(RevenueCatAPIError) as error:
+                await reconcile_user(async_session, FakeRedis(), record.id)
+            assert error.value.upstream_status == 201
+            await async_session.rollback()
+        else:
+            await reconcile_user(async_session, FakeRedis(), record.id)
+            await async_session.commit()
+
+    await async_session.refresh(record)
+    active = "remove_ads" in record.settings["non_subscriptions"]["entitlements"]
+    assert active is (provider_status == 201)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("before_status", "mutated_status", "raises"),

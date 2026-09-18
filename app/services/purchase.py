@@ -594,7 +594,7 @@ async def read_reconciliation(
             f"RevenueCat API returned status {response.status_code}",
             upstream_status=response.status_code,
         )
-    if response.status_code == 201 and (dry_run or before_status != "free"):
+    if response.status_code == 201 and (dry_run or before_status != "free" or before_remove_ads):
         raise RevenueCatAPIError("RevenueCat unexpectedly created a customer", upstream_status=201)
     try:
         payload = response.json()
