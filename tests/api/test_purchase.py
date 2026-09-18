@@ -67,7 +67,7 @@ def payload(user_id: str | None, event_id: str = "event-1") -> dict:
 
 
 def settings(*, environment: str = "development", secret: str | None = "secret") -> SimpleNamespace:
-    return SimpleNamespace(ENVIRONMENT=environment, REVENUECAT_WEBHOOK_SECRET=secret)
+    return SimpleNamespace(ENVIRONMENT=environment, REVENUECAT_WEBHOOK_SECRET=secret, REVENUECAT_API_KEY="test-key")
 
 
 @pytest.mark.asyncio(loop_scope="session")

@@ -104,13 +104,14 @@ class DuplicateWebhookError(PurchaseError):
 
 @dataclass(frozen=True)
 class SubscriptionSnapshot:
-    """Validated premium evidence returned by RevenueCat v1."""
+    """Validated RevenueCat customer access evidence."""
 
     status: Literal["free", "premium"]
     expires_at: datetime | None
     product_id: str | None
     will_renew: bool
     is_trial: bool
+    remove_ads_product_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -125,6 +126,7 @@ class Reconciliation:
     snapshot: SubscriptionSnapshot
     verified_at: datetime
     outcome: Literal["changed", "unchanged", "conflict"]
+    before_remove_ads: bool = False
 
 
 _RECONCILIATION_COOLDOWN_KEY = "revenuecat:reconcile:cooldown"
@@ -177,8 +179,15 @@ def _effective_expiry(expires_at: datetime | None, grace_at: datetime | None) ->
     return max(expires_at, grace_at) if grace_at is not None else expires_at
 
 
-def _free_snapshot() -> SubscriptionSnapshot:
-    return SubscriptionSnapshot(status="free", expires_at=None, product_id=None, will_renew=False, is_trial=False)
+def _free_snapshot(remove_ads_product_id: str | None = None) -> SubscriptionSnapshot:
+    return SubscriptionSnapshot(
+        status="free",
+        expires_at=None,
+        product_id=None,
+        will_renew=False,
+        is_trial=False,
+        remove_ads_product_id=remove_ads_product_id,
+    )
 
 
 def _parse_candidate(
@@ -236,6 +245,7 @@ def _has_unmatched_active_evidence(
     entitlement_owners: dict[tuple[str, datetime], set[str]],
     now: datetime,
     *,
+    entitlement_id: str,
     non_subscription: bool,
 ) -> bool:
     has_unmatched_active_evidence = False
@@ -254,7 +264,7 @@ def _has_unmatched_active_evidence(
             if evidence == matched_evidence:
                 continue
             owners = entitlement_owners.get(evidence, set())
-            if len(owners) == 1 and "premium" not in owners:
+            if len(owners) == 1 and entitlement_id not in owners:
                 continue
             expires_at = _datetime_value(source, "expires_date")
             grace_at = _datetime_value(source, "grace_period_expires_date")
@@ -302,6 +312,79 @@ def _entitlement_owners(entitlements: dict[str, object]) -> dict[tuple[str, date
     return owners
 
 
+def _parse_remove_ads_product_id(
+    entitlements: dict[str, object],
+    subscriptions: dict[str, object],
+    non_subscriptions: dict[str, object],
+    entitlement_owners: dict[tuple[str, datetime], set[str]],
+    *,
+    production: bool,
+    now: datetime,
+) -> str | None:
+    value = entitlements.get("remove_ads")
+    if value is None:
+        return None
+    entitlement = _as_dict(value, "remove_ads entitlement")
+    product_id = _required_string(entitlement, "product_identifier")
+    purchase_at = _datetime_value(entitlement, "purchase_date", required=True)
+    assert purchase_at is not None
+    matched_evidence = (product_id, purchase_at)
+    if entitlement_owners.get(matched_evidence) != {"remove_ads"}:
+        raise RevenueCatAPIError("RevenueCat response has ambiguous entitlement evidence")
+    expires_at = _datetime_value(entitlement, "expires_date")
+    grace_at = _datetime_value(entitlement, "grace_period_expires_date")
+    candidates: list[tuple[bool, datetime | None, bool, bool, bool]] = []
+    if product_id in subscriptions:
+        candidate = _parse_candidate(
+            _as_dict(subscriptions[product_id], "remove_ads subscription evidence"),
+            product_id=product_id,
+            purchase_at=purchase_at,
+            entitlement_expires_at=expires_at,
+            entitlement_grace_at=grace_at,
+            is_subscription=True,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+    if product_id in non_subscriptions:
+        for record in _non_subscription_records(non_subscriptions[product_id]):
+            candidate = _parse_candidate(
+                _as_dict(record, "remove_ads non-subscription evidence"),
+                product_id=product_id,
+                purchase_at=purchase_at,
+                entitlement_expires_at=expires_at,
+                entitlement_grace_at=grace_at,
+                is_subscription=False,
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+    if not candidates:
+        raise RevenueCatAPIError("RevenueCat remove_ads entitlement has no matching evidence")
+    if _has_unmatched_active_evidence(
+        subscriptions,
+        matched_evidence,
+        entitlement_owners,
+        now,
+        entitlement_id="remove_ads",
+        non_subscription=False,
+    ) or _has_unmatched_active_evidence(
+        non_subscriptions,
+        matched_evidence,
+        entitlement_owners,
+        now,
+        entitlement_id="remove_ads",
+        non_subscription=True,
+    ):
+        raise RevenueCatAPIError("RevenueCat response has ambiguous unmatched remove_ads evidence")
+    active = [
+        candidate
+        for candidate in candidates
+        if not candidate[4]
+        and (not production or not candidate[0])
+        and (candidate[1] is None or candidate[1] > now)
+    ]
+    return product_id if active else None
+
+
 def parse_revenuecat_subscriber(
     payload: object,
     *,
@@ -319,10 +402,19 @@ def parse_revenuecat_subscriber(
     for value in non_subscriptions.values():
         _non_subscription_records(value)
     _ensure_unique_evidence_identities(subscriptions, non_subscriptions)
+    entitlement_owners = _entitlement_owners(entitlements)
+    remove_ads_product_id = _parse_remove_ads_product_id(
+        entitlements,
+        subscriptions,
+        non_subscriptions,
+        entitlement_owners,
+        production=production,
+        now=now,
+    )
     if not entitlements:
-        return _free_snapshot()
+        return _free_snapshot(remove_ads_product_id)
     if "premium" not in entitlements:
-        return _free_snapshot()
+        return _free_snapshot(remove_ads_product_id)
     premium = entitlements["premium"]
     entitlement = _as_dict(premium, "premium entitlement")
     product_id = _required_string(entitlement, "product_identifier")
@@ -361,22 +453,31 @@ def parse_revenuecat_subscriber(
     if not candidates:
         raise RevenueCatAPIError("RevenueCat premium entitlement has no matching evidence")
     matched_evidence = (product_id, purchase_at)
-    entitlement_owners = _entitlement_owners(entitlements)
     if entitlement_owners.get(matched_evidence) != {"premium"}:
         raise RevenueCatAPIError("RevenueCat response has ambiguous entitlement evidence")
     if _has_unmatched_active_evidence(
-        subscriptions, matched_evidence, entitlement_owners, now, non_subscription=False
+        subscriptions,
+        matched_evidence,
+        entitlement_owners,
+        now,
+        entitlement_id="premium",
+        non_subscription=False,
     ) or _has_unmatched_active_evidence(
-        non_subscriptions, matched_evidence, entitlement_owners, now, non_subscription=True
+        non_subscriptions,
+        matched_evidence,
+        entitlement_owners,
+        now,
+        entitlement_id="premium",
+        non_subscription=True,
     ):
         raise RevenueCatAPIError("RevenueCat response has ambiguous unmatched premium evidence")
 
     allowed = [candidate for candidate in candidates if not candidate[4] and (not production or not candidate[0])]
     if not allowed:
-        return _free_snapshot()
+        return _free_snapshot(remove_ads_product_id)
     active = [candidate for candidate in allowed if candidate[1] is None or candidate[1] > now]
     if not active:
-        return _free_snapshot()
+        return _free_snapshot(remove_ads_product_id)
     sandbox, expires_at, will_renew, is_trial, blocked = max(
         active,
         key=lambda candidate: candidate[1] or datetime.max.replace(tzinfo=UTC),
@@ -388,6 +489,7 @@ def parse_revenuecat_subscriber(
         product_id=product_id,
         will_renew=will_renew,
         is_trial=is_trial,
+        remove_ads_product_id=remove_ads_product_id,
     )
 
 
@@ -466,6 +568,7 @@ async def read_reconciliation(
     before_expires_at = user.subscription_expires_at
     before_verified_at = user.subscription_verified_at
     before_subscription = _get_subscription_settings(user)
+    before_remove_ads, before_products = _remove_ads_state(user.settings)
     await _check_reconciliation_cooldown(redis)
 
     url = f"https://api.revenuecat.com/v1/subscribers/{quote(str(user_id), safe='')}"
@@ -491,7 +594,7 @@ async def read_reconciliation(
             f"RevenueCat API returned status {response.status_code}",
             upstream_status=response.status_code,
         )
-    if response.status_code == 201 and (dry_run or before_status != "free"):
+    if response.status_code == 201 and (dry_run or before_status != "free" or before_remove_ads):
         raise RevenueCatAPIError("RevenueCat unexpectedly created a customer", upstream_status=201)
     try:
         payload = response.json()
@@ -503,12 +606,16 @@ async def read_reconciliation(
         production=production,
         now=verified_at,
     )
+    remove_ads_matches = before_remove_ads == (snapshot.remove_ads_product_id is not None)
+    if snapshot.remove_ads_product_id is not None:
+        remove_ads_matches = remove_ads_matches and snapshot.remove_ads_product_id in before_products
     unchanged = (
         before_status == snapshot.status
         and before_expires_at == snapshot.expires_at
         and before_subscription.get("product_id") == snapshot.product_id
         and before_subscription.get("will_renew", False) == snapshot.will_renew
         and before_subscription.get("is_trial", False) == snapshot.is_trial
+        and remove_ads_matches
     )
     return Reconciliation(
         user_id=user.id,
@@ -519,6 +626,7 @@ async def read_reconciliation(
         snapshot=snapshot,
         verified_at=verified_at,
         outcome="unchanged" if unchanged else "changed",
+        before_remove_ads=before_remove_ads,
     )
 
 
@@ -539,6 +647,7 @@ async def apply_reconciliation(db: AsyncSession, proposal: Reconciliation) -> Re
         or user.subscription_expires_at != proposal.before_expires_at
         or user.subscription_verified_at != proposal.before_verified_at
         or _get_subscription_settings(user) != proposal.before_subscription
+        or _remove_ads_state(user.settings)[0] != proposal.before_remove_ads
     ):
         return replace(proposal, outcome="conflict")
 
@@ -558,6 +667,7 @@ async def apply_reconciliation(db: AsyncSession, proposal: Reconciliation) -> Re
             subscription.pop("billing_issue", None)
             subscription["will_renew"] = False
         _set_subscription_settings(user, subscription)
+        _set_remove_ads_projection(user, proposal.snapshot.remove_ads_product_id, proposal.verified_at)
 
     user.subscription_verified_at = proposal.verified_at
     await db.flush()
@@ -603,18 +713,6 @@ async def _get_user_by_id(db: AsyncSession, user_id: UUID) -> User:
     return user
 
 
-async def _get_user_by_app_user_id(db: AsyncSession, app_user_id: str) -> User | None:
-    """Get user by RevenueCat app_user_id (which is our user UUID as string)."""
-    try:
-        user_id = UUID(app_user_id)
-        stmt = select(User).where(User.id == user_id, User.deleted_at.is_(None))
-        result = await db.execute(stmt)
-        return result.scalar_one_or_none()
-    except ValueError:
-        logger.warning("Invalid app_user_id format", app_user_id=app_user_id)
-        return None
-
-
 def _get_subscription_settings(user: User) -> dict:
     """Get subscription-related settings from user settings JSON.
 
@@ -623,6 +721,48 @@ def _get_subscription_settings(user: User) -> dict:
     subscription = user.settings.get("subscription", {})
     # Return a copy to avoid in-place mutations that SQLAlchemy won't detect
     return dict(subscription)
+
+
+def _remove_ads_state(settings: object) -> tuple[bool, set[str]]:
+    """Return current Remove Ads access and immutable product purchase history."""
+    if not isinstance(settings, dict):
+        return False, set()
+    value = settings.get("non_subscriptions")
+    if not isinstance(value, dict):
+        return False, set()
+    entitlements = value.get("entitlements")
+    products = value.get("products")
+    active = isinstance(entitlements, list) and "remove_ads" in entitlements
+    product_ids = {item for item in products if isinstance(item, str)} if isinstance(products, list) else set()
+    return active, product_ids
+
+
+def _set_remove_ads_projection(user: User, product_id: str | None, updated_at: datetime) -> None:
+    """Merge verified Remove Ads access while retaining unrelated settings and history."""
+    settings = dict(user.settings)
+    raw = settings.get("non_subscriptions")
+    non_subscriptions = dict(raw) if isinstance(raw, dict) else {}
+    raw_products = non_subscriptions.get("products")
+    raw_entitlements = non_subscriptions.get("entitlements")
+    products = [item for item in raw_products if isinstance(item, str)] if isinstance(raw_products, list) else []
+    entitlements = (
+        [item for item in raw_entitlements if isinstance(item, str)] if isinstance(raw_entitlements, list) else []
+    )
+    before = (list(products), list(entitlements))
+    if product_id is None:
+        entitlements = [item for item in entitlements if item != "remove_ads"]
+    else:
+        if product_id not in products:
+            products.append(product_id)
+        if "remove_ads" not in entitlements:
+            entitlements.append("remove_ads")
+    if before == (products, entitlements):
+        return
+    non_subscriptions["products"] = products
+    non_subscriptions["entitlements"] = entitlements
+    non_subscriptions["updated_at"] = updated_at.isoformat()
+    settings["non_subscriptions"] = non_subscriptions
+    user.settings = settings
 
 
 def _set_subscription_settings(user: User, subscription_data: dict) -> None:
@@ -848,59 +988,6 @@ async def _clear_downgrade_info(db: AsyncSession, user_id: UUID) -> None:
         logger.info("Cleared downgrade info for user", user_id=user_id)
 
 
-async def _grant_non_subscription_entitlement(
-    db: AsyncSession,
-    user_id: UUID,
-    product_id: str | None,
-    entitlement_ids: list[str],
-    transaction_id: str | None,
-) -> None:
-    """Grant a permanent (non-subscription) entitlement to the user.
-
-    Used for one-time purchases such as fishfeed_remove_ads. The entitlement
-    is stored in user.settings.non_subscriptions as a deduplicated list of
-    product IDs and as a flat list of entitlement IDs for fast lookup.
-    """
-    stmt = (
-        select(User)
-        .where(User.id == user_id, User.deleted_at.is_(None))
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    user = (await db.execute(stmt)).scalar_one_or_none()
-    if user is None:
-        raise PurchaseError("Webhook user disappeared; retry", status_code=503)
-    settings_dict = dict(user.settings)
-    non_sub = dict(settings_dict.get("non_subscriptions", {}))
-
-    products: list[str] = list(non_sub.get("products", []))
-    if product_id and product_id not in products:
-        products.append(product_id)
-    non_sub["products"] = products
-
-    entitlements: list[str] = list(non_sub.get("entitlements", []))
-    for ent_id in entitlement_ids:
-        if ent_id and ent_id not in entitlements:
-            entitlements.append(ent_id)
-    non_sub["entitlements"] = entitlements
-
-    non_sub["updated_at"] = datetime.now(UTC).isoformat()
-    if transaction_id:
-        non_sub["last_transaction_id"] = transaction_id
-
-    settings_dict["non_subscriptions"] = non_sub
-    user.settings = settings_dict
-    await db.flush()
-
-    logger.info(
-        "Granted non-subscription entitlement",
-        user_id=user.id,
-        product_id=product_id,
-        entitlements=entitlement_ids,
-        transaction_id=transaction_id,
-    )
-
-
 def _webhook_user_ids(event: WebhookEvent) -> list[UUID]:
     event_data = event.event
     values = [
@@ -920,8 +1007,8 @@ def _webhook_user_ids(event: WebhookEvent) -> list[UUID]:
     return sorted(user_ids, key=str)
 
 
-def _webhook_event_class(event: WebhookEvent) -> Literal["premium", "ads", "skipped"]:
-    """Classify the only webhook effects this endpoint is allowed to perform."""
+def _webhook_event_class(event: WebhookEvent) -> Literal["reconcile", "skipped"]:
+    """Classify whether a webhook must refresh RevenueCat customer state."""
     event_data = event.event
     if event_data.type == "SUBSCRIBER_ALIAS":
         return "skipped"
@@ -935,15 +1022,18 @@ def _webhook_event_class(event: WebhookEvent) -> Literal["premium", "ads", "skip
         "UNCANCELLATION",
         "TRANSFER",
     }:
-        return "premium"
+        return "reconcile"
     if event_data.type != "NON_RENEWING_PURCHASE":
         return "skipped"
-    entitlement_ids = event_data.entitlement_ids or []
-    if "premium" in entitlement_ids or any(
-        entitlement.product_identifier == "premium" for entitlement in event_data.entitlements
-    ):
-        return "premium"
-    return "ads"
+    entitlement_ids = set(event_data.entitlement_ids or [])
+    legacy_product_ids = {item.product_identifier for item in event_data.entitlements}
+    if event_data.product_id:
+        legacy_product_ids.add(event_data.product_id)
+    if event_data.transaction and event_data.transaction.product_id:
+        legacy_product_ids.add(event_data.transaction.product_id)
+    supported_entitlement = bool(entitlement_ids & {"premium", "remove_ads"})
+    supported_legacy_product = bool(legacy_product_ids & {"premium", "remove_ads", "fishfeed_remove_ads"})
+    return "reconcile" if supported_entitlement or supported_legacy_product else "skipped"
 
 
 async def process_webhook(
@@ -954,7 +1044,7 @@ async def process_webhook(
     """Process RevenueCat webhook event.
 
     Webhooks are only authenticated triggers. RevenueCat's subscriber snapshot
-    remains the source of every premium projection.
+    remains the source of both Premium and Remove Ads projections.
     """
     event_data = event.event
     event_type = event_data.type
@@ -967,29 +1057,6 @@ async def process_webhook(
     if event_class == "skipped":
         logger.info("Skipping non-mutating webhook", event_type=event_type)
         return "skipped", []
-
-    if event_class == "ads":
-        try:
-            _RECONCILIATION_ENVIRONMENTS[settings.ENVIRONMENT]
-        except KeyError:
-            raise WebhookRetryableError("Webhook has unsupported environment") from None
-        if event_data.environment != "PRODUCTION":
-            raise WebhookRetryableError("Webhook environment cannot authorize Remove Ads")
-        if not event_data.app_user_id:
-            return "skipped", []
-        ads_user = await _get_user_by_app_user_id(db, event_data.app_user_id)
-        if ads_user is None:
-            logger.info("Skipping Remove Ads webhook without a local app user", event_type=event_type)
-            return "skipped", []
-        await _grant_non_subscription_entitlement(
-            db=db,
-            user_id=ads_user.id,
-            product_id=(event_data.transaction.product_id if event_data.transaction else None) or event_data.product_id,
-            entitlement_ids=event_data.entitlement_ids
-            or [entitlement.product_identifier for entitlement in event_data.entitlements],
-            transaction_id=event_data.transaction_id,
-        )
-        return "success", []
 
     user_ids = _webhook_user_ids(event)
     if not user_ids:

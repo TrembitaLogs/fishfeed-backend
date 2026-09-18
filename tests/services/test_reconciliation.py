@@ -79,6 +79,189 @@ def _entitlement(payload: dict) -> dict:
     return payload["subscriber"]["entitlements"]["premium"]
 
 
+def add_remove_ads(
+    payload: dict,
+    *,
+    product_id: str = "fishfeed_remove_ads",
+    purchase_date: str = "2026-02-01T00:00:00Z",
+    expires_date: str | None = None,
+    sandbox: bool = False,
+    refunded_at: str | None = None,
+    revoked_at: str | None = None,
+    store: str = "play_store",
+    in_subscriptions: bool = False,
+) -> None:
+    payload["subscriber"]["entitlements"]["remove_ads"] = {
+        "product_identifier": product_id,
+        "purchase_date": purchase_date,
+        "expires_date": expires_date,
+        "grace_period_expires_date": None,
+    }
+    record = {
+        "is_sandbox": sandbox,
+        "store": store,
+        "period_type": "promotional" if store == "promotional" else "normal",
+        "purchase_date": purchase_date,
+        "expires_date": expires_date,
+        "grace_period_expires_date": None,
+        "refunded_at": refunded_at,
+        "revoked_at": revoked_at,
+        "unsubscribe_detected_at": None,
+    }
+    if in_subscriptions:
+        payload["subscriber"]["subscriptions"][product_id] = record
+    else:
+        payload["subscriber"]["non_subscriptions"].setdefault(product_id, []).append(record)
+
+
+def test_ads_only_customer_stays_free_with_active_remove_ads() -> None:
+    """Catches dropping an active Remove Ads entitlement from a free snapshot."""
+    payload = subscriber_payload()
+    payload["subscriber"]["entitlements"].clear()
+    payload["subscriber"]["subscriptions"].clear()
+    add_remove_ads(payload)
+
+    result = parse_revenuecat_subscriber(
+        payload,
+        production=True,
+        now=datetime(2026, 9, 18, tzinfo=UTC),
+    )
+
+    assert result.status == "free"
+    assert result.remove_ads_product_id == "fishfeed_remove_ads"
+
+
+def test_separate_premium_and_remove_ads_evidence_are_both_active() -> None:
+    """Catches retaining Premium while discarding separate active Remove Ads evidence."""
+    payload = subscriber_payload()
+    add_remove_ads(payload)
+
+    result = parse_revenuecat_subscriber(
+        payload,
+        production=True,
+        now=datetime(2026, 9, 18, tzinfo=UTC),
+    )
+
+    assert result.status == "premium"
+    assert result.remove_ads_product_id == "fishfeed_remove_ads"
+
+
+@pytest.mark.parametrize(
+    ("name", "kwargs"),
+    [
+        ("promotional lifetime", {"store": "promotional", "in_subscriptions": True}),
+        (
+            "promotional finite",
+            {
+                "store": "promotional",
+                "in_subscriptions": True,
+                "expires_date": "2099-01-01T00:00:00Z",
+            },
+        ),
+    ],
+)
+def test_remove_ads_promotional_grants_remain_active(name: str, kwargs: dict) -> None:
+    """Catches treating valid promotional lifetime or finite grants as inactive."""
+    del name
+    payload = subscriber_payload()
+    add_remove_ads(payload, **kwargs)
+
+    result = parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 18, tzinfo=UTC))
+
+    assert result.remove_ads_product_id == "fishfeed_remove_ads"
+
+
+@pytest.mark.parametrize(
+    ("name", "kwargs"),
+    [
+        ("expired finite grant", {"expires_date": "2026-09-17T00:00:00Z"}),
+        ("refunded", {"refunded_at": "2026-09-17T00:00:00Z"}),
+        ("revoked", {"revoked_at": "2026-09-17T00:00:00Z"}),
+        ("sandbox in production", {"sandbox": True}),
+    ],
+)
+def test_remove_ads_inactive_evidence_is_not_granted(name: str, kwargs: dict) -> None:
+    """Catches granting expired, refunded, revoked, or sandbox Remove Ads evidence in production."""
+    del name
+    payload = subscriber_payload()
+    add_remove_ads(payload, **kwargs)
+
+    result = parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 18, tzinfo=UTC))
+
+    assert result.remove_ads_product_id is None
+
+
+def test_remove_ads_missing_evidence_is_rejected() -> None:
+    """Catches accepting an entitlement whose matching provider evidence disappeared."""
+    payload = subscriber_payload()
+    add_remove_ads(payload)
+    payload["subscriber"]["subscriptions"].pop("fishfeed_remove_ads", None)
+    del payload["subscriber"]["non_subscriptions"]["fishfeed_remove_ads"]
+
+    with pytest.raises(RevenueCatAPIError):
+        parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 18, tzinfo=UTC))
+
+
+def test_shared_evidence_between_premium_and_remove_ads_is_rejected() -> None:
+    """Catches treating one provider tuple as both Premium and Remove Ads."""
+    payload = subscriber_payload()
+    add_remove_ads(payload)
+    payload["subscriber"]["entitlements"]["remove_ads"] = deepcopy(_entitlement(payload))
+
+    with pytest.raises(RevenueCatAPIError):
+        parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 18, tzinfo=UTC))
+
+
+def test_remove_ads_revoked_old_promo_does_not_hide_active_store_source() -> None:
+    """Catches letting an older revoked promotion invalidate a mapped active store purchase."""
+    payload = subscriber_payload()
+    add_remove_ads(payload)
+    payload["subscriber"]["non_subscriptions"]["fishfeed_remove_ads"].append(
+        {
+            **payload["subscriber"]["non_subscriptions"]["fishfeed_remove_ads"][0],
+            "store": "promotional",
+            "period_type": "promotional",
+            "purchase_date": "2026-01-01T00:00:00Z",
+            "revoked_at": "2026-01-15T00:00:00Z",
+        }
+    )
+
+    result = parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 18, tzinfo=UTC))
+
+    assert result.remove_ads_product_id == "fishfeed_remove_ads"
+
+
+def test_remove_ads_two_active_sources_are_rejected() -> None:
+    """Catches silently accepting an unowned active Remove Ads aggregate tuple."""
+    payload = subscriber_payload()
+    add_remove_ads(payload)
+    payload["subscriber"]["non_subscriptions"]["fishfeed_remove_ads_legacy"] = [
+        {
+            **payload["subscriber"]["non_subscriptions"]["fishfeed_remove_ads"][0],
+            "purchase_date": "2026-01-01T00:00:00Z",
+        }
+    ]
+
+    with pytest.raises(RevenueCatAPIError):
+        parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 18, tzinfo=UTC))
+
+
+def test_remove_ads_sandbox_aggregate_with_production_source_is_rejected() -> None:
+    """Catches inferring a production grant from mixed-environment aggregates."""
+    payload = subscriber_payload()
+    add_remove_ads(payload, sandbox=True)
+    payload["subscriber"]["non_subscriptions"]["fishfeed_remove_ads_production"] = [
+        {
+            **payload["subscriber"]["non_subscriptions"]["fishfeed_remove_ads"][0],
+            "is_sandbox": False,
+            "purchase_date": "2026-01-01T00:00:00Z",
+        }
+    ]
+
+    with pytest.raises(RevenueCatAPIError):
+        parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 18, tzinfo=UTC))
+
+
 @pytest.mark.parametrize(
     ("name", "mutate", "expected"),
     [
@@ -158,22 +341,23 @@ def test_validated_lifetime_promo_and_one_time_premium() -> None:
     assert one_time_result.expires_at is None
 
 
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        lambda body: body["subscriber"]["entitlements"].clear(),
-        lambda body: body["subscriber"]["entitlements"].clear()
-        or body["subscriber"]["entitlements"].update(remove_ads={}),
-    ],
-)
-def test_absent_or_ads_only_entitlement_is_free(mutate) -> None:
-    """A non-premium entitlement cannot be promoted by a product name."""
+def test_absent_premium_entitlement_is_free() -> None:
+    """Catches treating the absence of Premium as a paid subscription."""
     payload = subscriber_payload()
-    mutate(payload)
+    payload["subscriber"]["entitlements"].clear()
 
     result = parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 17, tzinfo=UTC))
 
     assert result.status == "free"
+
+
+def test_malformed_remove_ads_entitlement_is_rejected() -> None:
+    """Catches treating a present malformed Remove Ads entitlement as absent."""
+    payload = subscriber_payload()
+    payload["subscriber"]["entitlements"]["remove_ads"] = {}
+
+    with pytest.raises(RevenueCatAPIError):
+        parse_revenuecat_subscriber(payload, production=True, now=datetime(2026, 9, 17, tzinfo=UTC))
 
 
 @pytest.mark.parametrize(
@@ -521,8 +705,11 @@ def _proposal(
     verified_at: datetime,
     expires_at: datetime | None = None,
     product_id: str | None = None,
+    remove_ads_product_id: str | None = None,
     outcome: str = "changed",
 ) -> Reconciliation:
+    non_subscriptions = user.settings.get("non_subscriptions", {})
+    entitlements = non_subscriptions.get("entitlements", []) if isinstance(non_subscriptions, dict) else []
     return Reconciliation(
         user_id=user.id,
         before_status=user.subscription_status,
@@ -530,11 +717,220 @@ def _proposal(
         before_verified_at=user.subscription_verified_at,
         before_subscription=dict(user.settings.get("subscription", {})),
         snapshot=SubscriptionSnapshot(
-            status=status, expires_at=expires_at, product_id=product_id, will_renew=False, is_trial=False
+            status=status,
+            expires_at=expires_at,
+            product_id=product_id,
+            will_renew=False,
+            is_trial=False,
+            remove_ads_product_id=remove_ads_product_id,
         ),
         verified_at=verified_at,
         outcome=outcome,  # type: ignore[arg-type]
+        before_remove_ads=isinstance(entitlements, list) and "remove_ads" in entitlements,
     )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_apply_reconciliation_grants_remove_ads_without_premium(async_session: AsyncSession) -> None:
+    """Removing the Remove Ads projection leaves a paid free-tier account without access."""
+    await async_session.execute(text("DELETE FROM users"))
+    record = User(email=f"{uuid4()}@example.com", password_hash="unused", settings={"theme": "dark"})
+    async_session.add(record)
+    await async_session.commit()
+    proposal = _proposal(
+        record,
+        status="free",
+        remove_ads_product_id="fishfeed_remove_ads",
+        verified_at=datetime(2026, 9, 18, tzinfo=UTC),
+    )
+
+    await apply_reconciliation(async_session, proposal)
+    await async_session.refresh(record)
+
+    assert record.subscription_status == "free"
+    assert record.settings["theme"] == "dark"
+    assert record.settings["non_subscriptions"]["products"] == ["fishfeed_remove_ads"]
+    assert record.settings["non_subscriptions"]["entitlements"] == ["remove_ads"]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_apply_reconciliation_removes_only_remove_ads_access(async_session: AsyncSession) -> None:
+    """Removing only the entitlement must retain purchase history and unrelated Premium state."""
+    await async_session.execute(text("DELETE FROM users"))
+    expires_at = datetime(2026, 10, 1, tzinfo=UTC)
+    record = User(
+        email=f"{uuid4()}@example.com",
+        password_hash="unused",
+        subscription_status="premium",
+        subscription_expires_at=expires_at,
+        settings={
+            "theme": "dark",
+            "subscription": {"product_id": "premium.monthly", "will_renew": True},
+            "non_subscriptions": {
+                "products": ["fishfeed_remove_ads"],
+                "entitlements": ["remove_ads", "bonus"],
+            },
+        },
+    )
+    async_session.add(record)
+    await async_session.commit()
+
+    await apply_reconciliation(
+        async_session,
+        _proposal(
+            record,
+            status="premium",
+            expires_at=expires_at,
+            product_id="premium.monthly",
+            verified_at=datetime(2026, 9, 18, tzinfo=UTC),
+        ),
+    )
+    await async_session.refresh(record)
+
+    assert record.subscription_status == "premium"
+    assert record.subscription_expires_at == expires_at
+    assert record.settings["theme"] == "dark"
+    assert record.settings["subscription"] == {"product_id": "premium.monthly", "will_renew": False, "is_trial": False}
+    assert record.settings["non_subscriptions"]["products"] == ["fishfeed_remove_ads"]
+    assert record.settings["non_subscriptions"]["entitlements"] == ["bonus"]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("remove_ads_product_id", "initial"),
+    [("fishfeed_remove_ads", {}), (None, {"products": ["fishfeed_remove_ads"], "entitlements": ["remove_ads"]})],
+)
+async def test_repeated_fresh_remove_ads_reconciliations_keep_non_subscription_updated_at_stable(
+    async_session: AsyncSession,
+    remove_ads_product_id: str | None,
+    initial: dict[str, object],
+) -> None:
+    """A matching fresh proposal cannot duplicate identifiers or rewrite its projection timestamp."""
+    await async_session.execute(text("DELETE FROM users"))
+    record = User(
+        email=f"{uuid4()}@example.com",
+        password_hash="unused",
+        settings={"non_subscriptions": initial, "theme": "dark"},
+    )
+    async_session.add(record)
+    await async_session.commit()
+    payload = subscriber_payload()
+    payload["subscriber"]["entitlements"].clear()
+    payload["subscriber"]["subscriptions"].clear()
+    if remove_ads_product_id is not None:
+        add_remove_ads(payload, product_id=remove_ads_product_id)
+    real_client = httpx.AsyncClient
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=payload)
+
+    with (
+        patch(
+            "app.services.purchase.get_settings",
+            return_value=SimpleNamespace(REVENUECAT_API_KEY="test-key", ENVIRONMENT="production"),
+        ),
+        patch(
+            "app.services.purchase.httpx.AsyncClient",
+            side_effect=lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+        ),
+    ):
+        assert (await reconcile_user(async_session, FakeRedis(), record.id)).outcome == "changed"
+        await async_session.commit()
+        await async_session.refresh(record)
+        before_updated_at = record.settings["non_subscriptions"].get("updated_at")
+
+        assert (await reconcile_user(async_session, FakeRedis(), record.id)).outcome == "unchanged"
+        await async_session.commit()
+        await async_session.refresh(record)
+
+    assert record.settings["non_subscriptions"].get("updated_at") == before_updated_at
+    assert record.settings["non_subscriptions"].get("products", []).count("fishfeed_remove_ads") == 1
+    assert record.settings["non_subscriptions"].get("entitlements", []).count("remove_ads") <= 1
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_apply_reconciliation_conflicts_when_remove_ads_changes_after_read(async_engine) -> None:
+    """A delayed Remove Ads grant cannot overwrite a newer local access projection."""
+    sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as setup:
+        await setup.execute(text("DELETE FROM users"))
+        user = User(email=f"{uuid4()}@example.com", password_hash="unused", settings={})
+        setup.add(user)
+        await setup.commit()
+        user_id = user.id
+
+    async with sessions() as stale, sessions() as writer:
+        before = await stale.get(User, user_id)
+        current = await writer.get(User, user_id)
+        assert before is not None and current is not None
+        proposal = _proposal(before, status="free", verified_at=datetime(2026, 9, 18, tzinfo=UTC))
+        current.settings = {"non_subscriptions": {"products": ["fishfeed_remove_ads"], "entitlements": ["remove_ads"]}}
+        await writer.commit()
+
+        assert (await apply_reconciliation(stale, proposal)).outcome == "conflict"
+        await stale.rollback()
+
+
+@pytest.mark.asyncio
+async def test_read_reconciliation_marks_remove_ads_only_change_with_one_provider_request() -> None:
+    """Ignoring Remove Ads in equality would falsely report this one-request snapshot as unchanged."""
+    user = _user()
+    requests: list[httpx.Request] = []
+    payload = subscriber_payload()
+    payload["subscriber"]["entitlements"].clear()
+    payload["subscriber"]["subscriptions"].clear()
+    add_remove_ads(payload)
+    real_client = httpx.AsyncClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=payload)
+
+    with (
+        patch(
+            "app.services.purchase.get_settings",
+            return_value=SimpleNamespace(REVENUECAT_API_KEY="test-key", ENVIRONMENT="production"),
+        ),
+        patch("app.services.purchase._get_user_by_id", new=AsyncMock(return_value=user)),
+        patch(
+            "app.services.purchase.httpx.AsyncClient",
+            side_effect=lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+        ),
+    ):
+        result = await read_reconciliation(AsyncMock(), FakeRedis(), user.id)
+
+    assert result.outcome == "changed"
+    assert result.snapshot.remove_ads_product_id == "fishfeed_remove_ads"
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_remove_ads_provider_exception_preserves_local_projection() -> None:
+    """Provider failure must not remove local Remove Ads access before a verified response arrives."""
+    user = _user()
+    user.settings = {"non_subscriptions": {"products": ["fishfeed_remove_ads"], "entitlements": ["remove_ads"]}}
+    before = deepcopy(user.settings)
+    settings = SimpleNamespace(REVENUECAT_API_KEY="test-key", ENVIRONMENT="production")
+    real_client = httpx.AsyncClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    with (
+        patch("app.services.purchase.get_settings", return_value=settings),
+        patch("app.services.purchase._get_user_by_id", new=AsyncMock(return_value=user)),
+        patch(
+            "app.services.purchase.httpx.AsyncClient",
+            side_effect=lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+        ),
+        pytest.raises(RevenueCatAPIError),
+    ):
+        await read_reconciliation(AsyncMock(), FakeRedis(), user.id)
+
+    assert user.settings == before
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -1246,6 +1642,52 @@ async def test_customer_creation_is_limited_to_routine_free_apply(
         else:
             result = await read_reconciliation(AsyncMock(), FakeRedis(), user.id, dry_run=dry_run)
             assert result.snapshot.status == "premium"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("provider_status", [200, 201])
+async def test_created_customer_cannot_revoke_existing_remove_ads(
+    async_session: AsyncSession,
+    provider_status: int,
+) -> None:
+    """A newly created provider profile cannot disprove existing Remove Ads access."""
+    record = User(
+        email=f"{uuid4()}@example.com",
+        password_hash="unused",
+        subscription_status="free",
+        settings={
+            "non_subscriptions": {
+                "products": ["fishfeed_remove_ads"],
+                "entitlements": ["remove_ads"],
+            }
+        },
+    )
+    async_session.add(record)
+    await async_session.commit()
+    payload = {"subscriber": {"entitlements": {}, "subscriptions": {}, "non_subscriptions": {}}}
+    settings = SimpleNamespace(REVENUECAT_API_KEY="test-key", ENVIRONMENT="production")
+    real_client = httpx.AsyncClient
+
+    def client_factory(**kwargs: object) -> httpx.AsyncClient:
+        transport = httpx.MockTransport(lambda request: httpx.Response(provider_status, json=payload))
+        return real_client(transport=transport, **kwargs)
+
+    with (
+        patch("app.services.purchase.get_settings", return_value=settings),
+        patch("app.services.purchase.httpx.AsyncClient", side_effect=client_factory),
+    ):
+        if provider_status == 201:
+            with pytest.raises(RevenueCatAPIError) as error:
+                await reconcile_user(async_session, FakeRedis(), record.id)
+            assert error.value.upstream_status == 201
+            await async_session.rollback()
+        else:
+            await reconcile_user(async_session, FakeRedis(), record.id)
+            await async_session.commit()
+
+    await async_session.refresh(record)
+    active = "remove_ads" in record.settings["non_subscriptions"]["entitlements"]
+    assert active is (provider_status == 201)
 
 
 @pytest.mark.asyncio
