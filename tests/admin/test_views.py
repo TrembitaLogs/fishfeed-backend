@@ -4,7 +4,10 @@ Verifies column configuration, permission flags, and search/sort capabilities
 for all 16 admin views.
 """
 
+import re
 import uuid
+from html import unescape
+from types import SimpleNamespace
 
 import pytest
 from httpx import AsyncClient
@@ -29,6 +32,7 @@ from app.admin.views import (
     UserProgressAdmin,
     WebhookTransactionAdmin,
 )
+from app.admin.views import user as user_view
 from app.models.aquarium import Aquarium
 from app.models.fish import Fish
 from app.models.user import User
@@ -58,6 +62,33 @@ async def _cleanup(session: AsyncSession) -> None:
     await session.commit()
 
 
+def _html_text(value: str) -> str:
+    return unescape(re.sub(r"<[^>]+>", "", value)).strip()
+
+
+def _table_cell_for_email(page: str, label: str, email: str) -> str:
+    header = re.search(r"<thead\b[^>]*>(.*?)</thead>", page, re.DOTALL)
+    assert header is not None, "Admin list has no table header"
+    labels = [_html_text(cell) for cell in re.findall(r"<th\b[^>]*>(.*?)</th>", header.group(1), re.DOTALL)]
+    assert label in labels, f"Admin list is missing {label}"
+
+    for row in re.findall(r"<tr\b[^>]*>(.*?)</tr>", page, re.DOTALL):
+        if email in row:
+            cells = [_html_text(cell) for cell in re.findall(r"<td\b[^>]*>(.*?)</td>", row, re.DOTALL)]
+            return cells[labels.index(label)]
+    raise AssertionError(f"Admin list is missing row for {email}")
+
+
+def _detail_value(page: str, label: str) -> str:
+    value = re.search(
+        rf"<tr\b[^>]*>\s*<td\b[^>]*>\s*{re.escape(label)}\s*</td>\s*<td\b[^>]*>(.*?)</td>\s*</tr>",
+        page,
+        re.DOTALL,
+    )
+    assert value is not None, f"Admin details are missing {label}"
+    return _html_text(value.group(1))
+
+
 # ─── Unit tests: ModelView configuration ───────────────────────────────
 
 
@@ -76,9 +107,39 @@ class TestUserAdminConfig:
         columns = [c.key if hasattr(c, "key") else str(c) for c in UserAdmin.form_columns]
         assert "password_hash" not in columns
 
+    # Mutation caught: settings or a Remove Ads field is made editable.
     def test_user_form_allows_only_profile_fields(self):
         columns = [c.key if hasattr(c, "key") else str(c) for c in UserAdmin.form_columns]
         assert columns == ["email", "nickname"]
+        assert "settings" not in columns
+        assert "remove_ads" not in columns
+
+    # Mutation caught: the formatter reads product history, accepts non-list entitlements,
+    # or mishandles malformed settings instead of showing only current access.
+    @pytest.mark.parametrize(
+        ("settings", "expected"),
+        [
+            ({"non_subscriptions": {"entitlements": ["remove_ads"]}}, "Yes"),
+            ({"non_subscriptions": {"entitlements": []}}, "No"),
+            ({"non_subscriptions": {"products": ["fishfeed_remove_ads"]}}, "No"),
+            ({"non_subscriptions": {"entitlements": "remove_ads"}}, "No"),
+            ({"non_subscriptions": {"entitlements": ["remove_ads_plus"]}}, "No"),
+            ({}, "No"),
+            (None, "No"),
+            ({"non_subscriptions": []}, "No"),
+        ],
+    )
+    def test_remove_ads_formatter_uses_only_active_entitlements(self, settings: object, expected: str):
+        formatter = getattr(user_view, "_format_remove_ads", None)
+        assert callable(formatter)
+        assert formatter(SimpleNamespace(settings=settings), "settings") == expected
+
+    # Mutation caught: the admin view omits the read-only Remove Ads column or formatter.
+    def test_remove_ads_column_is_read_only_projection(self):
+        assert User.settings in UserAdmin.column_list
+        assert UserAdmin.column_labels.get(User.settings) == "Remove Ads"
+        assert UserAdmin.column_formatters.get(User.settings) is getattr(user_view, "_format_remove_ads", None)
+        assert UserAdmin.column_formatters_detail.get(User.settings) is getattr(user_view, "_format_remove_ads", None)
 
     def test_can_delete_is_false(self):
         assert UserAdmin.can_delete is False
@@ -188,6 +249,50 @@ class TestUserAdminUI:
 
             assert response.status_code == 200
             assert user.email in response.text
+        finally:
+            await _cleanup(async_session)
+
+    # Mutation caught: the list renders Remove Ads from product history or another user's value.
+    async def test_user_list_shows_remove_ads_for_each_users_settings(
+        self,
+        authed_admin_client: AsyncClient,
+        async_session: AsyncSession,
+        async_engine,
+    ):
+        active_user = await _create_user(async_session, is_admin=False)
+        inactive_user = await _create_user(async_session, is_admin=False)
+        active_user.settings = {"non_subscriptions": {"entitlements": ["remove_ads"]}}
+        inactive_user.settings = {"non_subscriptions": {"products": ["fishfeed_remove_ads"]}}
+        await async_session.commit()
+        try:
+            response = await authed_admin_client.get("/admin/user/list")
+
+            assert response.status_code == 200
+            assert _table_cell_for_email(response.text, "Remove Ads", active_user.email) == "Yes"
+            assert _table_cell_for_email(response.text, "Remove Ads", inactive_user.email) == "No"
+        finally:
+            await _cleanup(async_session)
+
+    # Mutation caught: the detail page omits Remove Ads or renders a value unrelated to this user.
+    async def test_user_details_shows_remove_ads_for_users_settings(
+        self,
+        authed_admin_client: AsyncClient,
+        async_session: AsyncSession,
+        async_engine,
+    ):
+        active_user = await _create_user(async_session, is_admin=False)
+        inactive_user = await _create_user(async_session, is_admin=False)
+        active_user.settings = {"non_subscriptions": {"entitlements": ["remove_ads"]}}
+        inactive_user.settings = {"non_subscriptions": {"products": ["fishfeed_remove_ads"]}}
+        await async_session.commit()
+        try:
+            active_response = await authed_admin_client.get(f"/admin/user/details/{active_user.id}")
+            inactive_response = await authed_admin_client.get(f"/admin/user/details/{inactive_user.id}")
+
+            assert active_response.status_code == 200
+            assert _detail_value(active_response.text, "Remove Ads") == "Yes"
+            assert inactive_response.status_code == 200
+            assert _detail_value(inactive_response.text, "Remove Ads") == "No"
         finally:
             await _cleanup(async_session)
 
